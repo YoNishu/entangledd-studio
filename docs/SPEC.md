@@ -49,6 +49,7 @@ weekly report, comment reply drafts.
 
 ## Limits to remember
 
+- Reels carry no watermark by default.
 - Reel text must fit a safe box; the renderer rejects quotes over roughly 800 characters.
 - Quotes from modern books and other creators are their authors' work. Always credit; prefer
   public-domain sources and her own writing.

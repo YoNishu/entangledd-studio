@@ -196,7 +196,7 @@ def main():
     p = argparse.ArgumentParser(description="Render a quote reel for Instagram.")
     p.add_argument("--quote", required=True, help="Quote text. Use \\n for a manual line break.")
     p.add_argument("--author", default="", help="Who said it. Shown under the quote.")
-    p.add_argument("--handle", default="@theentangledd", help="Watermark. Pass '' to hide.")
+    p.add_argument("--handle", default="", help="Optional watermark text, e.g. @theentangledd. Off by default.")
     p.add_argument("--bg", default="", help="Background image path. Omit for a gradient.")
     p.add_argument("--palette", default="midnight", choices=sorted(PALETTES),
                    help="Gradient colours when no --bg is given.")
