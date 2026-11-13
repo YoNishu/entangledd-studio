@@ -8,6 +8,7 @@
      GITHUB_TOKEN   lets the app start a render on GitHub
      ANTHROPIC_API_KEY  for Nishiii: quote suggestions, rewording, reading a scanned page
      PIXABAY_API_KEY    for the free footage search (or PEXELS_API_KEY; Pixabay is used if both are set)
+     META_APP_ID, META_APP_SECRET   the Meta developer app, for connecting and posting to Instagram
    Bindings and vars (wrangler.jsonc):
      MEDIA          R2 bucket for uploads and finished reels
      GITHUB_REPO    "owner/repo" that holds the render workflow
@@ -519,6 +520,204 @@ async function stockRoutes(request, env, parts) {
   return fail(404, "Not found.");
 }
 
+// ---------- Instagram: connect, music, post ----------
+const GRAPH_VERSION = "v25.0";
+async function graph(env, method, path, params) {
+  const url = new URL((env.GRAPH_API || "https://graph.facebook.com") + "/" + GRAPH_VERSION + path);
+  const init = { method };
+  if (method === "GET") for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  else init.body = new URLSearchParams(params);
+  const res = await fetch(url, init);
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* not JSON: handled below */ }
+  if (!res.ok || data.error) {
+    const e = data.error || {};
+    console.error("Graph error", res.status, e.code, e.error_subcode, e.message);
+    const err = new UserError(502, `Instagram said: ${e.error_user_msg || e.message || `the request failed (status ${res.status})`}`);
+    err.expired = e.code === 190;
+    throw err;
+  }
+  return data;
+}
+const igReady = (env) => !!(env.META_APP_ID && env.META_APP_SECRET && env.MEDIA);
+const loadIg = (env) => loadDoc(env, "instagram", null);
+const publicIg = (ig) => (ig
+  ? { connected: true, username: ig.username, page: ig.pageName, musicUntil: ig.userTokenExpires }
+  : { connected: false });
+
+async function igRoutes(request, env, parts) {
+  const method = request.method;
+  if (!igReady(env)) return fail(503, "Instagram isn't set up on the server yet: the Meta app ID and secret are missing.");
+  if (parts.length === 1 && method === "GET") return json(publicIg(await loadIg(env)));
+  if (parts.length === 1 && method === "DELETE") { await env.MEDIA.delete("data/instagram.json"); return json({ connected: false }); }
+
+  if (parts[1] === "connect" && method === "POST") {
+    const b = await body(request);
+    const short = String(b.token || "").trim();
+    if (short.length < 50 || /\s/.test(short)) return fail(400, "Paste the access token exactly as Meta's Graph API Explorer shows it.");
+    // Swap the short-lived token (about an hour) for a long-lived one (about 60 days).
+    const long = await graph(env, "GET", "/oauth/access_token", {
+      grant_type: "fb_exchange_token", client_id: env.META_APP_ID, client_secret: env.META_APP_SECRET, fb_exchange_token: short,
+    });
+    const pages = await graph(env, "GET", "/me/accounts", {
+      fields: "id,name,access_token,instagram_business_account{id,username}", access_token: long.access_token,
+    });
+    const page = (pages.data || []).find((pg) => pg.instagram_business_account && pg.access_token);
+    if (!page) return fail(400, "That token can't see a Facebook Page with an Instagram professional account linked. Check the Page link and the permissions ticked in the Explorer.");
+    const ig = {
+      igId: page.instagram_business_account.id, username: page.instagram_business_account.username || "",
+      pageId: page.id, pageName: page.name || "", pageToken: page.access_token,
+      userToken: long.access_token, userTokenExpires: Date.now() + (Number(long.expires_in) || 60 * 24 * 3600) * 1000,
+      connectedAt: Date.now(),
+    };
+    await saveDoc(env, "instagram", ig);
+    return json(publicIg(ig));
+  }
+
+  if (parts[1] === "audio" && method === "GET") {
+    const ig = await loadIg(env);
+    if (!ig) return fail(409, "Connect Instagram first, in Account.");
+    if (Date.now() > ig.userTokenExpires) return fail(409, "Music search needs Instagram reconnecting in Account. Posting still works.");
+    const q = oneLine(new URL(request.url).searchParams.get("q"), 80);
+    const params = { audio_type: "music", user_id: ig.igId, access_token: ig.userToken };
+    if (q) params.search_query = q;
+    const data = await graph(env, "GET", "/ig_audio", params);
+    const items = (data.audio || data.data || []).filter((a) => a && a.audio_id).slice(0, 25).map((a) => ({
+      id: String(a.audio_id), title: a.title || "Untitled", artist: a.display_artist || a.ig_username || "",
+      seconds: Math.round((a.duration_in_ms || 0) / 1000), preview: a.download_url || a.on_platform_audio_preview_link || "",
+    }));
+    return json({ items });
+  }
+  return fail(404, "Not found.");
+}
+
+// A link Instagram can fetch the finished reel from, valid for a day and impossible to guess.
+async function publicReelUrl(request, env, jobId) {
+  const exp = Date.now() + 24 * 60 * 60 * 1000;
+  const sig = await hmacHex(env.RENDER_SECRET, `reel|${jobId}|${exp}`);
+  return `${new URL(request.url).origin}/api/public/reel/${jobId}.mp4?exp=${exp}&sig=${sig}`;
+}
+async function publicReel(request, env, parts) {
+  const url = new URL(request.url);
+  const id = String(parts[2] || "").replace(/\.mp4$/, ""), exp = Number(url.searchParams.get("exp"));
+  if (!env.RENDER_SECRET || !env.MEDIA || !UUID.test(id) || !(exp > Date.now())) return new Response("Not found", { status: 404 });
+  if (!safeEqual(url.searchParams.get("sig") || "", await hmacHex(env.RENDER_SECRET, `reel|${id}|${exp}`))) return new Response("Not found", { status: 404 });
+  const key = jobKey(id, "reel.mp4");
+  const base = { "Content-Type": "video/mp4", "Accept-Ranges": "bytes", "Cache-Control": "no-store" };
+  if (request.method === "HEAD") {
+    const head = await env.MEDIA.head(key);
+    return head ? new Response(null, { headers: { ...base, "Content-Length": String(head.size) } }) : new Response(null, { status: 404 });
+  }
+  const m = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get("Range") || "");
+  if (m && (m[1] || m[2])) {
+    const head = await env.MEDIA.head(key);
+    if (!head) return new Response("Not found", { status: 404 });
+    const start = m[1] ? Number(m[1]) : Math.max(0, head.size - Number(m[2]));
+    const end = m[1] && m[2] ? Math.min(Number(m[2]), head.size - 1) : head.size - 1;
+    if (start > end || start >= head.size) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${head.size}` } });
+    const part = await env.MEDIA.get(key, { range: { offset: start, length: end - start + 1 } });
+    return new Response(part.body, { status: 206, headers: { ...base, "Content-Length": String(end - start + 1), "Content-Range": `bytes ${start}-${end}/${head.size}` } });
+  }
+  const obj = await env.MEDIA.get(key);
+  return obj ? new Response(obj.body, { headers: { ...base, "Content-Length": String(obj.size) } }) : new Response("Not found", { status: 404 });
+}
+
+const publicPost = (p) => ({ id: p.id, state: p.state, error: p.error, caption: p.caption, quote: p.quote, author: p.author,
+  music: p.music, created: p.created, published: p.published, permalink: p.permalink });
+const tokenFor = (ig, post) => (post.tokenKind === "user" ? ig.userToken : ig.pageToken);
+
+// Moves a post forward: once Instagram has finished processing the video, publish it.
+async function advancePost(env, ig, post) {
+  if (post.state !== "processing") return false;
+  try {
+    const st = await graph(env, "GET", `/${post.containerId}`, { fields: "status_code,status", access_token: tokenFor(ig, post) });
+    if (st.status_code === "FINISHED") {
+      const out = await graph(env, "POST", `/${ig.igId}/media_publish`, { creation_id: post.containerId, access_token: tokenFor(ig, post) });
+      post.state = "published"; post.mediaId = out.id; post.published = Date.now();
+      try { post.permalink = (await graph(env, "GET", `/${out.id}`, { fields: "permalink", access_token: tokenFor(ig, post) })).permalink || ""; }
+      catch (e) { post.permalink = ""; }
+      return true;
+    }
+    if (st.status_code === "PUBLISHED") { post.state = "published"; post.published = Date.now(); return true; }
+    if (st.status_code === "ERROR" || st.status_code === "EXPIRED") {
+      post.state = "failed"; post.error = `Instagram couldn't process the video${st.status ? `: ${String(st.status).slice(0, 200)}` : "."}`;
+      return true;
+    }
+    if (Date.now() - post.created > 30 * 60 * 1000) { post.state = "failed"; post.error = "Instagram took too long to process the video. Try posting again."; return true; }
+  } catch (e) {
+    if (e instanceof UserError && Date.now() - post.created > 30 * 60 * 1000) { post.state = "failed"; post.error = e.message; return true; }
+    if (!(e instanceof UserError)) throw e;
+  }
+  return false;
+}
+
+async function createContainer(env, ig, params, wantUser) {
+  const userOk = Date.now() < ig.userTokenExpires;
+  const order = wantUser && userOk ? ["user", "page"] : userOk ? ["page", "user"] : ["page"];
+  let last;
+  for (const kind of order) {
+    try {
+      const out = await graph(env, "POST", `/${ig.igId}/media`, { ...params, access_token: kind === "user" ? ig.userToken : ig.pageToken });
+      return { containerId: out.id, tokenKind: kind };
+    } catch (e) { if (!(e instanceof UserError)) throw e; last = e; }
+  }
+  throw last;
+}
+
+async function postRoutes(request, env, parts) {
+  const method = request.method;
+  if (!igReady(env)) return fail(503, "Instagram isn't set up on the server yet.");
+  const ig = await loadIg(env);
+  const posts = await loadDoc(env, "posts", []);
+
+  if (parts.length === 1 && method === "GET") return json({ posts: posts.slice(-50).reverse().map(publicPost) });
+
+  if (parts.length === 1 && method === "POST") {
+    if (!ig) return fail(409, "Connect Instagram first, in Account.");
+    const b = await body(request);
+    if (!UUID.test(b.jobId || "")) return fail(400, "Make the reel first.");
+    const job = await readJob(env, b.jobId);
+    if (!job || job.state !== "done" || !(await env.MEDIA.head(jobKey(b.jobId, "reel.mp4")))) return fail(409, "That reel is no longer on the server. Make it again, then post.");
+    if (posts.some((p) => p.jobId === b.jobId && p.state !== "failed")) return fail(409, "This reel has already been posted.");
+    const caption = String(b.caption || "").trim().slice(0, 2200);
+    const params = { media_type: "REELS", video_url: await publicReelUrl(request, env, b.jobId), caption, share_to_feed: "true" };
+    let music = null;
+    if (b.audio && /^\d{5,25}$/.test(String(b.audio.id || ""))) {
+      const vol = (v, d) => Math.min(100, Math.max(0, Math.round(Number.isFinite(Number(v)) ? Number(v) : d)));
+      params.audio_configuration = JSON.stringify({ audio_id: String(b.audio.id), audio_volume: vol(b.audio.musicVolume, 100), video_volume: vol(b.audio.videoVolume, 0) });
+      music = oneLine(b.audio.title, 120);
+    }
+    const made = await createContainer(env, ig, params, !!music);
+    const post = { id: crypto.randomUUID(), jobId: b.jobId, ...made, state: "processing", error: null, caption, music,
+      quote: lines(b.quote, 600), author: oneLine(b.author, 80), theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20),
+      source: oneLine(b.source, 20), created: Date.now(), published: null, permalink: "" };
+    posts.push(post);
+    await saveDoc(env, "posts", posts.slice(-500));
+    return json(publicPost(post));
+  }
+
+  const post = posts.find((p) => p.id === parts[1]);
+  if (!post || method !== "GET") return fail(404, "No such post.");
+  if (ig && (await advancePost(env, ig, post))) await saveDoc(env, "posts", posts);
+  return json(publicPost(post));
+}
+
+// ---------- caption and hashtags ----------
+const CAPTION_SYSTEM = `You write Instagram captions for a quiet, reflective quotes page.
+Reply with a JSON object only: {"caption": "...", "hashtags": ["#...", "#..."]}
+- "caption": one or two short lines that sit beside the quote without repeating it. Calm, plain, lowercase is fine. No emojis unless they add something. If the quote has a named author, end with a credit line such as "— Seneca".
+- "hashtags": 8 to 12, mixing a few broad ones with more specific ones that fit this quote. No spaces inside a tag.`;
+
+async function writeCaption(request, env) {
+  const b = await body(request);
+  const quote = lines(b.quote, 600);
+  if (!quote) return fail(400, "There is no quote to write a caption for.");
+  const answer = parseJson(await claude(env, { system: CAPTION_SYSTEM, maxTokens: 700,
+    messages: [{ role: "user", content: `Quote:\n${quote}\nAuthor: ${oneLine(b.author, 80) || "none"}` }] }));
+  const tags = (Array.isArray(answer.hashtags) ? answer.hashtags : []).map((t) => "#" + String(t).replace(/[^\p{L}\p{N}_]/gu, "")).filter((t) => t.length > 1).slice(0, 14);
+  return json({ caption: lines(answer.caption, 600), hashtags: tags });
+}
+
 // ---------- called by the renderer on GitHub ----------
 async function renderRoutes(request, env, parts) {
   const id = parts[1], what = parts[2], method = request.method;
@@ -554,32 +753,42 @@ async function renderRoutes(request, env, parts) {
   return fail(404, "Not found.");
 }
 
+// Decides which handler answers a request under /api/.
+async function route(request, env, parts) {
+  if (parts[0] === "status" && request.method === "GET") {
+    return json({ configured: !!env.APP_PASSCODE, signedIn: await signedIn(request, env), reels: reelsReady(env),
+      ai: !!(env.ANTHROPIC_API_KEY && env.MEDIA), stock: !!stockProvider(env), instagram: igReady(env) });
+  }
+  if (parts[0] === "login" && request.method === "POST") return login(request, env);
+  if (parts[0] === "public" && parts[1] === "reel" && ["GET", "HEAD"].includes(request.method)) return publicReel(request, env, parts);
+  if (parts[0] === "render") {
+    if (!isRenderer(request, env)) return fail(401, "Not allowed.");
+    return renderRoutes(request, env, parts);
+  }
+  if (["jobs", "library", "suggestions", "edit", "scan", "stock", "instagram", "posts", "caption"].includes(parts[0])) {
+    if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
+    if (parts[0] === "jobs") return appRoutes(request, env, parts);
+    if (parts[0] === "stock") return stockRoutes(request, env, parts);
+    if (!env.MEDIA) return fail(503, "Storage isn't set up on the server yet.");
+    if (parts[0] === "library") return libraryRoutes(request, env, parts);
+    if (parts[0] === "instagram") return igRoutes(request, env, parts);
+    if (parts[0] === "posts") return postRoutes(request, env, parts);
+    if (parts[0] === "caption" && request.method === "POST") return writeCaption(request, env);
+    if (parts[0] === "suggestions") return suggestionRoutes(request, env, parts);
+    if (parts[0] === "edit" && request.method === "POST") return editQuote(request, env);
+    if (parts[0] === "scan" && request.method === "POST") return scanPage(request, env);
+  }
+  return fail(404, "Not found.");
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/")) return new Response("Not found", { status: 404 });
     const parts = url.pathname.slice(5).split("/").filter(Boolean);
     try {
-      if (parts[0] === "status" && request.method === "GET") {
-        return json({ configured: !!env.APP_PASSCODE, signedIn: await signedIn(request, env), reels: reelsReady(env),
-          ai: !!(env.ANTHROPIC_API_KEY && env.MEDIA), stock: !!stockProvider(env) });
-      }
-      if (parts[0] === "login" && request.method === "POST") return login(request, env);
-      if (parts[0] === "render") {
-        if (!isRenderer(request, env)) return fail(401, "Not allowed.");
-        return renderRoutes(request, env, parts);
-      }
-      if (["jobs", "library", "suggestions", "edit", "scan", "stock"].includes(parts[0])) {
-        if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
-        if (parts[0] === "jobs") return appRoutes(request, env, parts);
-        if (parts[0] === "stock") return stockRoutes(request, env, parts);
-        if (!env.MEDIA) return fail(503, "Storage isn't set up on the server yet.");
-        if (parts[0] === "library") return libraryRoutes(request, env, parts);
-        if (parts[0] === "suggestions") return suggestionRoutes(request, env, parts);
-        if (parts[0] === "edit" && request.method === "POST") return editQuote(request, env);
-        if (parts[0] === "scan" && request.method === "POST") return scanPage(request, env);
-      }
-      return fail(404, "Not found.");
+      // "await" matters here: without it, an error inside a handler would skip the catch below.
+      return await route(request, env, parts);
     } catch (e) {
       if (e instanceof UserError) return fail(e.status, e.message);
       console.error(e);
@@ -587,10 +796,26 @@ export default {
     }
   },
 
-  // Runs once a day (see "triggers" in wrangler.jsonc) so quotes are waiting when she opens the app.
+  // Timed jobs (see "triggers" in wrangler.jsonc).
   async scheduled(event, env, ctx) {
-    if (!env.ANTHROPIC_API_KEY || !env.MEDIA) return;
-    const day = await loadDoc(env, `suggestions/${todayIST()}`, []);
-    if (!day.length) ctx.waitUntil(generateSuggestions(env, 8).catch((e) => console.error("daily suggestions failed", e)));
+    if (!env.MEDIA) return;
+    if (event.cron === "30 0 * * *") {
+      // Once a day: have quotes waiting when she opens the app.
+      if (!env.ANTHROPIC_API_KEY) return;
+      const day = await loadDoc(env, `suggestions/${todayIST()}`, []);
+      if (!day.length) ctx.waitUntil(generateSuggestions(env, 8).catch((e) => console.error("daily suggestions failed", e)));
+      return;
+    }
+    // Every few minutes: finish any post still waiting on Instagram, in case she closed the app.
+    ctx.waitUntil((async () => {
+      const posts = await loadDoc(env, "posts", []);
+      const waiting = posts.filter((p) => p.state === "processing");
+      if (!waiting.length) return;
+      const ig = await loadIg(env);
+      if (!ig) return;
+      let changed = false;
+      for (const p of waiting) changed = (await advancePost(env, ig, p)) || changed;
+      if (changed) await saveDoc(env, "posts", posts);
+    })().catch((e) => console.error("finishing posts failed", e)));
   },
 };

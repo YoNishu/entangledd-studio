@@ -35,7 +35,13 @@ class MemoryBucket {
   async put(key, body, opts = {}) {
     this.objects.set(key, { data: await this.#bytes(body), uploaded: new Date(), httpMetadata: opts.httpMetadata || {} });
   }
-  async get(key) { const o = this.objects.get(key); return o ? this.#wrap(key, o) : null; }
+  async get(key, opts = {}) {
+    const o = this.objects.get(key);
+    if (!o) return null;
+    const out = this.#wrap(key, o);
+    if (opts.range) out.body = new Response(o.data.subarray(opts.range.offset, opts.range.offset + opts.range.length)).body;
+    return out;
+  }
   async head(key) { const o = this.objects.get(key); return o ? { key, size: o.data.length, uploaded: o.uploaded } : null; }
   async delete(keys) { for (const k of [].concat(keys)) this.objects.delete(k); }
   async list({ prefix = "", limit = 1000 } = {}) {
@@ -82,7 +88,70 @@ const env = {
     ? { PEXELS_API_KEY: "dev-key", PEXELS_API: `http://localhost:${PORT}/__pexels` }
     : { PIXABAY_API_KEY: "dev-key", PIXABAY_API: `http://localhost:${PORT}/__pixabay` }),
   STOCK_HOSTS: "localhost",
+  META_APP_ID: "dev-app",
+  META_APP_SECRET: "dev-secret",
+  GRAPH_API: `http://localhost:${PORT}/__graph`,
 };
+
+// ---- a pretend Instagram Graph API. Paste any token starting with SHORT to connect. ----
+const graphLog = [];
+const containers = new Map();
+let graphN = 0;
+async function pretendGraph(method, url, form) {
+  const p = url.pathname.replace(/^\/__graph\/v[\d.]+/, "");
+  const q = method === "GET" ? url.searchParams : form;
+  const token = q.get("access_token");
+  const err = (message, code = 100) => ({ status: 400, body: { error: { message, code } } });
+  graphLog.push({ method, path: p, params: Object.fromEntries([...q].filter(([k]) => k !== "access_token" && k !== "client_secret")), token });
+  if (p === "/oauth/access_token") {
+    if (q.get("client_id") !== env.META_APP_ID || q.get("client_secret") !== env.META_APP_SECRET) return err("Invalid app credentials", 101);
+    if (!String(q.get("fb_exchange_token")).startsWith("SHORT")) return err("Invalid OAuth access token.", 190);
+    return { status: 200, body: { access_token: "LONG-user-token-0123456789", token_type: "bearer", expires_in: 5184000 } };
+  }
+  if (p === "/me/accounts") {
+    if (token !== "LONG-user-token-0123456789") return err("Invalid OAuth access token.", 190);
+    return { status: 200, body: { data: [{ id: "111", name: "Entangledd", access_token: "PAGE-token-0123456789",
+      instagram_business_account: { id: "17890", username: "theentangledd" } }] } };
+  }
+  if (!["LONG-user-token-0123456789", "PAGE-token-0123456789"].includes(token)) return err("Invalid OAuth access token.", 190);
+  if (p === "/ig_audio") {
+    if (token !== "LONG-user-token-0123456789") return err("A user access token is required.", 190);
+    const all = [["587784541076604", "Birthday Wish", "Shuba", 153760], ["687784541076605", "Slow Tide", "Low Sun", 98000], ["787784541076606", "Paper Boats", "Mira Vale", 121000]];
+    const s = (q.get("search_query") || "").toLowerCase();
+    return { status: 200, body: { audio: all.filter((a) => !s || a[1].toLowerCase().includes(s)).map(([audio_id, title, display_artist, duration_in_ms]) =>
+      ({ audio_id, title, display_artist, duration_in_ms, audio_type: "music", download_url: "" })) } };
+  }
+  if (p === "/17890/media" && method === "POST") {
+    if (q.get("media_type") !== "REELS" || !q.get("video_url")) return err("media_type and video_url are required.");
+    if (q.get("audio_configuration")) {
+      if (token !== "LONG-user-token-0123456789") return err("Audio needs a user access token.", 190);
+      const a = JSON.parse(q.get("audio_configuration"));
+      if (!a.audio_id || a.audio_volume > 100 || a.video_volume > 100) return err("Bad audio_configuration.");
+    }
+    // Like Instagram, fetch the video from the link we were given: a ranged request, then the whole file.
+    const ranged = await fetch(q.get("video_url"), { headers: { Range: "bytes=0-99" } });
+    const whole = await fetch(q.get("video_url"));
+    const bytes = whole.ok ? (await whole.arrayBuffer()).byteLength : 0;
+    if (ranged.status !== 206 || (await ranged.arrayBuffer()).byteLength !== 100 || !whole.ok || bytes < 1000 || whole.headers.get("content-type") !== "video/mp4") {
+      return err("The video could not be fetched from video_url.", 2207052);
+    }
+    const id = "C" + (++graphN);
+    containers.set(id, { polls: 0 });
+    return { status: 200, body: { id } };
+  }
+  if (p === "/17890/media_publish" && method === "POST") {
+    if (!containers.has(q.get("creation_id"))) return err("Unknown creation_id.");
+    return { status: 200, body: { id: "M" + q.get("creation_id").slice(1) } };
+  }
+  if (/^\/C\d+$/.test(p)) {
+    const c = containers.get(p.slice(1));
+    if (!c) return err("Unknown container.");
+    c.polls += 1;
+    return { status: 200, body: { status_code: c.polls > 1 ? "FINISHED" : "IN_PROGRESS", id: p.slice(1) } };
+  }
+  if (/^\/M\d+$/.test(p)) return { status: 200, body: { permalink: `https://www.instagram.com/reel/TEST${p.slice(2)}/`, id: p.slice(1) } };
+  return err("Unsupported request.");
+}
 const MEDIA_DIR = process.env.DEV_MEDIA || "";   // folder holding sea.mp4 and sky.jpg for the pretend Pexels
 
 const CANNED = [
@@ -113,6 +182,8 @@ function pretendClaude(req) {
     const original = (first.match(/Original quote:\n([\s\S]*?)\nAuthor:/) || [])[1] || "";
     const short = original.split(/\s+/).slice(0, 5).join(" ") + ".";
     text = JSON.stringify({ reply: "Shortened it. This is no longer the author's exact words.", quote: short, altered: true });
+  } else if (system.startsWith("You write Instagram captions")) {
+    text = JSON.stringify({ caption: "a small reminder for a loud day.\n— Seneca", hashtags: ["#stoic quotes", "#calm", "quietthoughts", "#seneca"] });
   } else if (system.startsWith("You read photographed")) {
     const hasImage = req.messages[0].content.some((c) => c.type === "image" && c.source?.data?.length > 100);
     text = JSON.stringify({ passages: hasImage ? ["The sea keeps no calendar.", "Whatever you can do, begin it."] : [] });
@@ -166,6 +237,13 @@ http.createServer(async (req, res) => {
       if (process.env.FAIL_DISPATCH) { res.writeHead(401).end(); return; }
       runRenderJob(body.inputs || {});
       res.writeHead(204).end();
+      return;
+    }
+    if (url.pathname === "/__graph_log") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(graphLog)); return; }
+    if (url.pathname.startsWith("/__graph/")) {
+      const form = new URLSearchParams(req.method === "GET" ? "" : (await readBody(req)).toString());
+      const out = await pretendGraph(req.method, url, form);
+      res.writeHead(out.status, { "Content-Type": "application/json" }).end(JSON.stringify(out.body));
       return;
     }
     if (url.pathname.startsWith("/__anthropic/")) {

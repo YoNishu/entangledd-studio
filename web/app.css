@@ -147,7 +147,7 @@ input[type="range"] { width: 100%; accent-color: var(--glass); height: 28px; }
 }
 
 /* ---------- sections: Today, Create, Library ---------- */
-.views { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; background: var(--tide); border-radius: 999px; padding: 4px; }
+.views { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 10px; background: var(--tide); border-radius: 999px; padding: 4px; }
 .views button { padding: 8px 0; border: 0; border-radius: 999px; background: none; color: var(--mist); font: 500 14px "Poppins", sans-serif; cursor: pointer; }
 .views button[aria-pressed="true"] { background: var(--swell); color: var(--foam); }
 .work[hidden], .page[hidden] { display: none; }
@@ -213,3 +213,13 @@ a { color: var(--glass); }
   .sheet { align-items: center; }
   .sheet-body { border-radius: 18px; }
 }
+
+/* ---------- posting ---------- */
+#post-form { display: grid; gap: 12px; }
+.sheet h3 { font: 500 16px "Lora", serif; margin: 6px 0 0; }
+#music-chosen { display: grid; gap: 10px; }
+.sheet .list li { background: var(--tide); }
+.sheet textarea { background: var(--tide); }
+a.btn { text-decoration: none; }
+.list .ok { color: var(--glass); }
+.list .bad { color: var(--coral); }

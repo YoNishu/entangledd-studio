@@ -21,6 +21,7 @@
     <button id="nav-today" aria-pressed="false">Today</button>
     <button id="nav-create" aria-pressed="true">Create</button>
     <button id="nav-library" aria-pressed="false">Library</button>
+    <button id="nav-account" aria-pressed="false">Account</button>
   </nav>
 </header>
 
@@ -65,6 +66,20 @@
     <button class="btn primary" type="submit">Add account</button>
   </form>
   <ul class="list" id="list-accounts"></ul>
+</section>
+
+<section class="page" id="view-account" hidden>
+  <h2>Instagram</h2>
+  <p class="note" id="ig-status" role="status"></p>
+  <form class="add" id="ig-connect" hidden>
+    <p class="note">Paste a user access token from Meta's Graph API Explorer. The app swaps it for a long-lasting one and keeps that on the server; the token you paste stops working after about an hour.</p>
+    <label class="stack"><span>Access token</span><input id="ig-token" type="password" autocomplete="off" required></label>
+    <button class="btn primary" type="submit">Connect Instagram</button>
+  </form>
+  <button class="btn quiet" id="ig-disconnect" hidden>Disconnect Instagram</button>
+
+  <h2>Posts</h2>
+  <ul class="list" id="list-posts"></ul>
 </section>
 
 <main class="work" id="view-create">
@@ -148,7 +163,8 @@
       </div>
       <div id="reel-result" hidden>
         <video id="result" controls playsinline loop></video>
-        <button class="btn primary" id="save-reel">Save reel</button>
+        <button class="btn primary" id="post-open" hidden>Post to Instagram</button>
+        <button class="btn" id="save-reel">Save reel</button>
         <button class="btn quiet" id="again">Make another</button>
       </div>
       <p class="done" id="done" role="status" hidden></p>
@@ -186,6 +202,36 @@
       <button class="btn" type="submit" id="reword-send">Send</button>
     </form>
     <button class="btn primary" id="reword-use">Use this version</button>
+  </div>
+</div>
+
+<div class="sheet" id="post-sheet" role="dialog" aria-modal="true" aria-labelledby="post-title" hidden>
+  <div class="sheet-body">
+    <header class="sheet-head">
+      <h2 id="post-title">Post to Instagram</h2>
+      <button class="btn quiet close" id="post-close">Close</button>
+    </header>
+    <div id="post-form">
+      <label class="stack"><span>Caption</span><textarea id="post-caption" rows="5"></textarea></label>
+      <button class="btn" id="post-write" hidden>Write a caption with Nishiii</button>
+
+      <h3>Music</h3>
+      <p class="note" id="music-note">Music is added by Instagram when the reel is posted, so it can't be previewed on the reel here.</p>
+      <form class="ask" id="music-form">
+        <label class="stack"><span>Search Instagram's music</span><input id="music-q" type="search" placeholder="Leave empty for trending"></label>
+        <button class="btn" type="submit">Search</button>
+      </form>
+      <ul class="list" id="music-list"></ul>
+      <div id="music-chosen" hidden>
+        <p class="used" id="music-name"></p>
+        <label class="row"><span>Music volume <output id="mvol-out">100</output></span><input type="range" id="mvol" min="0" max="100" value="100"></label>
+        <label class="row"><span>Video's own sound <output id="vvol-out">0</output></span><input type="range" id="vvol" min="0" max="100" value="0"></label>
+        <button class="btn quiet" id="music-clear">Post without music</button>
+      </div>
+      <button class="btn primary" id="post-go">Post to Instagram</button>
+    </div>
+    <p class="status" id="post-status" role="status"></p>
+    <a class="btn" id="post-link" target="_blank" rel="noopener" hidden>View on Instagram</a>
   </div>
 </div>
 

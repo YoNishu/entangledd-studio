@@ -457,7 +457,7 @@
 
   // ---------- server: passcode and reels ----------
   const TOKEN_KEY = "entangledd.token.v1";
-  const server = { on: false, reels: false, ai: false, stock: false, locked: false, token: "" };
+  const server = { on: false, reels: false, ai: false, stock: false, instagram: false, locked: false, token: "" };
   try { server.token = localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { /* no storage: she signs in each visit */ }
 
   async function api(path, opts = {}) {
@@ -501,7 +501,7 @@
       const res = await fetch("/api/status", { headers: { Authorization: "Bearer " + server.token } });
       if (!res.ok) return;                       // no server behind this copy of the app
       const st = await res.json();
-      server.on = true; server.reels = !!st.reels; server.ai = !!st.ai; server.stock = !!st.stock;
+      server.on = true; server.reels = !!st.reels; server.ai = !!st.ai; server.stock = !!st.stock; server.instagram = !!st.instagram;
       server.locked = !!(st.configured && !st.signedIn);
       if (server.locked) showLock();
     } catch (e) { /* offline or static hosting: the composer still works */ }
@@ -510,6 +510,7 @@
       $("stock").disabled = !server.stock;
       $("stock-note").hidden = server.stock;
       $("reword-open").hidden = !server.ai;
+      $("post-open").hidden = !server.instagram;
       if (!server.locked) document.dispatchEvent(new CustomEvent("studio:ready"));
     }
   }
@@ -618,6 +619,8 @@
   window.Studio = {
     api, server, loadBackground, setQuote, showTab,
     selectedText: () => (selectedBlock() ? selectedBlock().text : ""),
+    currentReel: () => reel,
+    quoteText: () => state.blocks.map((b) => b.text.trim()).filter(Boolean).join("\n"),
     replaceSelectedText: (t) => edit((b) => { b.text = t; }),
   };
 

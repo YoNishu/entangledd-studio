@@ -16,7 +16,7 @@
   const friendly = (e) => (e.message === "Failed to fetch" ? "No connection. Check the internet and try again." : e.message);
 
   // ---------- moving between Today, Create and Library ----------
-  const VIEWS = ["today", "create", "library"];
+  const VIEWS = ["today", "create", "library", "account"];
   let current = "create";
   function show(view) {
     current = view;
@@ -27,11 +27,13 @@
     $("hello").hidden = view !== "today";
     if (view === "today") loadToday();
     if (view === "library") loadLibrary();
+    if (view === "account") loadAccount();
   }
   VIEWS.forEach((v) => $("nav-" + v).addEventListener("click", () => show(v)));
 
   // ---------- Today ----------
   let todayLoaded = false, todayBusy = false, todayData = null;
+  let onCanvas = { author: "", theme: "", tone: "", source: "" };   // where the quote now on the canvas came from
   const sourceLine = (s) => {
     if (s.type === "own") return s.title ? `Your own collection: ${s.title}` : "Your own collection";
     if (s.type === "book") return `From your book list: ${s.title}`;
@@ -58,12 +60,17 @@
     };
     use.addEventListener("click", () => {
       mark("used");
+      onCanvas = { author: item.author, theme: item.theme, tone: item.tone, source: item.source.type };
       S.setQuote(item.text, item.author);
       show("create");
     });
     reword.addEventListener("click", () => openReword({
       quote: item.text, author: item.author,
-      apply: (quote, altered) => { mark("used"); S.setQuote(quote, altered ? "" : item.author); show("create"); },
+      apply: (quote, altered) => {
+        mark("used");
+        onCanvas = { author: altered ? "" : item.author, theme: item.theme, tone: item.tone, source: item.source.type };
+        S.setQuote(quote, altered ? "" : item.author); show("create");
+      },
     }));
     skip.addEventListener("click", () => { mark("rejected"); node.remove(); if (!$("suggestions").children.length) $("today-note").textContent = "Nothing left for today. Ask for more below."; });
     return node;
@@ -275,6 +282,136 @@
     stock.kind = kind;
     $("stock-kind").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.kind === kind)));
     newSearch();
+  });
+
+  // ---------- Account: Instagram connection and past posts ----------
+  let ig = null;
+  const day = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+
+  function renderIg() {
+    const on = !!(ig && ig.connected);
+    $("ig-connect").hidden = on;
+    $("ig-disconnect").hidden = !on;
+    if (!S.server.instagram) { $("ig-status").textContent = "Posting switches on once the Meta app's ID and secret are added on the server."; $("ig-connect").hidden = true; return; }
+    $("ig-status").textContent = on
+      ? `Connected as @${ig.username}${ig.page ? ` through the Facebook Page "${ig.page}"` : ""}. Music search works until ${day(ig.musicUntil)}; after that, connect again. Posting keeps working.`
+      : "Not connected yet.";
+  }
+  function renderPosts(posts) {
+    const label = { processing: "Being processed by Instagram", published: "Posted", failed: "Didn't post" };
+    $("list-posts").replaceChildren(...(posts.length ? posts.map((p) => {
+      const state = el("p", { className: "sub " + (p.state === "published" ? "ok" : p.state === "failed" ? "bad" : ""),
+        textContent: `${label[p.state] || p.state}, ${day(p.published || p.created)}${p.music ? `, music: ${p.music}` : ""}${p.error ? `. ${p.error}` : ""}` });
+      const link = p.permalink ? el("a", { href: p.permalink, target: "_blank", rel: "noopener", textContent: "Open" }) : el("span");
+      return el("li", {}, el("div", {}, el("p", { className: "main", textContent: p.quote || p.caption || "Reel" }), state), link);
+    }) : [el("li", {}, el("p", { className: "empty", textContent: "Nothing posted from the app yet." }))]));
+  }
+  async function loadIg() {
+    if (!S.server.instagram) { ig = null; return ig; }
+    try { ig = await getJson("instagram"); } catch (e) { ig = null; $("ig-status").textContent = friendly(e); }
+    return ig;
+  }
+  async function loadAccount() {
+    await loadIg();
+    renderIg();
+    if (S.server.instagram) { try { renderPosts((await getJson("posts")).posts); } catch (e) { /* the status line already explains */ } }
+    else renderPosts([]);
+  }
+  $("ig-connect").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("ig-status").textContent = "Connecting…";
+    try { ig = await send("instagram/connect", "POST", { token: $("ig-token").value.trim() }); $("ig-token").value = ""; renderIg(); }
+    catch (err) { $("ig-status").textContent = friendly(err); }
+  });
+  $("ig-disconnect").addEventListener("click", async () => {
+    try { ig = await send("instagram", "DELETE"); renderIg(); } catch (err) { $("ig-status").textContent = friendly(err); }
+  });
+
+  // ---------- Post to Instagram ----------
+  let music = null, posting = false, player = null;
+  const postStatus = (msg) => { $("post-status").textContent = msg; };
+  function chooseMusic(item) {
+    music = item;
+    $("music-chosen").hidden = !item;
+    if (item) $("music-name").textContent = `Chosen: ${item.title}${item.artist ? ` by ${item.artist}` : ""}`;
+  }
+  function musicRow(item) {
+    const pick = el("button", { type: "button", textContent: "Choose" });
+    pick.addEventListener("click", () => chooseMusic(item));
+    const kids = [pick];
+    if (item.preview) {
+      const listen = el("button", { type: "button", textContent: "Listen" });
+      listen.addEventListener("click", () => {
+        if (player) { player.pause(); const same = player.src === item.preview; player = null; if (same) return; }
+        player = new Audio(item.preview); player.play().catch(() => {});
+      });
+      kids.unshift(listen);
+    }
+    const mins = `${Math.floor(item.seconds / 60)}:${String(item.seconds % 60).padStart(2, "0")}`;
+    return el("li", {}, el("div", {}, el("p", { className: "main", textContent: item.title }),
+      el("p", { className: "sub", textContent: [item.artist, mins].filter(Boolean).join(", ") })), el("div", {}, ...kids));
+  }
+  async function searchMusic() {
+    $("music-note").textContent = "Searching…";
+    try {
+      const { items } = await getJson("instagram/audio?q=" + encodeURIComponent($("music-q").value.trim()));
+      $("music-list").replaceChildren(...items.map(musicRow));
+      $("music-note").textContent = items.length
+        ? "Music is added by Instagram when the reel is posted, so it can't be previewed on the reel here."
+        : "No music found for that. Try other words.";
+    } catch (e) { $("music-note").textContent = friendly(e); }
+  }
+  $("music-form").addEventListener("submit", (e) => { e.preventDefault(); searchMusic(); });
+  $("music-clear").addEventListener("click", () => chooseMusic(null));
+  $("mvol").addEventListener("input", () => { $("mvol-out").textContent = $("mvol").value; });
+  $("vvol").addEventListener("input", () => { $("vvol-out").textContent = $("vvol").value; });
+
+  const closePost = () => { if (player) { player.pause(); player = null; } $("post-sheet").hidden = true; };
+  $("post-close").addEventListener("click", closePost);
+  $("post-sheet").addEventListener("click", (e) => { if (e.target === $("post-sheet") && !posting) closePost(); });
+
+  $("post-open").addEventListener("click", async () => {
+    if (!S.currentReel()) return;
+    await loadIg();
+    if (!ig || !ig.connected) { show("account"); renderIg(); $("ig-status").textContent = "Connect Instagram here first, then come back to post the reel."; return; }
+    chooseMusic(null);
+    $("music-list").replaceChildren();
+    $("post-form").hidden = false; $("post-link").hidden = true; postStatus("");
+    $("post-write").hidden = !S.server.ai;
+    $("post-sheet").hidden = false;
+  });
+
+  $("post-write").addEventListener("click", async () => {
+    const btn = $("post-write");
+    btn.disabled = true; btn.textContent = "Writing…";
+    try {
+      const r = await send("caption", "POST", { quote: S.quoteText(), author: onCanvas.author });
+      $("post-caption").value = [r.caption, r.hashtags.join(" ")].filter(Boolean).join("\n\n");
+    } catch (e) { postStatus(friendly(e)); }
+    finally { btn.disabled = false; btn.textContent = "Write a caption with Nishiii"; }
+  });
+
+  $("post-go").addEventListener("click", async () => {
+    const reel = S.currentReel();
+    if (!reel || posting) return;
+    posting = true; $("post-go").disabled = true;
+    postStatus("Sending the reel to Instagram…");
+    try {
+      let post = await send("posts", "POST", {
+        jobId: reel.id, caption: $("post-caption").value, quote: S.quoteText(), ...onCanvas,
+        audio: music ? { id: music.id, title: music.title, musicVolume: +$("mvol").value, videoVolume: +$("vvol").value } : null,
+      });
+      $("post-form").hidden = true;
+      postStatus("Instagram is processing the video. This usually takes under a minute. You can close the app; it will still post.");
+      while (post.state === "processing") {
+        await new Promise((r) => setTimeout(r, 5000));
+        post = await getJson("posts/" + post.id);
+      }
+      if (post.state === "failed") throw new Error(post.error || "Instagram didn't accept the reel.");
+      postStatus("Posted to Instagram.");
+      if (post.permalink) { $("post-link").href = post.permalink; $("post-link").hidden = false; }
+    } catch (e) { $("post-form").hidden = false; postStatus(friendly(e)); }
+    finally { posting = false; $("post-go").disabled = false; }
   });
 
   // ---------- start: once the composer knows what the server offers ----------

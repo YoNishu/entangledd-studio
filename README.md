@@ -19,10 +19,13 @@ Cloudflare or GitHub: `node server/dev.mjs`, then open http://localhost:8787 (pa
 
 It also keeps her library (own quotes, books, accounts), asks Claude for the day's quote
 suggestions, rewords quotes, reads quotes off a photographed page, and searches Pixabay (or Pexels) for free
-footage. The local stand-in fakes Claude and the stock libraries, so trying it costs nothing.
+footage. It connects to Instagram, writes captions, searches Instagram's music and posts reels
+after a tap. The local stand-in fakes Claude, the stock libraries and Instagram (paste any token
+starting with SHORT to connect), so trying it costs nothing and posts nothing.
 
 Secrets it needs, set in the Cloudflare dashboard: `APP_PASSCODE`, `RENDER_SECRET`,
-`GITHUB_TOKEN`, `ANTHROPIC_API_KEY`, `PIXABAY_API_KEY` (or `PEXELS_API_KEY`). The GitHub repo needs the same
+`GITHUB_TOKEN`, `ANTHROPIC_API_KEY`, `PIXABAY_API_KEY` (or `PEXELS_API_KEY`), `META_APP_ID`,
+`META_APP_SECRET`. The GitHub repo needs the same
 `RENDER_SECRET` as an Actions secret.
 
 **Reel maker.** `render/render.py` turns a quote into a 1080x1920 MP4 (H.264 + AAC) with a slow

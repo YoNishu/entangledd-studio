@@ -17,10 +17,12 @@
   "vars": {
     "GITHUB_REPO": "YoNishu/entangledd-studio"
   },
-  // Every day at 06:00 India time (00:30 UTC), prepare the day's quote suggestions
+  // 00:30 UTC (06:00 India time): prepare the day's quote suggestions.
+  // Every 5 minutes: finish any Instagram post still being processed.
   "triggers": {
-    "crons": ["30 0 * * *"]
+    "crons": ["30 0 * * *", "*/5 * * * *"]
   }
   // Secrets are added in the Cloudflare dashboard, not here:
-  // APP_PASSCODE, RENDER_SECRET, GITHUB_TOKEN, ANTHROPIC_API_KEY, PIXABAY_API_KEY
+  // APP_PASSCODE, RENDER_SECRET, GITHUB_TOKEN, ANTHROPIC_API_KEY, PIXABAY_API_KEY,
+  // META_APP_ID, META_APP_SECRET
 }
