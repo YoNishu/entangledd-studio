@@ -122,6 +122,20 @@ async function pretendGraph(method, url, form) {
     return { status: 200, body: { audio: all.filter((a) => !s || a[1].toLowerCase().includes(s)).map(([audio_id, title, display_artist, duration_in_ms]) =>
       ({ audio_id, title, display_artist, duration_in_ms, audio_type: "music", download_url: "" })) } };
   }
+  if (p === "/17890/media" && method === "POST" && q.get("is_carousel_item") === "true") {
+    const img = await fetch(q.get("image_url"));
+    if (!img.ok || img.headers.get("content-type") !== "image/jpeg" || (await img.arrayBuffer()).byteLength < 1000) return err("The image could not be fetched from image_url.", 9004);
+    const id = "I" + (++graphN);
+    containers.set(id, { polls: 9, item: true });
+    return { status: 200, body: { id } };
+  }
+  if (p === "/17890/media" && method === "POST" && q.get("media_type") === "CAROUSEL") {
+    const kids = (q.get("children") || "").split(",");
+    if (kids.length < 2 || kids.length > 10 || !kids.every((k) => containers.has(k) && containers.get(k).item)) return err("Bad children for carousel.");
+    const id = "C" + (++graphN);
+    containers.set(id, { polls: 0 });
+    return { status: 200, body: { id } };
+  }
   if (p === "/17890/media" && method === "POST") {
     if (q.get("media_type") !== "REELS" || !q.get("video_url")) return err("media_type and video_url are required.");
     if (q.get("audio_configuration")) {

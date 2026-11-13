@@ -86,7 +86,7 @@ async function login(request, env) {
 // ---------- jobs, called by the app ----------
 async function purgeOld(env) {
   const cutoff = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
-  const lists = await Promise.all(["jobs/", "data/stockcache/"].map((prefix) => env.MEDIA.list({ prefix, limit: 500 })));
+  const lists = await Promise.all(["jobs/", "slides/", "data/stockcache/"].map((prefix) => env.MEDIA.list({ prefix, limit: 500 })));
   const old = lists.flatMap((l) => l.objects).filter((o) => new Date(o.uploaded).getTime() < cutoff).map((o) => o.key);
   if (old.length) await env.MEDIA.delete(old);
 }
@@ -727,7 +727,7 @@ async function igRoutes(request, env, parts) {
 
   if (parts[1] === "audio" && method === "GET") {
     const ig = await loadIg(env);
-    if (!ig) return fail(409, "Connect Instagram first, in Posts.");
+    if (!ig) return fail(409, "Connect Instagram first, in Settings.");
     if (Date.now() > ig.userTokenExpires) return fail(409, "Music search needs Instagram reconnecting in Posts. Posting still works.");
     const q = oneLine(new URL(request.url).searchParams.get("q"), 80);
     const params = { audio_type: "music", user_id: ig.igId, access_token: ig.userToken };
@@ -748,6 +748,29 @@ async function publicReelUrl(request, env, jobId) {
   const sig = await hmacHex(env.RENDER_SECRET, `reel|${jobId}|${exp}`);
   return `${new URL(request.url).origin}/api/public/reel/${jobId}.mp4?exp=${exp}&sig=${sig}`;
 }
+// Carousel pictures: uploaded from the phone, then fetched by Instagram through a signed link.
+const slideKey = (id) => `slides/${id}.jpg`;
+async function putSlide(request, env) {
+  const size = Number(request.headers.get("Content-Length") || 0);
+  if (!(size > 0 && size <= 8 * 1024 * 1024)) return fail(400, "The picture is missing or over 8 MB.");
+  const id = crypto.randomUUID();
+  await env.MEDIA.put(slideKey(id), await request.arrayBuffer(), { httpMetadata: { contentType: "image/jpeg" } });
+  return json({ id });
+}
+async function publicSlideUrl(request, env, id) {
+  const exp = Date.now() + 24 * 60 * 60 * 1000;
+  return `${new URL(request.url).origin}/api/public/slide/${id}.jpg?exp=${exp}&sig=${await hmacHex(env.RENDER_SECRET, `slide|${id}|${exp}`)}`;
+}
+async function publicSlide(request, env, parts) {
+  const url = new URL(request.url);
+  const id = String(parts[2] || "").replace(/\.jpg$/, ""), exp = Number(url.searchParams.get("exp"));
+  if (!env.RENDER_SECRET || !env.MEDIA || !UUID.test(id) || !(exp > Date.now())) return new Response("Not found", { status: 404 });
+  if (!safeEqual(url.searchParams.get("sig") || "", await hmacHex(env.RENDER_SECRET, `slide|${id}|${exp}`))) return new Response("Not found", { status: 404 });
+  const obj = request.method === "HEAD" ? await env.MEDIA.head(slideKey(id)) : await env.MEDIA.get(slideKey(id));
+  if (!obj) return new Response("Not found", { status: 404 });
+  return new Response(request.method === "HEAD" ? null : obj.body, { headers: { "Content-Type": "image/jpeg", "Content-Length": String(obj.size), "Cache-Control": "no-store" } });
+}
+
 async function publicReel(request, env, parts) {
   const url = new URL(request.url);
   const id = String(parts[2] || "").replace(/\.mp4$/, ""), exp = Number(url.searchParams.get("exp"));
@@ -774,7 +797,8 @@ async function publicReel(request, env, parts) {
 }
 
 const publicPost = (p) => ({ id: p.id, state: p.state, error: p.error, caption: p.caption, quote: p.quote, author: p.author,
-  music: p.music, created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null });
+  music: p.music, created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null,
+  kind: p.kind || "reel", slides: p.slides || 0 });
 const tokenFor = (ig, post) => (post.tokenKind === "user" ? ig.userToken : ig.pageToken);
 
 // Moves a post forward: once Instagram has finished processing the video, publish it.
@@ -832,8 +856,9 @@ async function postRoutes(request, env, parts) {
   }
 
   if (parts.length === 1 && method === "POST") {
-    if (!ig) return fail(409, "Connect Instagram first, in Posts.");
+    if (!ig) return fail(409, "Connect Instagram first, in Settings.");
     const b = await body(request);
+    if (Array.isArray(b.slides)) return postCarousel(request, env, ig, posts, b);
     if (!UUID.test(b.jobId || "")) return fail(400, "Create the reel first.");
     const job = await readJob(env, b.jobId);
     if (!job || job.state !== "done" || !(await env.MEDIA.head(jobKey(b.jobId, "reel.mp4")))) return fail(409, "That reel is no longer on the server. Create it again, then post.");
@@ -864,6 +889,30 @@ async function postRoutes(request, env, parts) {
   }
   if (!post || method !== "GET") return fail(404, "No such post.");
   if (ig && (await advancePost(env, ig, post))) await saveDoc(env, "posts", posts);
+  return json(publicPost(post));
+}
+
+// A carousel: each picture becomes an item on Instagram, then the items are joined into one post.
+async function postCarousel(request, env, ig, posts, b) {
+  const slides = b.slides.map(String);
+  if (slides.length < 2 || slides.length > 10) return fail(400, "A carousel needs between 2 and 10 pictures.");
+  if (!slides.every((id) => UUID.test(id))) return fail(400, "One of the pictures couldn't be found. Add it again.");
+  const found = await Promise.all(slides.map((id) => env.MEDIA.head(slideKey(id))));
+  if (found.some((x) => !x)) return fail(409, "One of the pictures is no longer on the server. Add it again.");
+  const caption = String(b.caption || "").trim().slice(0, 2200);
+  const children = [];
+  let tokenKind = "page";
+  for (const id of slides) {
+    const made = await createContainer(env, ig, { image_url: await publicSlideUrl(request, env, id), is_carousel_item: "true" }, false);
+    children.push(made.containerId); tokenKind = made.tokenKind;
+  }
+  const whole = await graph(env, "POST", `/${ig.igId}/media`, { media_type: "CAROUSEL", children: children.join(","), caption,
+    access_token: tokenKind === "user" ? ig.userToken : ig.pageToken });
+  const post = { id: crypto.randomUUID(), kind: "carousel", slides: slides.length, containerId: whole.id, tokenKind, state: "processing", error: null, caption, music: null,
+    quote: lines(b.quote, 600), author: oneLine(b.author, 80), theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20), source: oneLine(b.source, 20),
+    suggestionId: UUID.test(b.suggestionId || "") ? b.suggestionId : "", created: Date.now(), published: null, permalink: "" };
+  posts.push(post);
+  await saveDoc(env, "posts", posts.slice(-500));
   return json(publicPost(post));
 }
 
@@ -908,7 +957,13 @@ async function refreshInsights(env, ig, posts, { force = false, max = 15 } = {})
     if (!force && post.insightsAt && Date.now() - post.insightsAt < every) continue;
     done += 1;
     try {
-      const data = await graphAny(env, ig, "GET", `/${post.mediaId}/insights`, { metric: INSIGHT_METRICS.join(",") });
+      let data;
+      try { data = await graphAny(env, ig, "GET", `/${post.mediaId}/insights`, { metric: INSIGHT_METRICS.join(",") }); }
+      catch (e) {
+        // Not every kind of post has every number; ask again for the ones all posts share.
+        if (!(e instanceof UserError) || e.gone || e.expired) throw e;
+        data = await graphAny(env, ig, "GET", `/${post.mediaId}/insights`, { metric: "reach,likes,comments,saved,shares" });
+      }
       const m = {};
       for (const row of data.data || []) {
         const v = row.total_value ? row.total_value.value : row.values && row.values[0] ? row.values[0].value : null;
@@ -1466,11 +1521,12 @@ async function route(request, env, parts) {
   if (parts[0] === "login" && request.method === "POST") return login(request, env);
   if (parts[0] === "passkey") return passkeyRoutes(request, env, parts, await signedIn(request, env));
   if (parts[0] === "public" && parts[1] === "reel" && ["GET", "HEAD"].includes(request.method)) return publicReel(request, env, parts);
+  if (parts[0] === "public" && parts[1] === "slide" && ["GET", "HEAD"].includes(request.method)) return publicSlide(request, env, parts);
   if (parts[0] === "render") {
     if (!isRenderer(request, env)) return fail(401, "Not allowed.");
     return renderRoutes(request, env, parts);
   }
-  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat"].includes(parts[0])) {
+  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat", "slides"].includes(parts[0])) {
     if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
     if (parts[0] === "jobs") return appRoutes(request, env, parts);
     if (parts[0] === "stock") return stockRoutes(request, env, parts);
@@ -1484,6 +1540,7 @@ async function route(request, env, parts) {
     if (parts[0] === "suggestions") return suggestionRoutes(request, env, parts);
     if (parts[0] === "asked") return askedRoutes(request, env, parts);
     if (parts[0] === "chat" && request.method === "POST") return chat(request, env);
+    if (parts[0] === "slides" && request.method === "PUT") return putSlide(request, env);
     if (parts[0] === "edit" && request.method === "POST") return editQuote(request, env);
     if (parts[0] === "scan" && request.method === "POST") return scanPage(request, env);
   }

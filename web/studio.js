@@ -515,7 +515,7 @@
     const label = { processing: ["info", "Being processed by Instagram"], published: ["ok", "Posted"], failed: ["bad", "Didn't post"] };
     const [kind, words] = label[p.state] || ["gone", p.state];
     const kids = [el("p", { className: "q", textContent: p.quote || p.caption || "Reel" }), chip(kind, words)];
-    kids.push(el("p", { className: "src", textContent: `${day(p.published || p.created)}${p.music ? `, music: ${p.music}` : ""}` }));
+    kids.push(el("p", { className: "src", textContent: `${p.kind === "carousel" ? `Carousel of ${p.slides}` : "Reel"}, ${day(p.published || p.created)}${p.music ? `, music: ${p.music}` : ""}` }));
     if (p.error) kids.push(el("p", { className: "flag", textContent: p.error }));
     const m = p.metrics;
     if (m && Object.keys(m).length) {
@@ -660,8 +660,32 @@
     catch (err) { $("taste-note").textContent = friendly(err); }
   });
 
+  // ---------- Carousel: pictures collected one at a time, posted together ----------
+  const slides = [];      // { blob, url }
+  function renderSlides() {
+    $("slide-tray").replaceChildren(...slides.map((sl, i) => {
+      const remove = el("button", { type: "button", textContent: "×" });
+      remove.setAttribute("aria-label", `Remove picture ${i + 1}`);
+      remove.addEventListener("click", () => { URL.revokeObjectURL(sl.url); slides.splice(i, 1); renderSlides(); });
+      return el("figure", {}, el("img", { src: sl.url, alt: `Carousel picture ${i + 1}` }), el("figcaption", { textContent: String(i + 1) }), remove);
+    }));
+    $("carousel-post").hidden = slides.length < 2 || !S.server.instagram;
+    $("carousel-clear").hidden = !slides.length;
+    $("slide-add").disabled = slides.length >= 10;
+    $("slide-note").textContent = !slides.length ? "A carousel is one post people swipe through, with 2 to 10 pictures. Add this one, change the words or background, then add the next."
+      : slides.length === 1 ? "1 picture added. Change the words or background and add at least one more."
+      : `${slides.length} pictures added${slides.length >= 10 ? ", which is the most a carousel can hold" : ""}.`;
+  }
+  $("slide-add").addEventListener("click", async () => {
+    const blob = await S.pictureBlob();
+    slides.push({ blob, url: URL.createObjectURL(blob) });
+    renderSlides();
+  });
+  $("carousel-clear").addEventListener("click", () => { slides.forEach((sl) => URL.revokeObjectURL(sl.url)); slides.length = 0; renderSlides(); });
+  $("carousel-post").addEventListener("click", () => openPost("carousel"));
+
   // ---------- Post to Instagram ----------
-  let music = null, posting = false, player = null;
+  let music = null, posting = false, player = null, postMode = "reel";
   const postStatus = (msg) => { $("post-status").textContent = msg; };
   function chooseMusic(item) {
     music = item;
@@ -703,16 +727,20 @@
   $("post-close").addEventListener("click", closePost);
   $("post-sheet").addEventListener("click", (e) => { if (e.target === $("post-sheet") && !posting) closePost(); });
 
-  $("post-open").addEventListener("click", async () => {
-    if (!S.currentReel()) return;
+  async function openPost(mode) {
+    if (mode === "reel" && !S.currentReel()) return;
     await loadIg();
-    if (!ig || !ig.connected) { openSettings("Connect Instagram here first, then go back to Create to post the reel."); return; }
+    if (!ig || !ig.connected) { openSettings("Connect Instagram here first, then go back to Create to post."); return; }
+    postMode = mode;
     chooseMusic(null);
     $("music-list").replaceChildren();
+    $("post-title").textContent = mode === "carousel" ? `Post a carousel of ${slides.length}` : "Post to Instagram";
+    $("post-music").hidden = mode === "carousel";      // Instagram's music can only be attached to reels here
     $("post-form").hidden = false; $("post-link").hidden = true; postStatus("");
     $("post-write").hidden = !S.server.ai;
     $("post-sheet").hidden = false;
-  });
+  }
+  $("post-open").addEventListener("click", () => openPost("reel"));
 
   $("post-write").addEventListener("click", async () => {
     const btn = $("post-write");
@@ -726,24 +754,35 @@
 
   $("post-go").addEventListener("click", async () => {
     const reel = S.currentReel();
-    if (!reel || posting) return;
+    if (posting || (postMode === "reel" && !reel) || (postMode === "carousel" && slides.length < 2)) return;
     posting = true; $("post-go").disabled = true;
-    postStatus("Sending the reel to Instagram…");
     try {
-      let post = await send("posts", "POST", {
-        jobId: reel.id, caption: $("post-caption").value, quote: S.quoteText(), ...onCanvas,
-        audio: music ? { id: music.id, title: music.title, musicVolume: +$("mvol").value, videoVolume: +$("vvol").value } : null,
-      });
+      const about = { caption: $("post-caption").value, quote: S.quoteText(), ...onCanvas };
+      let post;
+      if (postMode === "carousel") {
+        const ids = [];
+        for (let i = 0; i < slides.length; i++) {
+          postStatus(`Sending picture ${i + 1} of ${slides.length}…`);
+          ids.push((await getJson("slides", { method: "PUT", headers: { "Content-Type": "image/jpeg" }, body: slides[i].blob })).id);
+        }
+        postStatus("Sending the carousel to Instagram…");
+        post = await send("posts", "POST", { ...about, slides: ids });
+      } else {
+        postStatus("Sending the reel to Instagram…");
+        post = await send("posts", "POST", { ...about, jobId: reel.id,
+          audio: music ? { id: music.id, title: music.title, musicVolume: +$("mvol").value, videoVolume: +$("vvol").value } : null });
+      }
       $("post-form").hidden = true;
-      postStatus("Instagram is processing the video. This usually takes under a minute. You can close the app; it will still post.");
+      postStatus("Instagram is processing it. This usually takes under a minute. You can close the app; it will still post.");
       while (post.state === "processing") {
         await new Promise((r) => setTimeout(r, 5000));
         post = await getJson("posts/" + post.id);
       }
-      if (post.state === "failed") throw new Error(post.error || "Instagram didn't accept the reel.");
+      if (post.state === "failed") throw new Error(post.error || "Instagram didn't accept it.");
       postStatus("Posted to Instagram.");
       const from = [...(todayData ? todayData.items : []), ...(askedData ? askedData.items : [])].find((i) => i.id === onCanvas.suggestionId);
       if (from) from.posted = "posted";
+      if (postMode === "carousel") { slides.forEach((sl) => URL.revokeObjectURL(sl.url)); slides.length = 0; renderSlides(); }
       if (post.permalink) { $("post-link").href = post.permalink; $("post-link").hidden = false; }
     } catch (e) { $("post-form").hidden = false; postStatus(friendly(e)); }
     finally { posting = false; $("post-go").disabled = false; }

@@ -2,7 +2,8 @@
    Everything is drawn on one 1080x1920 canvas, so what she sees is what gets saved. */
 (() => {
   "use strict";
-  const W = 1080, H = 1920;
+  const W = 1080;
+  let H = 1920;     // 1920 for a reel (9:16), 1350 for a post or carousel picture (4:5)
   const $ = (id) => document.getElementById(id);
   const canvas = $("canvas");
   const ctx = canvas.getContext("2d");
@@ -53,6 +54,7 @@
     length: 8,
     style: "sea",
     author: "",          // the author of the quote on the canvas, if it came with one
+    shape: "reel",       // "reel" (9:16) or "post" (4:5, for single pictures and carousels)
   };
   let nextId = 1;
 
@@ -192,6 +194,28 @@
       warn.hidden = false;
     } else warn.hidden = true;
   }
+
+  // ---------- shape and on-screen size ----------
+  // Fits the canvas into the room it has, keeping its proportions, whichever shape is chosen.
+  function fitCanvas() {
+    const stage = $("stage"), room = { w: stage.clientWidth - 24, h: stage.clientHeight - 16 };
+    if (room.w <= 0 || room.h <= 0) return;
+    const k = Math.min(room.w / W, room.h / H);
+    canvas.style.width = Math.floor(W * k) + "px";
+    canvas.style.height = Math.floor(H * k) + "px";
+  }
+  function setShape(shape) {
+    state.shape = shape === "post" ? "post" : "reel";
+    H = state.shape === "post" ? 1350 : 1920;
+    canvas.height = H;
+    probe.height = Math.round(probe.width * H / W);
+    document.querySelectorAll("#shape button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.shape === state.shape)));
+    fitCanvas();
+    syncBackgroundPane();
+  }
+  document.querySelectorAll("#shape button").forEach((b) => b.addEventListener("click", () => { setShape(b.dataset.shape); saveDraft(); }));
+  if (window.ResizeObserver) new ResizeObserver(fitCanvas).observe($("stage"));
+  window.addEventListener("resize", fitCanvas);
 
   // ---------- touch: drag to move, pinch to resize ----------
   const pointers = new Map();
@@ -404,7 +428,9 @@
     const video = !!state.bg && state.bg.kind === "video";
     $("clear-bg").hidden = !state.bg;
     $("video-opts").hidden = !video;
-    $("save-image").hidden = video;
+    $("save-image").hidden = video && state.shape === "reel";
+    $("carousel").hidden = state.shape !== "post";
+    $("reel-setup").hidden = state.shape === "post" || $("pane-save").classList.contains("busy");
     $("len-out").textContent = state.length + " s";
     $("len").value = state.length;
     $("done").hidden = true;
@@ -621,7 +647,7 @@
     $("reel-note").textContent = "Reels need the app's server, which isn't fully set up yet. Images can still be saved.";
     if (mode) {
       $("pane-save").classList.toggle("busy", mode !== "setup");   // hides "Save as a picture" while a reel is being made or shown
-      $("reel-setup").hidden = mode !== "setup";
+      $("reel-setup").hidden = mode !== "setup" || state.shape === "post";
       $("reel-progress").hidden = mode !== "progress";
       $("reel-result").hidden = mode !== "result";
     }
@@ -699,7 +725,7 @@
   function saveDraft() {
     try {
       localStorage.setItem(KEY, JSON.stringify({ blocks: state.blocks, shadow: state.shadow, fade: state.fade,
-        mute: state.mute, length: state.length, style: state.style, author: state.author }));
+        mute: state.mute, length: state.length, style: state.style, author: state.author, shape: state.shape }));
     } catch (e) { /* private mode or full storage: the draft just isn't kept */ }
   }
   function loadDraft() {
@@ -711,6 +737,7 @@
       state.length = Math.min(30, Math.max(5, +d.length || 8));
       state.style = STYLES[d.style] ? d.style : "sea";
       state.author = typeof d.author === "string" ? d.author : "";
+      state.shape = d.shape === "post" ? "post" : "reel";
       return true;
     } catch (e) { return false; }
   }
@@ -721,6 +748,8 @@
     faceId: { on: faceIdOn, supported: () => !!window.PublicKeyCredential, name: faceIdName, enable: faceIdEnable, disable: faceIdDisable },
     selectedText: () => (selectedBlock() ? selectedBlock().text : ""),
     currentReel: () => reel,
+    shape: () => state.shape,
+    pictureBlob: () => toBlob(compose(false), "image/jpeg", 0.92),
     quoteText: () => state.blocks.map((b) => b.text.trim()).filter(Boolean).join("\n"),
     replaceSelectedText: (t) => edit((b) => { b.text = t; }),
   };
@@ -733,6 +762,7 @@
     document.querySelectorAll("#styles button").forEach((b) =>
       b.setAttribute("aria-pressed", String(b.dataset.style === state.style)));
     $("mute").checked = state.mute; $("fade").checked = state.fade; $("shadow").checked = state.shadow;
+    setShape(state.shape);
     syncBackgroundPane();
     if (window.matchMedia("(min-width: 900px)").matches) showTab("text");
     connect();
