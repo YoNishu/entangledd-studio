@@ -74,7 +74,61 @@ const env = {
   GITHUB_TOKEN: "dev-token",
   GITHUB_REPO: "local/dev",
   GITHUB_API: `http://localhost:${PORT}/__github`,
+  // Stand-ins for Claude and Pexels, so nothing here costs money or needs a key.
+  ANTHROPIC_API_KEY: "dev-key",
+  ANTHROPIC_API: `http://localhost:${PORT}/__anthropic`,
+  PEXELS_API_KEY: "dev-key",
+  PEXELS_API: `http://localhost:${PORT}/__pexels`,
+  STOCK_HOSTS: "localhost",
 };
+const MEDIA_DIR = process.env.DEV_MEDIA || "";   // folder holding sea.mp4 and sky.jpg for the pretend Pexels
+
+const CANNED = [
+  ["The happiness of your life depends upon the quality of your thoughts.", "Marcus Aurelius", "book", "Meditations", "mind", "calm", false],
+  ["We suffer more often in imagination than in reality.", "Seneca", "classic", "Letters", "fear", "steady", false],
+  ["Knowing yourself is the beginning of all wisdom.", "Aristotle", "classic", "", "self", "plain", true],
+  ["It is not death that a man should fear, but he should fear never beginning to live.", "Marcus Aurelius", "book", "Meditations", "courage", "direct", true],
+  ["What we achieve inwardly will change outer reality.", "Plutarch", "classic", "", "growth", "warm", true],
+  ["He who has a why to live can bear almost any how.", "Friedrich Nietzsche", "classic", "Twilight of the Idols", "purpose", "firm", false],
+  ["No man ever steps in the same river twice.", "Heraclitus", "classic", "", "change", "quiet", true],
+  ["The soul becomes dyed with the colour of its thoughts.", "Marcus Aurelius", "book", "Meditations", "mind", "quiet", false],
+];
+let cannedAt = 0;
+function pretendClaude(req) {
+  const system = req.system || "";
+  if (req.model !== "claude-sonnet-5-5" || req.output_config?.effort !== "medium") return { status: 400, body: { error: { message: "wrong model or effort" } } };
+  let text;
+  if (system.startsWith("You choose quotes")) {
+    const want = Number((req.messages[0].content.match(/Suggest (\d+)/) || [])[1] || 6);
+    const items = [];
+    for (let i = 0; i < want; i++) {
+      const [t, author, type, title, theme, tone, verify] = CANNED[(cannedAt++) % CANNED.length];
+      items.push({ text: t, author, source: { type, title }, theme, tone, verify });
+    }
+    text = "Here are the quotes:\n```json\n" + JSON.stringify(items) + "\n```";
+  } else if (system.startsWith("You are Nishiii")) {
+    const first = req.messages[0].content;
+    const original = (first.match(/Original quote:\n([\s\S]*?)\nAuthor:/) || [])[1] || "";
+    const short = original.split(/\s+/).slice(0, 5).join(" ") + ".";
+    text = JSON.stringify({ reply: "Shortened it. This is no longer the author's exact words.", quote: short, altered: true });
+  } else if (system.startsWith("You read photographed")) {
+    const hasImage = req.messages[0].content.some((c) => c.type === "image" && c.source?.data?.length > 100);
+    text = JSON.stringify({ passages: hasImage ? ["The sea keeps no calendar.", "Whatever you can do, begin it."] : [] });
+  } else text = "{}";
+  return { status: 200, body: { content: [{ type: "text", text }] } };
+}
+function pretendPexels(url) {
+  const media = `http://localhost:${PORT}/__media`;
+  if (url.pathname.endsWith("/videos/search")) {
+    return { next_page: null, videos: [1, 2, 3].map((n) => ({ id: n, image: `${media}/sky.jpg`, duration: 6, url: "https://www.pexels.com/video/" + n,
+      user: { name: "Sample Creator " + n }, video_files: [
+        { file_type: "video/mp4", width: 2160, height: 3840, link: `${media}/sea.mp4?size=4k` },
+        { file_type: "video/mp4", width: 1080, height: 1920, link: `${media}/sea.mp4` },
+        { file_type: "application/x-mpegURL", width: null, height: null, link: `${media}/x.m3u8` }] })) };
+  }
+  return { next_page: null, photos: [1, 2].map((n) => ({ id: n, photographer: "Sample Photographer " + n, url: "https://www.pexels.com/photo/" + n,
+    src: { medium: `${media}/sky.jpg`, original: `${media}/sky.jpg` } })) };
+}
 
 function runRenderJob(inputs) {
   const child = spawn("bash", [path.join(root, "render", "run_job.sh")], {
@@ -97,6 +151,22 @@ http.createServer(async (req, res) => {
       if (process.env.FAIL_DISPATCH) { res.writeHead(401).end(); return; }
       runRenderJob(body.inputs || {});
       res.writeHead(204).end();
+      return;
+    }
+    if (url.pathname.startsWith("/__anthropic/")) {
+      if (req.headers["x-api-key"] !== env.ANTHROPIC_API_KEY) { res.writeHead(401).end("{}"); return; }
+      const out = pretendClaude(JSON.parse((await readBody(req)).toString()));
+      res.writeHead(out.status, { "Content-Type": "application/json" }).end(JSON.stringify(out.body));
+      return;
+    }
+    if (url.pathname.startsWith("/__pexels/")) {
+      if (req.headers.authorization !== env.PEXELS_API_KEY) { res.writeHead(401).end("{}"); return; }
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(pretendPexels(url)));
+      return;
+    }
+    if (url.pathname.startsWith("/__media/") && MEDIA_DIR) {
+      const data = await readFile(path.join(MEDIA_DIR, path.basename(url.pathname)));
+      res.writeHead(200, { "Content-Type": url.pathname.endsWith(".mp4") ? "video/mp4" : "image/jpeg", "Content-Length": data.length }).end(data);
       return;
     }
     if (url.pathname.startsWith("/api/")) {

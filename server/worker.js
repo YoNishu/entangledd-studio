@@ -6,6 +6,8 @@
      APP_PASSCODE   what she types to open the app
      RENDER_SECRET  shared with GitHub Actions so only the renderer can fetch and return files
      GITHUB_TOKEN   lets the app start a render on GitHub
+     ANTHROPIC_API_KEY  for Nishiii: quote suggestions, rewording, reading a scanned page
+     PEXELS_API_KEY     for the free footage search
    Bindings and vars (wrangler.jsonc):
      MEDIA          R2 bucket for uploads and finished reels
      GITHUB_REPO    "owner/repo" that holds the render workflow
@@ -196,6 +198,273 @@ async function appRoutes(request, env, parts) {
   return fail(404, "Not found.");
 }
 
+// ---------- small JSON documents kept in storage ----------
+async function loadDoc(env, name, fallback) {
+  const obj = await env.MEDIA.get(`data/${name}.json`);
+  return obj ? obj.json() : fallback;
+}
+const saveDoc = (env, name, doc) => env.MEDIA.put(`data/${name}.json`, JSON.stringify(doc), {
+  httpMetadata: { contentType: "application/json" },
+});
+const emptyLibrary = () => ({ quotes: [], books: [], accounts: [] });
+const oneLine = (v, max) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+const lines = (v, max) => String(v ?? "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, max);
+const norm = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const todayIST = () => new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+async function body(request) {
+  try { return await request.json(); } catch (e) { throw new UserError(400, "That request couldn't be read."); }
+}
+class UserError extends Error { constructor(status, message) { super(message); this.status = status; } }
+
+// ---------- her library: own quotes, books, accounts ----------
+const LIMITS = { quotes: 500, books: 100, accounts: 50 };
+async function libraryRoutes(request, env, parts) {
+  const lib = { ...emptyLibrary(), ...(await loadDoc(env, "library", emptyLibrary())) };
+  const kind = parts[1], id = parts[2], method = request.method;
+  if (!kind && method === "GET") return json(lib);
+  if (!["quotes", "books", "accounts"].includes(kind)) return fail(404, "Not found.");
+
+  if (method === "DELETE" && id) {
+    lib[kind] = lib[kind].filter((x) => x.id !== id);
+    await saveDoc(env, "library", lib);
+    return json(lib);
+  }
+  if (method !== "POST") return fail(404, "Not found.");
+  if (lib[kind].length >= LIMITS[kind]) return fail(400, "That list is full. Remove something first.");
+  const b = await body(request);
+  let item;
+  if (kind === "quotes") {
+    item = { text: lines(b.text, 500), author: oneLine(b.author, 80), from: oneLine(b.from, 120) };
+    if (!item.text) return fail(400, "Write the quote first.");
+    if (lib.quotes.some((q) => norm(q.text) === norm(item.text))) return fail(409, "That quote is already saved.");
+  } else if (kind === "books") {
+    item = { title: oneLine(b.title, 120), author: oneLine(b.author, 80) };
+    if (!item.title) return fail(400, "Add the book's title.");
+    if (lib.books.some((x) => norm(x.title) === norm(item.title))) return fail(409, "That book is already on the list.");
+  } else {
+    const handle = oneLine(b.handle, 80).replace(/^https?:\/\/(www\.)?instagram\.com\//i, "").replace(/^@/, "").replace(/[/?].*$/, "");
+    if (!/^[a-z0-9._]{1,30}$/i.test(handle)) return fail(400, "That doesn't look like an Instagram username.");
+    item = { handle: handle.toLowerCase() };
+    if (lib.accounts.some((x) => x.handle === item.handle)) return fail(409, "That account is already on the list.");
+  }
+  lib[kind].push({ id: crypto.randomUUID(), added: Date.now(), ...item });
+  await saveDoc(env, "library", lib);
+  return json(lib);
+}
+
+// ---------- Claude ----------
+async function claude(env, { system, messages, maxTokens = 2000 }) {
+  if (!env.ANTHROPIC_API_KEY) throw new UserError(503, "Nishiii isn't connected yet: the Anthropic key is missing.");
+  const res = await fetch((env.ANTHROPIC_API || "https://api.anthropic.com") + "/v1/messages", {
+    method: "POST",
+    headers: { "x-api-key": env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: maxTokens, output_config: { effort: "medium" }, system, messages }),
+  });
+  if (res.status === 401 || res.status === 403) throw new UserError(502, "The Anthropic key was rejected. Check it in Cloudflare.");
+  if (res.status === 429) throw new UserError(502, "Claude is busy right now. Try again in a minute.");
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json()).error?.message || ""; } catch (e) { /* no detail */ }
+    console.error("Claude error", res.status, detail);
+    throw new UserError(502, /credit|billing/i.test(detail)
+      ? "The Anthropic account is out of credit. Add credit in the Anthropic console."
+      : `Claude couldn't answer (status ${res.status}). Try again.`);
+  }
+  const data = await res.json();
+  return (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+}
+// Claude is asked for JSON only; this copes with stray text or code fences around it.
+function parseJson(text) {
+  const t = String(text).replace(/```(?:json)?/gi, "");
+  const start = t.search(/[[{]/);
+  if (start < 0) throw new UserError(502, "Claude's answer couldn't be read. Try again.");
+  const end = Math.max(t.lastIndexOf("]"), t.lastIndexOf("}"));
+  try { return JSON.parse(t.slice(start, end + 1)); }
+  catch (e) { throw new UserError(502, "Claude's answer couldn't be read. Try again."); }
+}
+
+// ---------- daily suggestions ----------
+const SUGGEST_SYSTEM = `You choose quotes for a quiet, reflective Instagram quotes page.
+Reply with a JSON array only, no other text. Each item:
+{"text": "...", "author": "...", "source": {"type": "book" or "classic", "title": "..."}, "theme": "one or two words", "tone": "one word", "verify": true or false}
+
+Rules:
+- Real quotes only, in the author's real words. Never invent a quote or an attribution.
+- "book" means a line from one of the reader's listed books; use it only for passages you actually know from that book, and put the book's title in source.title.
+- "classic" means a well-known line from elsewhere; put the work or occasion in source.title, or "" if unknown.
+- Set "verify" to true whenever you are not sure the wording is exact or the attribution is right. Be strict: when in doubt, true.
+- Keep each quote under 45 words, complete on its own, with no surrounding quotation marks.
+- Lean towards what the reader has picked before and away from what she skipped, while keeping some variety.
+- Do not repeat anything in the "avoid" list.`;
+
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
+async function generateSuggestions(env, count) {
+  const date = todayIST();
+  const [lib, history, day] = await Promise.all([
+    loadDoc(env, "library", emptyLibrary()), loadDoc(env, "history", []), loadDoc(env, `suggestions/${date}`, []),
+  ]);
+  const seen = new Set([...history, ...day].map((x) => norm(x.text)));
+  const fresh = [];
+
+  // Her own quotes go in word for word, chosen here rather than by Claude.
+  const own = shuffle((lib.quotes || []).filter((q) => !seen.has(norm(q.text)))).slice(0, Math.min(2, count));
+  for (const q of own) {
+    fresh.push({ text: q.text, author: q.author || "", source: { type: "own", title: q.from || "" }, theme: "", tone: "", verify: false });
+    seen.add(norm(q.text));
+  }
+
+  const want = count - fresh.length;
+  if (want > 0) {
+    const brief = {
+      count: want,
+      books: (lib.books || []).map((b) => ({ title: b.title, author: b.author })),
+      picked: history.filter((h) => h.action === "used").slice(-30).map((h) => ({ text: h.text, theme: h.theme, tone: h.tone })),
+      skipped: history.filter((h) => h.action === "rejected").slice(-30).map((h) => ({ text: h.text, theme: h.theme, tone: h.tone })),
+      avoid: [...history, ...day].slice(-120).map((x) => x.text),
+    };
+    const answer = parseJson(await claude(env, {
+      system: SUGGEST_SYSTEM, maxTokens: 3000,
+      messages: [{ role: "user", content: `Suggest ${want} quotes. Reader details as JSON:\n${JSON.stringify(brief)}` }],
+    }));
+    for (const s of Array.isArray(answer) ? answer : []) {
+      const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
+      if (!text || seen.has(norm(text))) continue;
+      const type = s.source && s.source.type === "book" ? "book" : "classic";
+      fresh.push({ text, author: oneLine(s.author, 80), source: { type, title: oneLine(s.source && s.source.title, 120) },
+        theme: oneLine(s.theme, 30), tone: oneLine(s.tone, 20), verify: s.verify !== false });
+      seen.add(norm(text));
+      if (fresh.length >= count) break;
+    }
+  }
+  const items = fresh.map((f) => ({ id: crypto.randomUUID(), state: "new", ...f }));
+  await saveDoc(env, `suggestions/${date}`, [...day, ...items]);
+  return { date, items: [...day, ...items] };
+}
+
+async function suggestionRoutes(request, env, parts) {
+  const method = request.method, date = todayIST();
+  const visible = (r) => json({ date: r.date, items: r.items.filter((i) => i.state !== "rejected") });
+  if (parts.length === 1 && method === "GET") {
+    const day = await loadDoc(env, `suggestions/${date}`, []);
+    if (day.length || !env.ANTHROPIC_API_KEY) return visible({ date, items: day });
+    return visible(await generateSuggestions(env, 8));
+  }
+  if (parts[1] === "more" && method === "POST") return visible(await generateSuggestions(env, 6));
+  if (parts[2] === "feedback" && method === "POST") {
+    const b = await body(request);
+    if (!["used", "rejected"].includes(b.action)) return fail(400, "Unknown action.");
+    const day = await loadDoc(env, `suggestions/${date}`, []);
+    const item = day.find((i) => i.id === parts[1]);
+    if (!item) return fail(404, "That suggestion is no longer on today's list.");
+    item.state = b.action;
+    const history = await loadDoc(env, "history", []);
+    history.push({ text: item.text, author: item.author, theme: item.theme, tone: item.tone, source: item.source.type, action: b.action, at: Date.now() });
+    await Promise.all([saveDoc(env, `suggestions/${date}`, day), saveDoc(env, "history", history.slice(-400))]);
+    return json({ ok: true });
+  }
+  return fail(404, "Not found.");
+}
+
+// ---------- rewording a quote with Nishiii ----------
+const EDIT_SYSTEM = `You are Nishiii, the assistant inside Entangledd Studio, an app for making quote posts. You are talking with Dhruuu.
+She has chosen a quote and wants help changing it. Do what she asks: shorten, reword, change tone, fix line breaks, translate, and so on.
+Reply with a JSON object only, no other text:
+{"reply": "one short friendly sentence about what you changed", "quote": "the full revised quote", "altered": true or false}
+- "quote" is always the complete current version, ready to post, without surrounding quotation marks. Use \\n for line breaks she asks for.
+- "altered" is true when the wording now differs from the original author's words in more than line breaks or capitalisation. If the quote has a named author and you altered it, say in "reply" that it is no longer the author's exact words.
+- If she asks something that isn't about the quote, answer briefly in "reply" and return the quote unchanged.`;
+
+async function editQuote(request, env) {
+  const b = await body(request);
+  const quote = lines(b.quote, 600), author = oneLine(b.author, 80);
+  const turns = (Array.isArray(b.messages) ? b.messages : []).slice(-20)
+    .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: lines(m.content, 1200) }))
+    .filter((m) => m.content);
+  if (!quote || !turns.length || turns[turns.length - 1].role !== "user") return fail(400, "Tell Nishiii what to change.");
+  if (turns[0].role !== "user") turns.shift();
+  turns[0] = { role: "user", content: `Original quote:\n${quote}\nAuthor: ${author || "none given"}\n\n${turns[0].content}` };
+  const answer = parseJson(await claude(env, { system: EDIT_SYSTEM, messages: turns, maxTokens: 1200 }));
+  return json({ reply: lines(answer.reply, 400) || "Here you go.", quote: lines(answer.quote, 600) || quote, altered: !!answer.altered });
+}
+
+// ---------- reading quotes off a photographed page ----------
+const SCAN_SYSTEM = `You read photographed book pages and handwritten notes.
+Reply with a JSON object only: {"passages": ["...", "..."]}
+Copy up to 6 quotable passages exactly as written, one to three sentences each. Do not reword, summarise or correct them. If a passage is underlined or highlighted, list it first. If no text can be read, return {"passages": []}.`;
+
+async function scanPage(request, env) {
+  const b = await body(request);
+  const image = String(b.image || "");
+  if (!/^[A-Za-z0-9+/=]+$/.test(image) || image.length < 200 || image.length > 4_000_000) return fail(400, "The photo is missing or too large.");
+  const answer = parseJson(await claude(env, {
+    system: SCAN_SYSTEM, maxTokens: 1500,
+    messages: [{ role: "user", content: [
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: image } },
+      { type: "text", text: "Find the quotable passages on this page." },
+    ] }],
+  }));
+  const passages = (Array.isArray(answer.passages) ? answer.passages : []).map((p) => lines(p, 500)).filter(Boolean).slice(0, 6);
+  return json({ passages });
+}
+
+// ---------- free footage (Pexels) ----------
+function stockHostAllowed(env, host) {
+  if (host === "pexels.com" || host.endsWith(".pexels.com")) return true;
+  return !!env.STOCK_HOSTS && env.STOCK_HOSTS.split(",").includes(host);   // used only by the local dev server
+}
+async function stockRoutes(request, env, parts) {
+  if (!env.PEXELS_API_KEY) return fail(503, "Free footage isn't connected yet: the Pexels key is missing.");
+  const url = new URL(request.url);
+  if (parts.length === 1) {
+    const kind = url.searchParams.get("kind") === "photo" ? "photo" : "video";
+    const q = oneLine(url.searchParams.get("q"), 80) || "ocean";
+    const page = Math.min(20, Math.max(1, Number(url.searchParams.get("page")) || 1));
+    const base = env.PEXELS_API || "https://api.pexels.com";
+    const path = kind === "video" ? "/v1/videos/search" : "/v1/search";
+    const res = await fetch(`${base}${path}?query=${encodeURIComponent(q)}&orientation=portrait&per_page=18&page=${page}`, {
+      headers: { Authorization: env.PEXELS_API_KEY },
+    });
+    if (res.status === 401 || res.status === 403) return fail(502, "The Pexels key was rejected. Check it in Cloudflare.");
+    if (res.status === 429) return fail(502, "Pexels' hourly limit was reached. Try again later.");
+    if (!res.ok) return fail(502, `Pexels couldn't be searched (status ${res.status}).`);
+    const data = await res.json();
+    let items;
+    if (kind === "video") {
+      items = (data.videos || []).map((v) => {
+        // The MP4 closest to 1080x1920: big enough to look sharp, small enough to download quickly.
+        const files = (v.video_files || []).filter((f) => f.file_type === "video/mp4" && f.width && f.height && f.link);
+        files.sort((a, b2) => Math.abs(a.height - 1920) - Math.abs(b2.height - 1920));
+        return files.length ? { id: String(v.id), kind, thumb: v.image, seconds: v.duration, credit: v.user && v.user.name,
+          page: v.url, file: files[0].link } : null;
+      }).filter(Boolean);
+    } else {
+      items = (data.photos || []).filter((p) => p.src && p.src.original).map((p) => ({
+        id: String(p.id), kind, thumb: p.src.medium, credit: p.photographer, page: p.url,
+        file: `${p.src.original}?auto=compress&cs=tinysrgb&fit=crop&w=1080&h=1920`,
+      }));
+    }
+    return json({ items, more: !!data.next_page });
+  }
+  if (parts[1] === "file") {
+    let target;
+    try { target = new URL(url.searchParams.get("url")); } catch (e) { return fail(400, "Bad file address."); }
+    const local = !!env.STOCK_HOSTS && target.protocol === "http:";
+    if ((target.protocol !== "https:" && !local) || !stockHostAllowed(env, target.hostname)) return fail(400, "Only Pexels files can be fetched.");
+    const res = await fetch(target, { headers: { "User-Agent": "entangledd-studio" } });
+    if (!res.ok) return fail(502, "That file couldn't be downloaded from Pexels.");
+    const size = Number(res.headers.get("Content-Length") || 0);
+    if (size > 250 * 1024 * 1024) return fail(413, "That file is too large. Pick a different one.");
+    const headers = { "Content-Type": res.headers.get("Content-Type") || "application/octet-stream", "Cache-Control": "no-store" };
+    if (size) headers["Content-Length"] = String(size);
+    return new Response(res.body, { headers });
+  }
+  return fail(404, "Not found.");
+}
+
 // ---------- called by the renderer on GitHub ----------
 async function renderRoutes(request, env, parts) {
   const id = parts[1], what = parts[2], method = request.method;
@@ -238,21 +507,36 @@ export default {
     const parts = url.pathname.slice(5).split("/").filter(Boolean);
     try {
       if (parts[0] === "status" && request.method === "GET") {
-        return json({ configured: !!env.APP_PASSCODE, signedIn: await signedIn(request, env), reels: reelsReady(env) });
+        return json({ configured: !!env.APP_PASSCODE, signedIn: await signedIn(request, env), reels: reelsReady(env),
+          ai: !!(env.ANTHROPIC_API_KEY && env.MEDIA), stock: !!env.PEXELS_API_KEY });
       }
       if (parts[0] === "login" && request.method === "POST") return login(request, env);
       if (parts[0] === "render") {
         if (!isRenderer(request, env)) return fail(401, "Not allowed.");
         return renderRoutes(request, env, parts);
       }
-      if (parts[0] === "jobs") {
+      if (["jobs", "library", "suggestions", "edit", "scan", "stock"].includes(parts[0])) {
         if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
-        return appRoutes(request, env, parts);
+        if (parts[0] === "jobs") return appRoutes(request, env, parts);
+        if (parts[0] === "stock") return stockRoutes(request, env, parts);
+        if (!env.MEDIA) return fail(503, "Storage isn't set up on the server yet.");
+        if (parts[0] === "library") return libraryRoutes(request, env, parts);
+        if (parts[0] === "suggestions") return suggestionRoutes(request, env, parts);
+        if (parts[0] === "edit" && request.method === "POST") return editQuote(request, env);
+        if (parts[0] === "scan" && request.method === "POST") return scanPage(request, env);
       }
       return fail(404, "Not found.");
     } catch (e) {
+      if (e instanceof UserError) return fail(e.status, e.message);
       console.error(e);
       return fail(500, "Something went wrong on the server. Try again.");
     }
+  },
+
+  // Runs once a day (see "triggers" in wrangler.jsonc) so quotes are waiting when she opens the app.
+  async scheduled(event, env, ctx) {
+    if (!env.ANTHROPIC_API_KEY || !env.MEDIA) return;
+    const day = await loadDoc(env, `suggestions/${todayIST()}`, []);
+    if (!day.length) ctx.waitUntil(generateSuggestions(env, 8).catch((e) => console.error("daily suggestions failed", e)));
   },
 };

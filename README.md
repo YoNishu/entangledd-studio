@@ -17,8 +17,13 @@ uploads in the `entangledd-media` R2 bucket, asks GitHub to render (the "Render 
 and hands the finished reel back to the phone. To try the whole thing on one machine without
 Cloudflare or GitHub: `node server/dev.mjs`, then open http://localhost:8787 (passcode `letmein`).
 
+It also keeps her library (own quotes, books, accounts), asks Claude for the day's quote
+suggestions, rewords quotes, reads quotes off a photographed page, and searches Pexels for free
+footage. The local stand-in fakes Claude and Pexels, so trying it costs nothing.
+
 Secrets it needs, set in the Cloudflare dashboard: `APP_PASSCODE`, `RENDER_SECRET`,
-`GITHUB_TOKEN`. The GitHub repo needs the same `RENDER_SECRET` as an Actions secret.
+`GITHUB_TOKEN`, `ANTHROPIC_API_KEY`, `PEXELS_API_KEY`. The GitHub repo needs the same
+`RENDER_SECRET` as an Actions secret.
 
 **Reel maker.** `render/render.py` turns a quote into a 1080x1920 MP4 (H.264 + AAC) with a slow
 background zoom, a text fade-in, an optional background photo and optional music.

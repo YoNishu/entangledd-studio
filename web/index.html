@@ -17,9 +17,57 @@
 <header class="bar">
   <h1 class="wordmark">Entangledd Studio</h1>
   <p class="hello" id="hello">Hi Dhruuu, what are we posting today? <span class="sig">Nishiii</span></p>
+  <nav class="views" aria-label="Sections">
+    <button id="nav-today" aria-pressed="false">Today</button>
+    <button id="nav-create" aria-pressed="true">Create</button>
+    <button id="nav-library" aria-pressed="false">Library</button>
+  </nav>
 </header>
 
-<main class="work">
+<section class="page" id="view-today" hidden>
+  <h2>Today's quotes</h2>
+  <p class="note" id="today-note" role="status"></p>
+  <div class="cards" id="suggestions"></div>
+  <button class="btn" id="more" hidden>Suggest more</button>
+</section>
+
+<section class="page" id="view-library" hidden>
+  <p class="note" id="library-note" role="status" hidden></p>
+
+  <h2>Your own quotes</h2>
+  <p class="note">Lines you wrote or copied down. They show up in Today's quotes word for word.</p>
+  <form class="add" id="add-quote">
+    <label class="stack"><span>Quote</span><textarea id="q-text" rows="3" required></textarea></label>
+    <label class="stack"><span>Who said it (leave empty if it's yours)</span><input id="q-author" type="text"></label>
+    <label class="stack"><span>Where it's from, such as a book or your notebook</span><input id="q-from" type="text"></label>
+    <button class="btn primary" type="submit">Save quote</button>
+  </form>
+  <label class="btn file" id="scan-label">
+    Scan a page with the camera
+    <input type="file" id="scan" accept="image/*" capture="environment">
+  </label>
+  <div class="cards" id="scan-results"></div>
+  <ul class="list" id="list-quotes"></ul>
+
+  <h2>Books you've read</h2>
+  <p class="note">Nishiii looks for lines from these when choosing the day's quotes.</p>
+  <form class="add row2" id="add-book">
+    <label class="stack"><span>Title</span><input id="b-title" type="text" required></label>
+    <label class="stack"><span>Author</span><input id="b-author" type="text"></label>
+    <button class="btn primary" type="submit">Add book</button>
+  </form>
+  <ul class="list" id="list-books"></ul>
+
+  <h2>Accounts you like</h2>
+  <p class="note">Instagram pages whose style you want to learn from. Their numbers appear here once Instagram is connected.</p>
+  <form class="add row2" id="add-account">
+    <label class="stack"><span>Username</span><input id="a-handle" type="text" autocapitalize="none" autocorrect="off" required></label>
+    <button class="btn primary" type="submit">Add account</button>
+  </form>
+  <ul class="list" id="list-accounts"></ul>
+</section>
+
+<main class="work" id="view-create">
   <section class="stage" id="stage" aria-label="Preview">
     <canvas id="canvas" width="1080" height="1920" aria-label="Post preview. Drag text to move it, pinch to resize."></canvas>
     <p class="warn" id="warn" role="status" hidden></p>
@@ -39,7 +87,7 @@
         <input type="file" id="file" accept="image/*,video/*">
       </label>
       <button class="btn" id="stock" disabled>Find free footage</button>
-      <p class="note">Free footage search turns on once the app is connected to its server.</p>
+      <p class="note" id="stock-note">Free footage search turns on once its key is added on the server.</p>
       <button class="btn quiet" id="clear-bg" hidden>Remove background</button>
       <div id="video-opts" hidden>
         <label class="check"><input type="checkbox" id="mute" checked> Mute the video's own sound</label>
@@ -51,6 +99,7 @@
         <span>Words</span>
         <textarea id="words" rows="3" placeholder="Write the line here"></textarea>
       </label>
+      <button class="btn" id="reword-open" hidden>Reword with Nishiii</button>
       <div class="pair">
         <button class="btn" id="add">Add a separate line</button>
         <button class="btn quiet" id="remove">Remove this line</button>
@@ -117,6 +166,51 @@
   <p class="oops" id="lock-error" role="alert" hidden></p>
 </form>
 
+<div class="sheet" id="reword" role="dialog" aria-modal="true" aria-labelledby="reword-title" hidden>
+  <div class="sheet-body">
+    <header class="sheet-head">
+      <h2 id="reword-title">Reword with Nishiii</h2>
+      <button class="btn quiet close" id="reword-close">Close</button>
+    </header>
+    <p class="q" id="reword-quote"></p>
+    <p class="flag" id="reword-flag" hidden>Reworded, so these are no longer the author's exact words. The author's name will be left off.</p>
+    <div class="log" id="reword-log" aria-live="polite"></div>
+    <div class="chips" id="reword-chips">
+      <button type="button">Make it shorter</button>
+      <button type="button">More poetic</button>
+      <button type="button">Simpler words</button>
+      <button type="button">Break it into short lines</button>
+    </div>
+    <form class="ask" id="reword-form">
+      <label class="stack"><span>Tell Nishiii what to change</span><input id="reword-input" type="text" autocomplete="off" required></label>
+      <button class="btn" type="submit" id="reword-send">Send</button>
+    </form>
+    <button class="btn primary" id="reword-use">Use this version</button>
+  </div>
+</div>
+
+<div class="sheet" id="stock-sheet" role="dialog" aria-modal="true" aria-labelledby="stock-title" hidden>
+  <div class="sheet-body">
+    <header class="sheet-head">
+      <h2 id="stock-title">Free footage</h2>
+      <button class="btn quiet close" id="stock-close">Close</button>
+    </header>
+    <form class="ask" id="stock-form">
+      <label class="stack"><span>Search for</span><input id="stock-q" type="search" value="ocean waves" required></label>
+      <button class="btn" type="submit">Search</button>
+    </form>
+    <div class="seg two" id="stock-kind" role="group" aria-label="Kind of footage">
+      <button type="button" data-kind="video" aria-pressed="true">Videos</button>
+      <button type="button" data-kind="photo" aria-pressed="false">Photos</button>
+    </div>
+    <p class="note" id="stock-status" role="status"></p>
+    <div class="grid" id="stock-grid"></div>
+    <button class="btn" id="stock-more" hidden>Show more</button>
+    <p class="note">Photos and videos provided by <a href="https://www.pexels.com" target="_blank" rel="noopener">Pexels</a>. Free to use; tap a result to use it as the background.</p>
+  </div>
+</div>
+
 <script src="app.js"></script>
+<script src="studio.js"></script>
 </body>
 </html>

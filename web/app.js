@@ -342,6 +342,23 @@
       b.setAttribute("aria-pressed", String(b.dataset.style === key)));
     saveDraft();
   }
+  // Puts a chosen quote on the canvas in the current style, with the author as a smaller line below.
+  function setQuote(text, author) {
+    const s = STYLES[state.style];
+    const parts = s.split ? text.split("\n").map((t) => t.trim()).filter(Boolean) : [text.trim()];
+    state.blocks = parts.map((t, i) => newBlock(t, state.style, i));
+    if (author) {
+      const last = state.blocks[state.blocks.length - 1], L = layout(ctx, last);
+      const by = newBlock("— " + author, state.style, state.blocks.length);
+      by.size = Math.max(16, Math.round(last.size * 0.72));
+      by.x = last.x;
+      by.y = Math.min(0.95, last.y + (L.h / 2 + by.size * 2.4) / H);
+      state.blocks.push(by);
+    }
+    select(state.blocks[0].id);
+    saveDraft();
+  }
+
   Object.entries(STYLES).forEach(([key, s]) => {
     const b = document.createElement("button");
     b.type = "button"; b.dataset.style = key; b.setAttribute("aria-pressed", "false");
@@ -375,34 +392,39 @@
     $("len").value = state.length;
     $("done").hidden = true;
   }
+  function loadBackground(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const isVideo = file.type.startsWith("video/") || /\.(mov|mp4|m4v|webm)$/i.test(file.name);
+      const fail = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error(`This ${isVideo ? "video" : "photo"} couldn't be opened. Try a different file.`));
+      };
+      if (isVideo) {
+        const v = document.createElement("video");
+        v.muted = true; v.loop = true; v.playsInline = true; v.setAttribute("playsinline", "");
+        v.addEventListener("loadeddata", () => {
+          clearBackground();
+          state.bg = { kind: "video", el: v, url, name: file.name, file };
+          if (isFinite(v.duration)) state.length = Math.round(Math.min(30, Math.max(5, v.duration)));
+          v.play().catch(() => {});
+          syncBackgroundPane();
+          resolve();
+        }, { once: true });
+        v.addEventListener("error", fail, { once: true });
+        v.src = url; v.load();
+      } else {
+        const img = new Image();
+        img.onload = () => { clearBackground(); state.bg = { kind: "image", el: img, url, name: file.name, file }; syncBackgroundPane(); resolve(); };
+        img.onerror = fail;
+        img.src = url;
+      }
+    });
+  }
   $("file").addEventListener("change", () => {
     const file = $("file").files[0];
     $("file").value = "";
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    const isVideo = file.type.startsWith("video/") || /\.(mov|mp4|m4v|webm)$/i.test(file.name);
-    const fail = () => {
-      URL.revokeObjectURL(url);
-      say(`This ${isVideo ? "video" : "photo"} couldn't be opened. Try a different file.`);
-    };
-    if (isVideo) {
-      const v = document.createElement("video");
-      v.muted = true; v.loop = true; v.playsInline = true; v.setAttribute("playsinline", "");
-      v.addEventListener("loadeddata", () => {
-        clearBackground();
-        state.bg = { kind: "video", el: v, url, name: file.name, file };
-        if (isFinite(v.duration)) state.length = Math.round(Math.min(30, Math.max(5, v.duration)));
-        v.play().catch(() => {});
-        syncBackgroundPane();
-      }, { once: true });
-      v.addEventListener("error", fail, { once: true });
-      v.src = url; v.load();
-    } else {
-      const img = new Image();
-      img.onload = () => { clearBackground(); state.bg = { kind: "image", el: img, url, name: file.name, file }; syncBackgroundPane(); };
-      img.onerror = fail;
-      img.src = url;
-    }
+    if (file) loadBackground(file).catch((e) => say(e.message));
   });
   $("clear-bg").addEventListener("click", clearBackground);
   $("len").addEventListener("input", () => { state.length = +$("len").value; $("len-out").textContent = state.length + " s"; saveDraft(); });
@@ -435,7 +457,7 @@
 
   // ---------- server: passcode and reels ----------
   const TOKEN_KEY = "entangledd.token.v1";
-  const server = { on: false, reels: false, token: "" };
+  const server = { on: false, reels: false, ai: false, stock: false, locked: false, token: "" };
   try { server.token = localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { /* no storage: she signs in each visit */ }
 
   async function api(path, opts = {}) {
@@ -466,6 +488,8 @@
       server.token = data.token;
       try { localStorage.setItem(TOKEN_KEY, server.token); } catch (e2) { /* stays signed in for this visit only */ }
       $("lock").hidden = true;
+      server.locked = false;
+      document.dispatchEvent(new CustomEvent("studio:ready"));
     } catch (e2) {
       err.textContent = e2.message === "Failed to fetch" ? "No connection. Check the internet and try again." : e2.message;
       err.hidden = false;
@@ -477,10 +501,17 @@
       const res = await fetch("/api/status", { headers: { Authorization: "Bearer " + server.token } });
       if (!res.ok) return;                       // no server behind this copy of the app
       const st = await res.json();
-      server.on = true; server.reels = !!st.reels;
-      if (st.configured && !st.signedIn) showLock();
+      server.on = true; server.reels = !!st.reels; server.ai = !!st.ai; server.stock = !!st.stock;
+      server.locked = !!(st.configured && !st.signedIn);
+      if (server.locked) showLock();
     } catch (e) { /* offline or static hosting: the composer still works */ }
-    finally { syncReelPane(); }
+    finally {
+      syncReelPane();
+      $("stock").disabled = !server.stock;
+      $("stock-note").hidden = server.stock;
+      $("reword-open").hidden = !server.ai;
+      if (!server.locked) document.dispatchEvent(new CustomEvent("studio:ready"));
+    }
   }
 
   let reel = null;   // { id, blob } once a reel is finished
@@ -582,6 +613,13 @@
       return true;
     } catch (e) { return false; }
   }
+
+  // What studio.js (Today, Library, rewording, free footage) needs from the composer.
+  window.Studio = {
+    api, server, loadBackground, setQuote, showTab,
+    selectedText: () => (selectedBlock() ? selectedBlock().text : ""),
+    replaceSelectedText: (t) => edit((b) => { b.text = t; }),
+  };
 
   // ---------- start ----------
   async function start() {

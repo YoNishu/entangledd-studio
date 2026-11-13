@@ -39,15 +39,22 @@ weekly report, comment reply drafts.
 
 | Stage | What | Status |
 |---|---|---|
-| 1 | Reel maker (renderer + GitHub workflow) | Done |
-| 2 | Composer app: photo/video background, styles, drag and pinch, image export | Done |
-| 3 | Server: passcode, video and photo reels made from the phone | Built; needs the three secrets set |
-| 3a | Free footage search, carousel posts | Next |
-| 3b | Publishing to Instagram | Needs the Meta developer app settings |
-| 4 | Daily suggestions, reference books/accounts, her own quotes, scan | Needs the Anthropic API key |
-| 5 | Edit with Claude and Nishiii | Needs the Anthropic API key |
-| 6 | Analytics and learning loop | After the first posts exist |
-| 7 | Extras | |
+| 1 | Reel renderer and GitHub workflows | Done |
+| 2 | Composer: photo/video background, styles, drag and pinch, image export | Done |
+| 3 | Server: passcode, reels made from the phone | Done, working on the live app |
+| 4 | Quotes: Today's suggestions, Library (own quotes, books, accounts), page scan, rewording with Nishiii, free footage search | Built; needs `ANTHROPIC_API_KEY` and `PEXELS_API_KEY` |
+| 5 | Instagram: connect the account, caption and hashtags, tap to post reels and carousels, music from Instagram's library | Next |
+| 6 | Insights: nightly stats pull, what-works view, results feeding the suggestions | After 5 |
+| 7 | Reference accounts: their top posts and numbers, read into suggestions | After 5 |
+| 8 | Nishiii as a chat bar that can run any task in the app | After 5 |
+| 9 | Book text: full-text quotes from public-domain books, imported highlights | Later |
+| 10 | Extras: attribution check, duplicate guard across posts, queue and best-time hints, saved styles, more fonts, weekly report, comment reply drafts, HDR clips | Later |
+
+### How suggestions learn today
+
+Each "Use this" and "Skip" is recorded with the quote's theme and tone, and the last 30 of each
+are given to Claude when it picks the next batch. Her own saved quotes are mixed in word for word.
+Results from Instagram (reach, likes, saves) join this once stage 6 exists.
 
 ## Reel look (from the three reference posts)
 
