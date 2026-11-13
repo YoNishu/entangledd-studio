@@ -275,8 +275,15 @@
       return el("li", {}, el("div", {}, el("p", { className: "main", textContent: main }), sub ? el("p", { className: "sub", textContent: sub }) : null, ...extra), remove);
     };
     const bookRow = (b) => {
-      if (b.textUrl) return row("books", b, b.title, b.author, chip("ok", "Quotes are copied from the book's own text"));
-      if (b.textChecked) return row("books", b, b.title, b.author, el("p", { className: "sub", textContent: "Not free to read online, so quotes come from Nishiii's memory." }));
+      if (b.textUrl) {
+        const wrong = el("button", { type: "button", textContent: "Not the right book" });
+        wrong.addEventListener("click", async () => {
+          try { renderLibrary(await send(`library/books/${b.id}/text`, "POST", { forget: true })); } catch (e) { note(friendly(e)); }
+        });
+        return row("books", b, b.title, b.author, chip("ok", "Quotes are copied from the book's own text"),
+          el("p", { className: "sub", textContent: `Matched to "${b.textTitle}"${b.textAuthor ? ` by ${b.textAuthor}` : ""}.` }), wrong);
+      }
+      if (b.textChecked) return row("books", b, b.title, b.author, el("p", { className: "sub", textContent: (b.textNote || "").startsWith("Set aside") ? "Quotes come from Nishiii's memory." : "Not free to read online, so quotes come from Nishiii's memory." }));
       const find = el("button", { type: "button", textContent: "Look for its full text" });
       find.addEventListener("click", () => findText(b.id, find));
       return row("books", b, b.title, b.author, find);
@@ -290,7 +297,7 @@
   // Looks the book up among books that are free to read. Old classics usually are; modern books are not.
   async function findText(id, button) {
     if (button) { button.disabled = true; button.textContent = "Looking…"; }
-    try { renderLibrary(await send(`library/books/${id}/text`, "POST")); }
+    try { renderLibrary(await send(`library/books/${id}/text`, "POST", {})); }
     catch (e) { if (button) { button.disabled = false; button.textContent = "Look for its full text"; note(friendly(e)); } }
   }
 

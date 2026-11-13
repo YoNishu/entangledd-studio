@@ -392,6 +392,12 @@ http.createServer(async (req, res) => {
     }
     if (url.pathname.startsWith("/__gutendex/")) {
       // One free book in the pretend catalogue: "Walden". Anything else is "not found".
+      if (/alchemist/i.test(url.searchParams.get("search") || "")) {
+        // A same-named old play, to check a modern book isn't matched to it when the author is known.
+        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ count: 1, results: [
+          { id: 4081, title: "The Alchemist", languages: ["en"], authors: [{ name: "Jonson, Ben" }], formats: { "text/plain; charset=utf-8": `http://localhost:${PORT}/__media/book.txt` } }] }));
+        return;
+      }
       const hit = /walden/i.test(url.searchParams.get("search") || "");
       res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ count: hit ? 1 : 0, results: hit ? [
         { id: 205, title: "Walden, and On The Duty Of Civil Disobedience", languages: ["en"], authors: [{ name: "Thoreau, Henry David" }],

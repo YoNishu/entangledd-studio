@@ -226,7 +226,9 @@ async function libraryRoutes(request, env, parts) {
   if (kind === "books" && id && parts[3] === "text" && method === "POST") {
     const book = lib.books.find((x) => x.id === id);
     if (!book) return fail(404, "That book is no longer on the list.");
-    Object.assign(book, await findBookText(env, book));
+    // "forget" is for when the text that was found belongs to a different book of the same name.
+    if ((await body(request)).forget) Object.assign(book, { textChecked: Date.now(), textUrl: "", textTitle: "", textAuthor: "", textNote: "Set aside: the text found was a different book." });
+    else Object.assign(book, await findBookText(env, book));
     await saveDoc(env, "library", lib);
     return json(lib);
   }
@@ -327,15 +329,19 @@ async function findBookText(env, book) {
     data = await res.json();
   } catch (e) { throw new UserError(502, "The free-books catalogue couldn't be reached. Try again later."); }
   const want = norm(book.title);
-  // Prefer an English edition whose title matches, most downloaded first (the catalogue's own order).
+  const surname = book.author ? norm(book.author).split(" ").pop() : "";
+  // An English edition whose title matches, most downloaded first (the catalogue's own order). When she gave
+  // the author, the author must match too, so a modern book is never mistaken for an old one of the same name.
   const pick = (data.results || []).find((r) => {
     const t = norm(r.title || "");
     const plain = Object.entries(r.formats || {}).find(([k]) => k.startsWith("text/plain"));
-    return plain && (r.languages || []).includes("en") && (t === want || t.startsWith(want + " ") || want.startsWith(t + " ") || t.includes(want));
+    const byHer = !surname || (r.authors || []).some((a) => norm(a.name || "").split(" ").includes(surname));
+    return plain && byHer && (r.languages || []).includes("en") && (t === want || t.startsWith(want + " ") || (!!surname && ` ${t} `.includes(` ${want} `)));
   });
   if (!pick) return { textChecked: Date.now(), textUrl: "", textNote: "No free full text was found, which is normal for modern books. Quotes from it come from Nishiii's memory." };
   const url = Object.entries(pick.formats).find(([k]) => k.startsWith("text/plain"))[1];
-  return { textChecked: Date.now(), textUrl: url, textTitle: oneLine(pick.title, 160), gutenbergId: pick.id,
+  const flip = (n) => { const m = /^([^,]+),\s*([^,]+)$/.exec(n || ""); return m ? `${m[2]} ${m[1]}` : n || ""; };
+  return { textChecked: Date.now(), textUrl: url, textTitle: oneLine(pick.title, 160), textAuthor: oneLine(flip(((pick.authors || [])[0] || {}).name), 80), gutenbergId: pick.id,
     textNote: "Full text found on Project Gutenberg. Quotes from this book are copied from the text itself." };
 }
 
@@ -349,9 +355,9 @@ async function loadBookText(env, book) {
   if (!res.ok) return "";
   let text = (await res.text()).slice(0, 2_500_000);
   // Drop the catalogue's own notices before and after the book.
-  const start = text.search(/\*\*\* ?START OF (THE|THIS) PROJECT GUTENBERG[^\n]*\n/i);
-  if (start >= 0) text = text.slice(text.indexOf("\n", start) + 1);
-  const end = text.search(/\*\*\* ?END OF (THE|THIS) PROJECT GUTENBERG/i);
+  const start = Math.max(text.indexOf("*** START OF"), text.indexOf("***START OF"));
+  if (start >= 0 && start < 20000) text = text.slice(text.indexOf("\n", start) + 1);
+  const end = Math.max(text.lastIndexOf("*** END OF"), text.lastIndexOf("***END OF"));
   if (end >= 0) text = text.slice(0, end);
   return text;
 }
@@ -365,7 +371,6 @@ Reply with a JSON array only: [{"text": "...", "theme": "one or two words", "ton
 async function quotesFromBookText(env, book, want, about, taste, seen) {
   const text = await loadBookText(env, book);
   if (text.length < 2000) return [];
-  const flat = flatten(text);
   const out = [];
   // Two tries at most: if the first sample of the book gives too few usable lines, look at other pages.
   for (let round = 0; round < 2 && out.length < want; round++) {
@@ -379,12 +384,13 @@ async function quotesFromBookText(env, book, want, about, taste, seen) {
     }
     const answer = parseJson(await claude(env, { system: BOOKTEXT_SYSTEM, maxTokens: 1800, messages: [{ role: "user", content:
       `Book: ${book.title}${book.author ? ` by ${book.author}` : ""}\nPick up to ${want - out.length + 2} lines.\n${about ? `about: ${about}\n` : ""}${taste ? `taste: ${JSON.stringify({ loves: taste.loves, avoids: taste.avoids, herNotes: taste.herNotes })}\n` : ""}\nPassages:\n${passages.map((p, i) => `--- ${i + 1} ---\n${p}`).join("\n")}` }] }));
+    const flat = passages.map(flatten).join("\n");
     for (const q of Array.isArray(answer) ? answer : []) {
       const quote = flatten(q && q.text).replace(/^"+|"+$/g, "");
-      // Kept only if the exact words are really in the book.
+      // Kept only if the exact words are really in the pages that were read.
       if (quote.length < 20 || quote.length > 400 || !flat.includes(quote) || seen.has(norm(quote))) continue;
       if (/^(chapter|book|part|section)\s+[\divxlc]+\b/i.test(quote)) continue;
-      out.push({ text: quote, author: book.author || "", source: { type: "book", title: book.title }, theme: oneLine(q.theme, 30), tone: oneLine(q.tone, 20), verify: false, fromText: true });
+      out.push({ text: quote, author: book.author || book.textAuthor || "", source: { type: "book", title: book.title }, theme: oneLine(q.theme, 30), tone: oneLine(q.tone, 20), verify: false, fromText: true });
       seen.add(norm(quote));
       if (out.length >= want) break;
     }
