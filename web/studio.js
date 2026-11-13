@@ -112,7 +112,8 @@
       item.author ? el("p", { className: "by", textContent: "— " + item.author }) : null,
       el("p", { className: "src", textContent: sourceLine(item.source) }),
       item.askedFor ? chip("info", `From: ${item.askedFor}`) : null,
-      item.verify ? chip("bad", "Check the wording and author before posting") : null,
+      item.fromText ? chip("ok", "Copied word for word from the book's text")
+        : item.verify ? chip("bad", "Check the wording and author before posting") : null,
       fateLine(item),
       el("div", { className: "acts" }, use, reword, skip));
 
@@ -265,18 +266,32 @@
   function note(msg) { $("library-note").textContent = msg; $("library-note").hidden = !msg; if (msg) $("library-note").scrollIntoView({ block: "nearest" }); }
 
   function renderLibrary(lib) {
-    const row = (kind, item, main, sub) => {
+    const row = (kind, item, main, sub, ...extra) => {
       const remove = el("button", { textContent: "Remove" });
       remove.setAttribute("aria-label", `Remove ${main.slice(0, 40)}`);
       remove.addEventListener("click", async () => {
         try { renderLibrary(await send(`library/${kind}/${item.id}`, "DELETE")); } catch (e) { note(friendly(e)); }
       });
-      return el("li", {}, el("div", {}, el("p", { className: "main", textContent: main }), sub ? el("p", { className: "sub", textContent: sub }) : null), remove);
+      return el("li", {}, el("div", {}, el("p", { className: "main", textContent: main }), sub ? el("p", { className: "sub", textContent: sub }) : null, ...extra), remove);
+    };
+    const bookRow = (b) => {
+      if (b.textUrl) return row("books", b, b.title, b.author, chip("ok", "Quotes are copied from the book's own text"));
+      if (b.textChecked) return row("books", b, b.title, b.author, el("p", { className: "sub", textContent: "Not free to read online, so quotes come from Nishiii's memory." }));
+      const find = el("button", { type: "button", textContent: "Look for its full text" });
+      find.addEventListener("click", () => findText(b.id, find));
+      return row("books", b, b.title, b.author, find);
     };
     const fill = (id, rows, empty) => $(id).replaceChildren(...(rows.length ? rows : [el("li", {}, el("p", { className: "empty", textContent: empty }))]));
     fill("list-quotes", lib.quotes.slice().reverse().map((q) => row("quotes", q, q.text, [q.author, q.from].filter(Boolean).join(", "))), "No quotes saved yet.");
-    fill("list-books", lib.books.map((b) => row("books", b, b.title, b.author)), "No books yet.");
+    fill("list-books", lib.books.map(bookRow), "No books yet.");
     fill("list-screen", (lib.screen || []).map((x) => row("screen", x, x.title, x.kind === "series" ? "Series" : "Film")), "No films or series yet.");
+  }
+
+  // Looks the book up among books that are free to read. Old classics usually are; modern books are not.
+  async function findText(id, button) {
+    if (button) { button.disabled = true; button.textContent = "Looking…"; }
+    try { renderLibrary(await send(`library/books/${id}/text`, "POST")); }
+    catch (e) { if (button) { button.disabled = false; button.textContent = "Look for its full text"; note(friendly(e)); } }
   }
 
   async function loadLibrary() {
@@ -294,8 +309,16 @@
   }
   addForm("add-quote", "quotes", () => ({ text: $("q-text").value, author: $("q-author").value, from: $("q-from").value }),
     () => { $("q-text").value = ""; });
-  addForm("add-book", "books", () => ({ title: $("b-title").value, author: $("b-author").value }),
-    () => { $("b-title").value = ""; $("b-author").value = ""; });
+  $("add-book").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const lib = await send("library/books", "POST", { title: $("b-title").value, author: $("b-author").value });
+      renderLibrary(lib);
+      $("b-title").value = ""; $("b-author").value = ""; note("");
+      const added = lib.books[lib.books.length - 1];
+      if (added && !added.textChecked) findText(added.id);     // in the background; the row updates when the answer is in
+    } catch (err) { note(friendly(err)); }
+  });
 
   addForm("add-screen", "screen", () => ({ title: $("s-title").value, kind: $("s-kind").value }), () => { $("s-title").value = ""; });
 
@@ -322,6 +345,57 @@
         return node;
       }));
     } catch (e) { $("scan-results").replaceChildren(el("p", { className: "flag", textContent: friendly(e) })); }
+  });
+
+  // Import: highlights exported from an e-reader, or any text file of quotes.
+  const flipName = (a) => { const m = /^([^,]+),\s*([^,]+)$/.exec(a); return m ? `${m[2]} ${m[1]}` : a; };
+  function parseHighlights(text, isHtml) {
+    const out = [];
+    if (isHtml) {
+      // The notebook the Kindle app emails: a heading says "Highlight" or "Note", the next block holds the words.
+      const doc = new DOMParser().parseFromString(text, "text/html");
+      const pick = (sel) => ((doc.querySelector(sel) || {}).textContent || "").trim();
+      const from = pick(".bookTitle") || pick("title"), author = flipName(pick(".authors"));
+      const blocks = [...doc.querySelectorAll(".noteText")];
+      for (const n of blocks) {
+        const head = n.previousElementSibling;
+        if (head && /note/i.test(head.textContent) && !/highlight/i.test(head.textContent)) continue;     // her own notes, not quotes
+        out.push({ text: n.textContent.trim(), from, author });
+      }
+      if (!blocks.length) for (const para of (doc.body ? doc.body.innerText || doc.body.textContent : "").split(/\n\s*\n/)) out.push({ text: para.trim(), from: "", author: "" });
+    } else if (/^==========\s*$/m.test(text)) {
+      // A Kindle's "My Clippings.txt": title line, a line about where it was marked, a blank line, then the words.
+      for (const entry of text.split(/^==========\s*$/m)) {
+        const ls = entry.replace(/\ufeff/g, "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        if (ls.length < 3 || /bookmark/i.test(ls[1]) || /your note/i.test(ls[1])) continue;
+        const m = /^(.*?)\s*\(([^()]+)\)$/.exec(ls[0]);
+        out.push({ text: ls.slice(2).join(" "), from: m ? m[1] : ls[0], author: m ? flipName(m[2]) : "" });
+      }
+    } else {
+      const paras = text.split(/\r?\n\s*\r?\n/).map((x) => x.trim()).filter(Boolean);
+      for (const para of paras.length > 1 ? paras : text.split(/\r?\n/)) out.push({ text: para.replace(/\s+/g, " ").trim(), from: "", author: "" });
+    }
+    const seen = new Set();
+    return out.filter((q) => q.text.length >= 12 && q.text.length <= 500 && !seen.has(q.text.toLowerCase()) && seen.add(q.text.toLowerCase()));
+  }
+  $("import").addEventListener("change", async () => {
+    const file = $("import").files[0];
+    $("import").value = "";
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { note("That file is too large to be a highlights file. It should be under 5 MB."); return; }
+    try {
+      const found = parseHighlights(await file.text(), /\.html?$/i.test(file.name) || file.type === "text/html");
+      if (!found.length) { note("No highlights were found in that file. It should be a Kindle highlights file, or text with one quote per paragraph."); return; }
+      const books = [...new Set(found.map((q) => q.from).filter(Boolean))];
+      const ok = await confirmDialog({ title: `Add ${found.length} highlight${found.length === 1 ? "" : "s"}?`,
+        body: `${books.length ? `From ${books.slice(0, 3).join(", ")}${books.length > 3 ? ` and ${books.length - 3} more` : ""}. ` : ""}They go into your own quotes. Any you already saved are left out.${found.length > 600 ? " Only the first 600 are added in one go." : ""}`,
+        yes: "Add them" });
+      if (!ok) return;
+      const lib = await send("library/import", "POST", { items: found.slice(0, 600) });
+      renderLibrary(lib);
+      note(lib.added ? `Added ${lib.added} highlight${lib.added === 1 ? "" : "s"} to your own quotes.${lib.added < Math.min(found.length, 600) ? " The rest were already saved, or your list is full at 500." : ""}`
+        : "Nothing new was added: those were already saved, or your list is full at 500.");
+    } catch (e) { note(friendly(e)); }
   });
 
   // ---------- Library: reels and pages she loves ----------
@@ -446,6 +520,65 @@
     openReword({ quote: text, author: "", apply: (quote) => S.replaceSelectedText(quote) });
   });
 
+  // ---------- Check who said this ----------
+  $("check-open").addEventListener("click", async () => {
+    const box = $("check-result"), btn = $("check-open");
+    const quote = S.quoteOnly(), given = S.author();
+    box.hidden = false;
+    if (!quote) { box.replaceChildren(el("p", { className: "note", textContent: "Put a quote on the canvas first." })); return; }
+    btn.disabled = true; btn.textContent = "Checking…";
+    try {
+      const r = await send("check", "POST", { text: quote, author: given });
+      const known = r.author && r.author.toLowerCase() !== "unknown";
+      const verdicts = {
+        matches: ["ok", "The author and the wording look right"],
+        different_author: ["bad", given ? `Probably not by ${given}` : "The author looks wrong"],
+        altered_wording: ["wait", "The wording differs from the original"],
+        found: ["info", known ? `Probably by ${r.author}` : "No confirmed author"],
+        unsure: ["gone", "Nishiii doesn't recognise this line"],
+      };
+      const [kind, words] = verdicts[r.verdict] || verdicts.unsure;
+      const kids = [chip(kind, words)];
+      if (r.note) kids.push(el("p", { textContent: r.note }));
+      if (r.work) kids.push(el("p", { className: "src", textContent: `From: ${r.work}` }));
+      const act = (label, fn) => { const b = el("button", { className: "btn", type: "button", textContent: label }); b.addEventListener("click", () => { fn(); box.hidden = true; }); kids.push(b); };
+      if (["different_author", "found"].includes(r.verdict) && known && r.author !== given) act(`Credit ${r.author}`, () => { S.setAuthor(r.author); onCanvas.author = r.author; });
+      if (r.verdict === "different_author" && !known && given) act("Take the name off", () => { S.setAuthor(""); onCanvas.author = ""; });
+      if (r.verdict === "altered_wording" && r.wording) { kids.push(el("p", { className: "q", textContent: r.wording })); act("Use the original wording", () => S.setWords(r.wording)); }
+      kids.push(el("p", { className: "note", textContent: "This is from Nishiii's memory, not a lookup. Treat it as a strong hint, and look the quote up before posting if it matters." }));
+      box.replaceChildren(...kids);
+    } catch (e) { box.replaceChildren(el("p", { className: "flag", textContent: friendly(e) })); }
+    finally { btn.disabled = false; btn.textContent = "Check who said this"; }
+  });
+
+  // ---------- Saved looks ----------
+  function renderLooks(looks) {
+    $("looks").replaceChildren(...(looks.length ? looks.map((look) => {
+      const apply = el("button", { className: "apply", type: "button", textContent: look.name });
+      apply.setAttribute("aria-label", `Use the look ${look.name}`);
+      apply.addEventListener("click", () => { $("look-note").textContent = S.applyLook(look) ? `The words are now in "${look.name}".` : "Write some words on the canvas first."; });
+      const remove = el("button", { type: "button", textContent: "Remove" });
+      remove.setAttribute("aria-label", `Remove the look ${look.name}`);
+      remove.addEventListener("click", async () => {
+        try { renderLooks((await send("looks/" + look.id, "DELETE")).looks); } catch (e) { $("look-note").textContent = friendly(e); }
+      });
+      return el("li", {}, el("div", {}, apply, el("p", { className: "sub", textContent: look.shape === "post" ? "Post shape (4:5)" : "Reel shape (9:16)" })), remove);
+    }) : [el("li", {}, el("p", { className: "empty", textContent: "None saved yet." }))]));
+  }
+  async function loadLooks() {
+    $("looks-wrap").hidden = !S.server.on;
+    if (!S.server.on) return;
+    try { renderLooks((await getJson("looks")).looks); } catch (e) { $("look-note").textContent = friendly(e); }
+  }
+  $("look-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      renderLooks((await send("looks", "POST", { name: $("look-name").value, ...S.currentLook() })).looks);
+      $("look-note").textContent = `Saved "${$("look-name").value.trim()}". Saving another look under the same name replaces it.`;
+      $("look-name").value = "";
+    } catch (err) { $("look-note").textContent = friendly(err); }
+  });
+
   // ---------- Free footage ----------
   const stock = { kind: "video", q: "", page: 1 };
   const status = (msg) => { $("stock-status").textContent = msg; };
@@ -524,6 +657,11 @@
     } else if (p.state === "published") kids.push(el("p", { className: "src", textContent: "Numbers appear a little while after posting." }));
     const links = el("div", { className: "links" });
     if (p.permalink) links.append(el("a", { href: p.permalink, target: "_blank", rel: "noopener", textContent: "Open on Instagram" }));
+    if (p.state === "published") {
+      const talk = el("button", { type: "button", textContent: "Comments" });
+      talk.addEventListener("click", () => openComments(p));
+      links.append(talk);
+    }
     const remove = el("button", { type: "button", textContent: "Remove from this list" });
     remove.addEventListener("click", async () => {
       try { await send("posts/" + p.id, "DELETE"); loadPosts(); } catch (e) { $("posts-note").textContent = friendly(e); }
@@ -531,6 +669,100 @@
     links.append(remove);
     kids.push(links);
     return el("article", { className: "card" }, ...kids);
+  }
+
+  // The week at a glance, on top of Posts.
+  function renderWeek(w) {
+    const card = $("week-card");
+    card.hidden = !(w.thisWeek.posts || w.lastWeek.posts);
+    if (card.hidden) return;
+    const cell = (name, key) => el("div", {}, el("dt", { textContent: name }), el("dd", { textContent: compact(w.thisWeek[key]) }),
+      el("small", { textContent: w.lastWeek.posts ? `${compact(w.lastWeek[key])} the week before` : "" }));
+    const kids = [el("h2", { textContent: "Your last 7 days" }),
+      el("dl", { className: "nums" }, cell("Posts", "posts"), cell("Reach", "reach"), cell("Likes", "likes"), cell("Saves", "saved"), cell("Shares", "shares"), cell("Comments", "comments"))];
+    if (w.note) kids.push(el("p", { className: "q", textContent: w.note }));
+    if (w.best) kids.push(el("p", { className: "src", textContent: `Went furthest: "${(w.best.quote || "a post").replace(/\s+/g, " ").slice(0, 70)}", reaching ${compact((w.best.metrics || {}).reach || (w.best.metrics || {}).views)}.` }));
+    if (w.times.length) kids.push(el("p", { className: "src", textContent: `Best time so far: ${w.times[0].name.toLowerCase()}, about ${compact(w.times[0].reach)} reach a post across ${w.times[0].posts} posts. Next is ${w.times[1].name.toLowerCase()} at ${compact(w.times[1].reach)}.` }));
+    else if (w.measured < 6) kids.push(el("p", { className: "src", textContent: `Best times to post show up here after six posts have numbers. So far: ${w.measured}.` }));
+    if (w.themes.length) kids.push(el("p", { className: "src", textContent: `Themes that travel furthest: ${w.themes.map((t) => `${t.name} (${compact(t.reach)})`).join(", ")}.` }));
+    card.replaceChildren(...kids);
+    $("queue-note").textContent = w.times.length ? `Each one posts when you tap it. Your posts have done best in the ${w.times[0].name.toLowerCase()} so far.` : "Each one posts when you tap it. Finished reels are kept for a week.";
+  }
+
+  // Reels made earlier and kept to post later.
+  function queueCard(q) {
+    const go = el("button", { className: "btn primary", type: "button", textContent: "Post this now" });
+    go.addEventListener("click", () => openPost("reel", q));
+    const drop = el("button", { className: "btn quiet", type: "button", textContent: "Remove" });
+    drop.addEventListener("click", async () => {
+      try { renderQueue((await send("queue/" + q.id, "DELETE")).queue); } catch (e) { $("posts-note").textContent = friendly(e); }
+    });
+    return el("article", { className: "card" }, el("p", { className: "q", textContent: q.quote || "A reel" }), chip("wait", "Made, not posted"),
+      el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that it has to be created again.` }), el("div", { className: "acts" }, go, drop));
+  }
+  function renderQueue(queue) {
+    $("queue-wrap").hidden = !queue.length;
+    $("list-queue").replaceChildren(...queue.map(queueCard));
+  }
+  function resetQueueButton() { $("queue-add").disabled = false; $("queue-add").textContent = "Keep it to post later"; }
+  $("queue-add").addEventListener("click", async () => {
+    const reel = S.currentReel();
+    if (!reel) return;
+    const btn = $("queue-add");
+    btn.disabled = true;
+    try {
+      await send("queue", "POST", { jobId: reel.id, quote: S.quoteText(), ...onCanvas });
+      btn.textContent = "Kept. Find it in Posts, under Waiting to be posted.";
+    } catch (e) { btn.disabled = false; btn.textContent = friendly(e); }
+  });
+  $("make-reel").addEventListener("click", resetQueueButton);
+  $("again").addEventListener("click", resetQueueButton);
+
+  // Comments on one post: read them, let Nishiii draft a reply, and send it only when she taps.
+  $("comments-close").addEventListener("click", () => { $("comments-sheet").hidden = true; });
+  $("comments-sheet").addEventListener("click", (e) => { if (e.target === $("comments-sheet")) $("comments-sheet").hidden = true; });
+  function commentCard(post, c) {
+    const box = el("textarea", { rows: 2, placeholder: "Your reply" });
+    box.setAttribute("aria-label", `Reply to ${c.username}`);
+    const draft = el("button", { className: "btn", type: "button", textContent: "Draft a reply with Nishiii" });
+    const sendIt = el("button", { className: "btn primary", type: "button", textContent: "Send reply" });
+    const state = el("p", { className: "who" });
+    state.setAttribute("role", "status");
+    draft.hidden = !S.server.ai;
+    draft.addEventListener("click", async () => {
+      draft.disabled = true; draft.textContent = "Writing…";
+      try {
+        const { reply } = await send(`posts/${post.id}/comments/${c.id}/draft`, "POST", { text: c.text, username: c.username });
+        if (reply) { box.value = reply; state.textContent = "A draft. Change anything, then send."; }
+        else state.textContent = "Nishiii thinks this one doesn't need a reply.";
+      } catch (e) { state.textContent = friendly(e); }
+      finally { draft.disabled = false; draft.textContent = "Draft a reply with Nishiii"; }
+    });
+    sendIt.addEventListener("click", async () => {
+      if (!box.value.trim()) { state.textContent = "Write the reply first."; return; }
+      sendIt.disabled = true;
+      try {
+        await send(`posts/${post.id}/comments/${c.id}/reply`, "POST", { message: box.value });
+        state.textContent = "Replied on Instagram.";
+        box.before(el("p", { className: "theirs", textContent: `You: ${box.value.trim()}` }));
+        box.remove(); draft.remove(); sendIt.remove();
+      } catch (e) { sendIt.disabled = false; state.textContent = friendly(e); }
+    });
+    return el("div", { className: "comment" },
+      el("p", { className: "who", textContent: `@${c.username || "someone"}${c.likes ? `, ${c.likes} like${c.likes === 1 ? "" : "s"}` : ""}` }),
+      el("p", { textContent: c.text }),
+      ...c.replies.map((r) => el("p", { className: "theirs", textContent: `${r.mine ? "You" : "@" + r.username}: ${r.text}` })),
+      box, state, el("div", { className: "pair" }, draft, sendIt));
+  }
+  async function openComments(post) {
+    $("comments-list").replaceChildren();
+    $("comments-note").textContent = "Fetching comments from Instagram…";
+    $("comments-sheet").hidden = false;
+    try {
+      const { comments } = await getJson(`posts/${post.id}/comments`);
+      $("comments-list").replaceChildren(...comments.map((c) => commentCard(post, c)));
+      $("comments-note").textContent = comments.length ? "Nothing is sent until you tap Send reply." : "No comments on this post yet.";
+    } catch (e) { $("comments-note").textContent = friendly(e); }
   }
 
   async function loadIg() {
@@ -545,6 +777,9 @@
     try {
       const { posts } = await getJson("posts");
       $("list-posts").replaceChildren(...posts.map(postCard));
+      // After the list, so the week's numbers include what was just refreshed from Instagram.
+      getJson("report").then(renderWeek).catch(() => { $("week-card").hidden = true; });
+      getJson("queue").then((r) => renderQueue(r.queue)).catch(() => {});
       $("posts-note").textContent = !(ig && ig.connected) ? "Instagram isn't connected. Connect it in Settings, at the top right."
         : posts.length ? "Posts you delete on Instagram disappear from here the next time this opens." : "Nothing posted from the app yet.";
     } catch (e) { $("posts-note").textContent = friendly(e); }
@@ -686,6 +921,7 @@
 
   // ---------- Post to Instagram ----------
   let music = null, posting = false, player = null, postMode = "reel";
+  let waiting = null;      // set when posting a reel from the waiting list instead of the one just made
   const postStatus = (msg) => { $("post-status").textContent = msg; };
   function chooseMusic(item) {
     music = item;
@@ -727,8 +963,10 @@
   $("post-close").addEventListener("click", closePost);
   $("post-sheet").addEventListener("click", (e) => { if (e.target === $("post-sheet") && !posting) closePost(); });
 
-  async function openPost(mode) {
-    if (mode === "reel" && !S.currentReel()) return;
+  async function openPost(mode, fromQueue) {
+    if (mode === "reel" && !fromQueue && !S.currentReel()) return;
+    if ((fromQueue || null) !== waiting) $("post-caption").value = "";
+    waiting = fromQueue || null;
     await loadIg();
     if (!ig || !ig.connected) { openSettings("Connect Instagram here first, then go back to Create to post."); return; }
     postMode = mode;
@@ -746,18 +984,19 @@
     const btn = $("post-write");
     btn.disabled = true; btn.textContent = "Writing…";
     try {
-      const r = await send("caption", "POST", { quote: S.quoteText(), author: onCanvas.author });
+      const r = await send("caption", "POST", waiting ? { quote: waiting.quote, author: waiting.author } : { quote: S.quoteText(), author: onCanvas.author });
       $("post-caption").value = [r.caption, r.hashtags.join(" ")].filter(Boolean).join("\n\n");
     } catch (e) { postStatus(friendly(e)); }
     finally { btn.disabled = false; btn.textContent = "Write a caption with Nishiii"; }
   });
 
   $("post-go").addEventListener("click", async () => {
-    const reel = S.currentReel();
+    const reel = waiting ? { id: waiting.jobId } : S.currentReel();
     if (posting || (postMode === "reel" && !reel) || (postMode === "carousel" && slides.length < 2)) return;
     posting = true; $("post-go").disabled = true;
+    const sent = waiting ? { author: waiting.author, theme: waiting.theme, tone: waiting.tone, source: waiting.source, suggestionId: waiting.suggestionId } : onCanvas;
     try {
-      const about = { caption: $("post-caption").value, quote: S.quoteText(), ...onCanvas };
+      const about = { caption: $("post-caption").value, quote: waiting ? waiting.quote : S.quoteText(), ...sent };
       let post;
       if (postMode === "carousel") {
         const ids = [];
@@ -780,7 +1019,8 @@
       }
       if (post.state === "failed") throw new Error(post.error || "Instagram didn't accept it.");
       postStatus("Posted to Instagram.");
-      const from = [...(todayData ? todayData.items : []), ...(askedData ? askedData.items : [])].find((i) => i.id === onCanvas.suggestionId);
+      const from = [...(todayData ? todayData.items : []), ...(askedData ? askedData.items : [])].find((i) => i.id === sent.suggestionId);
+      if (waiting) { waiting = null; if (!$("view-posts").hidden) loadPosts(); }
       if (from) from.posted = "posted";
       if (postMode === "carousel") { slides.forEach((sl) => URL.revokeObjectURL(sl.url)); slides.length = 0; renderSlides(); }
       if (post.permalink) { $("post-link").href = post.permalink; $("post-link").hidden = false; }
@@ -846,6 +1086,7 @@
     if (started) { if (current === "today") loadToday(true); return; }
     started = true;
     $("chat-open").hidden = !S.server.ai;
+    loadLooks();
     show(S.server.ai ? "today" : "create");
   });
 })();

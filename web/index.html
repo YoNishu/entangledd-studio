@@ -62,10 +62,15 @@
     <input type="file" id="scan" accept="image/*" capture="environment">
   </label>
   <div class="cards" id="scan-results"></div>
+  <label class="btn file">
+    Import highlights from a file
+    <input type="file" id="import" accept=".txt,.html,.htm,text/plain,text/html">
+  </label>
+  <p class="note">Takes a Kindle highlights file ("My Clippings.txt", or the notebook the Kindle app emails you), or any text file with one quote per paragraph.</p>
   <ul class="list" id="list-quotes"></ul>
 
   <h2>Books you've read</h2>
-  <p class="note">Nishiii looks for lines from these when choosing the day's quotes.</p>
+  <p class="note">Nishiii looks for lines from these when choosing the day's quotes. For older books that are free to read online, lines are copied from the book's own text, so the wording is exact.</p>
   <form class="add row2" id="add-book">
     <label class="stack"><span>Title</span><input id="b-title" type="text" required></label>
     <label class="stack"><span>Author</span><input id="b-author" type="text"></label>
@@ -98,6 +103,13 @@
 
 <section class="page" id="view-posts" hidden>
   <h2>Posts</h2>
+  <article class="card week" id="week-card" hidden></article>
+  <div id="queue-wrap" hidden>
+    <h2>Waiting to be posted</h2>
+    <p class="note" id="queue-note"></p>
+    <div class="cards" id="list-queue"></div>
+    <h2>Posted</h2>
+  </div>
   <p class="note" id="posts-note" role="status"></p>
   <div class="cards" id="list-posts"></div>
 
@@ -166,6 +178,8 @@
       </label>
       <label class="check" id="author-row" hidden><input type="checkbox" id="show-author" checked> Show the author's name</label>
       <button class="btn" id="reword-open" hidden>Reword with Nishiii</button>
+      <button class="btn" id="check-open" hidden>Check who said this</button>
+      <div id="check-result" role="status" hidden></div>
       <div class="pair">
         <button class="btn" id="add">Add a separate line</button>
         <button class="btn quiet" id="remove">Remove this line</button>
@@ -198,6 +212,15 @@
       </div>
       <p class="note">A style sets the font, size, colour and position in one tap. You can adjust anything afterwards.</p>
       <div class="styles" id="styles"></div>
+      <div class="stack" id="looks-wrap" hidden>
+        <span>Your saved looks</span>
+        <ul class="list looks" id="looks"></ul>
+        <form class="inline" id="look-form">
+          <label class="stack"><span>Save the look on the canvas as</span><input id="look-name" type="text" maxlength="30" placeholder="A name, such as Evening sea" required></label>
+          <button class="btn" type="submit">Save look</button>
+        </form>
+        <p class="note" id="look-note" role="status">A look keeps the font, size, colour and where each line sits. Tap one to put the current words in it.</p>
+      </div>
     </div>
 
     <div class="pane" id="pane-save" role="tabpanel" aria-labelledby="tab-save" hidden>
@@ -229,6 +252,7 @@
       <div id="reel-result" hidden>
         <p class="status">Your reel is ready.</p>
         <button class="btn primary" id="post-open" hidden>Post to Instagram</button>
+        <button class="btn" id="queue-add" hidden>Keep it to post later</button>
         <button class="btn" id="save-reel">Save to phone</button>
         <video id="result" controls playsinline loop></video>
         <button class="btn quiet" id="again">Start a new one</button>
@@ -292,6 +316,17 @@
     <label class="stack"><span>About (optional), such as "letting go" or "the sea"</span><input id="ask-about" type="text"></label>
     <p class="status" id="ask-status" role="status"></p>
     <button class="btn primary" id="ask-go">Get 5 quotes</button>
+  </div>
+</div>
+
+<div class="sheet" id="comments-sheet" role="dialog" aria-modal="true" aria-labelledby="comments-title" hidden>
+  <div class="sheet-body">
+    <header class="sheet-head">
+      <h2 id="comments-title">Comments</h2>
+      <button class="btn quiet close" id="comments-close">Close</button>
+    </header>
+    <p class="note" id="comments-note" role="status"></p>
+    <div class="cards" id="comments-list"></div>
   </div>
 </div>
 

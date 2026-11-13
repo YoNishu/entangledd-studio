@@ -162,6 +162,24 @@ def make_text_layer(quote, author, handle):
     return layer
 
 
+def hdr_fix(path):
+    """Filter text that brings an HDR clip (as recent iPhones record) down to normal colours.
+
+    Without it, HDR footage comes out grey and washed-out, because its brightness values are read as if
+    they were ordinary video. Returns "" for ordinary clips, or when this ffmpeg lacks the needed filter."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_transfer",
+         "-of", "csv=p=0", path], capture_output=True, text=True)
+    if out.stdout.strip().split(",")[0] not in ("smpte2084", "arib-std-b67"):
+        return ""
+    filters = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True).stdout
+    if " zscale " not in filters or " tonemap " not in filters:
+        print("HDR clip, but this ffmpeg has no zscale/tonemap filter: colours may look washed-out.")
+        return ""
+    return (",zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=mobius:desat=0,"
+            "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
+
+
 def render(args):
     dur = args.duration
     frames = int(dur * FPS)
@@ -184,7 +202,7 @@ def render(args):
             cmd += ["-stream_loop", "-1", "-i", args.bg]
             dim = f",eq=brightness={-args.dim / 2:.3f}" if args.dim > 0 else ""
             bg = (f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
-                  f"fps={FPS},setsar=1{dim}[bg]")
+                  f"fps={FPS},setsar=1{hdr_fix(args.bg)}{dim}[bg]")
         else:
             bg_png = os.path.join(tmp, "bg.png")
             make_background(args.bg, args.palette, args.dim).save(bg_png)
@@ -225,6 +243,7 @@ def render(args):
             "-map", "[v]", "-map", "[a]",
             "-t", str(dur), "-r", str(FPS),
             "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
             "-movflags", "+faststart",
             args.out,

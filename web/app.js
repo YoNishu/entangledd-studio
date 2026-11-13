@@ -15,6 +15,15 @@
     { id: "poppins", label: "Poppins", css: (s) => `400 ${s}px "Poppins"` },
     { id: "poppins-light-italic", label: "Poppins light italic", css: (s) => `italic 300 ${s}px "Poppins"` },
     { id: "poppins-italic", label: "Poppins italic", css: (s) => `italic 400 ${s}px "Poppins"` },
+    // Fetched in the background after the app opens, so they don't slow the first screen.
+    { id: "crimson", label: "Crimson, a book serif", extra: true, css: (s) => `400 ${s}px "Crimson Pro"` },
+    { id: "crimson-italic", label: "Crimson italic", extra: true, css: (s) => `italic 400 ${s}px "Crimson Pro"` },
+    { id: "baskerville", label: "Baskerville, classic", extra: true, css: (s) => `400 ${s}px "Libre Baskerville"` },
+    { id: "young", label: "Young Serif, bold and warm", extra: true, css: (s) => `400 ${s}px "Young Serif"` },
+    { id: "italiana", label: "Italiana, fine and tall", extra: true, css: (s) => `400 ${s}px "Italiana"` },
+    { id: "poiret", label: "Poiret, thin and round", extra: true, css: (s) => `400 ${s}px "Poiret One"` },
+    { id: "hand", label: "Handwritten", extra: true, css: (s) => `400 ${s}px "Nothing You Could Do"` },
+    { id: "typewriter", label: "Typewriter", extra: true, css: (s) => `400 ${s}px "DM Mono"` },
   ];
   const COLOURS = [
     { name: "Cream", hex: "#F3E9D2" },
@@ -392,6 +401,52 @@
     by.y = Math.min(0.95, last.y + (L.h / 2 + by.size * 2.4) / H);
     state.blocks.push(by);
   }
+  // Changes or removes the credited author without touching how the quote is styled.
+  function setAuthor(name) {
+    state.author = name || "";
+    state.blocks = state.blocks.filter((b) => b.role !== "author");
+    if (state.author) addAuthorLine();
+    if (!selectedBlock()) select(state.blocks.length ? state.blocks[0].id : null);
+    syncTextPane();
+    saveDraft();
+  }
+  // Replaces the quote's words. A quote in one piece keeps its styling; a staggered one is laid out again.
+  function setWords(text) {
+    const quote = state.blocks.filter((b) => b.role !== "author");
+    if (quote.length !== 1) { setQuote(text, state.author); return; }
+    quote[0].text = text;
+    select(quote[0].id);
+    saveDraft();
+  }
+
+  // ---------- saved looks: the styling of everything on the canvas, without the words ----------
+  const LOOK_KEYS = ["font", "size", "colour", "align", "width", "lh", "lower", "x", "y"];
+  const currentLook = () => ({ shape: state.shape, shadow: state.shadow,
+    blocks: state.blocks.map((b) => ({ ...Object.fromEntries(LOOK_KEYS.map((k) => [k, b[k]])), role: b.role || "" })) });
+  function applyLook(look) {
+    if (!look || !Array.isArray(look.blocks) || !look.blocks.length || !state.blocks.length) return false;
+    if ((look.shape === "post" ? "post" : "reel") !== state.shape) setShape(look.shape);
+    state.shadow = look.shadow !== false;
+    const wear = (b, k) => { for (const key of LOOK_KEYS) if (k[key] != null && (key !== "font" || FONTS.some((f) => f.id === k.font))) b[key] = k[key]; };
+    const forQuote = look.blocks.filter((k) => k.role !== "author"), forAuthor = look.blocks.find((k) => k.role === "author");
+    let n = 0;
+    for (const b of state.blocks) {
+      if (b.role === "author") continue;
+      const k = forQuote[Math.min(n, forQuote.length - 1)] || look.blocks[0];
+      wear(b, k);
+      if (n >= forQuote.length && forQuote.length) b.y = Math.min(0.94, k.y + 0.06 * (n - forQuote.length + 1));   // more lines than the look had
+      n += 1;
+    }
+    const by = state.blocks.find((b) => b.role === "author");
+    if (by && forAuthor) wear(by, forAuthor);
+    else if (by) { state.blocks = state.blocks.filter((b) => b !== by); addAuthorLine(); }
+    document.querySelectorAll("#styles button").forEach((b) => b.setAttribute("aria-pressed", "false"));
+    if (!selectedBlock()) select(state.blocks[0].id);
+    syncTextPane();
+    saveDraft();
+    return true;
+  }
+
   $("show-author").addEventListener("change", () => {
     state.blocks = state.blocks.filter((b) => b.role !== "author");
     if ($("show-author").checked) addAuthorLine();
@@ -634,6 +689,8 @@
       $("stock").disabled = !server.stock;
       $("stock-note").hidden = server.stock;
       $("reword-open").hidden = !server.ai;
+      $("check-open").hidden = !server.ai;
+      $("queue-add").hidden = !server.instagram;
       $("post-open").hidden = !server.instagram;
       if (!server.locked) document.dispatchEvent(new CustomEvent("studio:ready"));
     }
@@ -751,12 +808,16 @@
     shape: () => state.shape,
     pictureBlob: () => toBlob(compose(false), "image/jpeg", 0.92),
     quoteText: () => state.blocks.map((b) => b.text.trim()).filter(Boolean).join("\n"),
+    quoteOnly: () => state.blocks.filter((b) => b.role !== "author").map((b) => b.text.trim()).filter(Boolean).join("\n"),
+    author: () => state.author,
+    setAuthor, setWords, currentLook, applyLook,
     replaceSelectedText: (t) => edit((b) => { b.text = t; }),
   };
 
   // ---------- start ----------
   async function start() {
-    try { await Promise.all(FONTS.map((f) => document.fonts.load(f.css(40), "Entangledd"))); } catch (e) { /* falls back to system fonts */ }
+    try { await Promise.all(FONTS.filter((f) => !f.extra).map((f) => document.fonts.load(f.css(40), "Entangledd"))); } catch (e) { /* falls back to system fonts */ }
+    FONTS.filter((f) => f.extra).forEach((f) => document.fonts.load(f.css(40), "Entangledd").catch(() => {}));   // the canvas redraws itself as each arrives
     if (!loadDraft()) applyStyle("sea");
     else select(state.blocks[0].id);
     document.querySelectorAll("#styles button").forEach((b) =>

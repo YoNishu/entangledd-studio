@@ -48,19 +48,20 @@ weekly report, comment reply drafts.
 | 7 | Inspiration: accounts (top posts), reel links, screenshots read by Claude | Built against a stand-in; first real run pending |
 | 8 | Taste profile: what Nishiii has learned, her notes, daily update, used in every suggestion | Built against a stand-in; first real run pending |
 | 8b | Films and series as sources; quotes on request from any mix of her sources; Face ID lock; Settings | Built; Face ID tested with a simulated authenticator, first run on a real iPhone pending |
-| 5b | Carousel posts (needs a 4:5 canvas) | Next |
-| 9 | Nishiii as a chat bar that can run any task | Next |
-| 10 | Quotes from public-domain book text; imported highlights | Later |
-| 11 | Extras: attribution check, queue and best-time hints, saved styles, more fonts, weekly report, comment reply drafts, HDR clips | Later |
+| 5b | Carousel posts on a 4:5 canvas | Built against a stand-in; first real carousel pending |
+| 9 | Nishiii as a chat (top right) that can fetch quotes, fill Create, add to the Library, report on posts and the week, check who said a quote | Built against a stand-in; first real run pending |
+| 10 | Quotes copied from the full text of free (Project Gutenberg) books and checked against it; highlights import (Kindle files or plain text) | Built against a stand-in; first real run pending |
+| 11 | Extras: "Check who said this", the week's numbers with best time and themes, reels kept to post later, saved looks, eight more fonts, comment replies drafted by Nishiii, HDR clips tone-mapped | Built against a stand-in; first real run pending |
+| 12 | A small scoring model trained on her picks and skips | Only worth it after about 200 picks; not started |
 
 ## How the app is laid out
 
 | Section | What it holds |
 |---|---|
 | Today | The day and date, exactly five suggestions (Use this, Reword, Skip), and the previous seven days folded one row per day, still usable |
-| Create | The composer. Tabs: Background, Text, Style, Finish |
-| Library | What she feeds Nishiii: her own quotes, books, films and series, and reels and pages she loves |
-| Posts | Everything posted from the app with its numbers |
+| Create | The composer. Tabs: Background, Text (with "Check who said this"), Style (shape, styles, her saved looks), Finish (reel, picture or carousel; post now or keep for later) |
+| Library | What she feeds Nishiii: her own quotes (typed, scanned, or imported highlights), books (each marked if its full text is free to read), films and series, and reels and pages she loves |
+| Posts | The last 7 days against the week before, with Nishiii's note, the best time of day and themes so far; reels waiting to be posted; everything posted with its numbers and comments |
 | Settings (top right) | Face ID lock, the Instagram connection, signing out |
 | Nishiii | Ask for five quotes from chosen books, films, series or pages (kept here, apart from Today); what Nishiii has learned about her taste; notes she writes for Nishiii |
 
@@ -88,9 +89,21 @@ only to understand her taste and are never suggested back.
 
 ## Limits to remember
 
-- Fonts bundled so far: Lora and Poppins. More can be added by putting the .ttf in `web/fonts`
-  and listing it in `web/app.js`.
-- iPhone clips recorded in HDR may look washed out after rendering until tone-mapping is added.
+- Fonts: Lora and Poppins load first; eight more (Crimson, Baskerville, Young Serif, Italiana,
+  Poiret, a handwritten one, a typewriter one) load in the background. To add another, put the
+  .ttf in `web/fonts`, add an `@font-face` line in `web/app.css` and list it in `web/app.js`.
+- HDR clips (recent iPhones) are tone-mapped to normal colours when the reel is rendered. The
+  preview in the app is not, so it can look slightly different from the finished reel.
+- "Check who said this" is Claude's memory, not a lookup. It catches famous misattributions; it
+  cannot prove an obscure quote.
+- Book text comes from Project Gutenberg through the Gutendex catalogue, so only books old
+  enough to be free have it. Lines taken from a book's text are kept only if the exact words
+  are found in the text.
+- Best time of day and best themes appear after six posts have numbers, and only compare
+  groups with at least two posts. Times are India time.
+- A reel kept to post later lives on the server for seven days, like every finished reel.
+- Comments need the `instagram_manage_comments` permission on the token used to connect.
+  A reply is sent only when she taps Send reply.
 
 - Reels carry no watermark by default.
 - Reel text must fit a safe box; the renderer rejects quotes over roughly 800 characters.

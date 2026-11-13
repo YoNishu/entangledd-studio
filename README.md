@@ -21,7 +21,9 @@ It also keeps her library (own quotes, books, accounts), asks Claude for the day
 suggestions, rewords quotes, reads quotes off a photographed page, and searches Pixabay (or Pexels) for free
 footage. It connects to Instagram, writes captions, searches Instagram's music and posts reels
 after a tap. It reads how posts did, studies reels and accounts she loves, and keeps a taste
-profile that steers every suggestion. The local stand-in fakes Claude, the stock libraries and Instagram (paste any token
+profile that steers every suggestion. It runs Nishiii's chat, posts carousels, copies quotes out of
+free book texts (Project Gutenberg), imports highlights, checks who said a quote, sums up the
+week, keeps reels to post later and saved looks, and reads and answers comments. The local stand-in fakes Claude, the stock libraries and Instagram (paste any token
 starting with SHORT to connect), so trying it costs nothing and posts nothing.
 
 Secrets it needs, set in the Cloudflare dashboard: `APP_PASSCODE`, `RENDER_SECRET`,
