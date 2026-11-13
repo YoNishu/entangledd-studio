@@ -304,7 +304,8 @@ Rules:
 - Lean towards what the reader has picked before and away from what she skipped, while keeping some variety.
 - "taste" is a profile of what she likes, built up over time; follow it, and treat "herNotes" inside it as instructions from her.
 - "lovedElsewhere" are lines from other pages she admires. Use them only to understand her taste. Never suggest them or close rewordings of them.
-- Do not repeat anything in the "avoid" list.`;
+- Do not repeat anything in the "avoid" list.
+- Order the array with the strongest match for her first.`;
 
 function shuffle(a) {
   for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
@@ -321,7 +322,7 @@ async function generateSuggestions(env, count) {
   const fresh = [];
 
   // Her own quotes go in word for word, chosen here rather than by Claude.
-  const own = shuffle((lib.quotes || []).filter((q) => !seen.has(norm(q.text)))).slice(0, Math.min(2, count));
+  const own = shuffle((lib.quotes || []).filter((q) => !seen.has(norm(q.text)))).slice(0, 1);
   for (const q of own) {
     fresh.push({ text: q.text, author: q.author || "", source: { type: "own", title: q.from || "" }, theme: "", tone: "", verify: false });
     seen.add(norm(q.text));
@@ -367,7 +368,7 @@ function cleanSuggestion(s, text) {
 
 // Quotes on request, from sources she picks: any mix of her books, films, series, pages she loves,
 // her own lines, and an optional subject. The results join today's list, marked with what she asked for.
-async function suggestFrom(env, b) {
+async function suggestFrom(env, b, already) {
   const date = todayIST();
   const count = Math.min(8, Math.max(1, Number(b.count) || 5));
   const about = oneLine(b.about, 120);
@@ -384,7 +385,7 @@ async function suggestFrom(env, b) {
 
   const label = [...books.map((x) => x.title), ...screen.map((x) => x.title), ...pages.map((x) => (x.handle ? "@" + x.handle : "a reel you saved")),
     wantOwn ? "your own lines" : "", about ? `about ${about}` : ""].filter(Boolean).join(", ").slice(0, 160);
-  const seen = new Set([...history, ...day].map((x) => norm(x.text)));
+  const seen = new Set([...history, ...day, ...already].map((x) => norm(x.text)));
   const fresh = [];
   const fromWorks = books.length + screen.length + pages.length > 0 || !!about;
 
@@ -401,7 +402,7 @@ async function suggestFrom(env, b) {
       inTheSpiritOf: pages.length ? pages.map((x) => ({ page: x.handle ? "@" + x.handle : "saved reel", look: x.style || "",
         linesSheLoved: [x.quote, ...(x.top || []).map((t) => t.quote)].filter(Boolean).slice(0, 6) })) : undefined,
       about: about || undefined,
-      avoid: [...history, ...day].slice(-120).map((x) => x.text),
+      avoid: [...history, ...day, ...already].slice(-120).map((x) => x.text),
       taste: taste || undefined,
     };
     const answer = parseJson(await claude(env, { system: SUGGEST_SYSTEM, maxTokens: 2500,
@@ -416,37 +417,44 @@ async function suggestFrom(env, b) {
   }
   if (!fresh.length) throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
   const now = Date.now();
-  const items = fresh.map((f) => ({ id: crypto.randomUUID(), state: "new", askedFor: label, askedAt: now, ...f }));
-  await saveDoc(env, `suggestions/${date}`, [...day, ...items]);
-  return { date, items: [...day, ...items] };
+  return fresh.map((f) => ({ id: crypto.randomUUID(), state: "new", askedFor: label, askedAt: now, ...f }));
 }
 
+// Marks each quote with what really happened to it: "posted", or "deleted" if the post made from it
+// was later removed on Instagram. "Used" alone only means it was opened in Create.
+async function withFate(env, items, checkInstagram) {
+  const posts = await loadDoc(env, "posts", []);
+  const ids = new Set(items.map((i) => i.id));
+  const linked = posts.filter((p) => p.suggestionId && ids.has(p.suggestionId));
+  if (checkInstagram && linked.some((p) => p.state === "published") && igReady(env)) {
+    const ig = await loadIg(env);
+    if (ig && (await checkRemoved(env, ig, posts, linked))) await saveDoc(env, "posts", posts);
+  }
+  const fate = (id) => {
+    const mine = linked.filter((p) => p.suggestionId === id);
+    if (mine.some((p) => p.state === "published" || p.state === "processing")) return "posted";
+    return mine.some((p) => p.state === "removed") ? "deleted" : "";
+  };
+  return items.map((i) => ({ ...i, posted: fate(i.id) }));
+}
+async function recordChoice(env, item, action) {
+  const history = await loadDoc(env, "history", []);
+  history.push({ text: item.text, author: item.author, theme: item.theme, tone: item.tone, source: item.source.type, action, at: Date.now() });
+  await saveDoc(env, "history", history.slice(-400));
+}
+
+// Today is exactly the day's five suggestions, nothing else.
+const DAILY = 5;
+const daily = (day) => day.filter((i) => !i.askedFor).slice(0, DAILY);
 async function suggestionRoutes(request, env, parts) {
   const method = request.method, date = todayIST();
-  // Each suggestion is marked with what really happened to it: "posted", or "deleted" if the post
-  // made from it was later removed on Instagram. "Used" alone only means it was opened in Create.
-  const visible = async (r, checkInstagram) => {
-    const posts = await loadDoc(env, "posts", []);
-    const ids = new Set(r.items.map((i) => i.id));
-    const linked = posts.filter((p) => p.suggestionId && ids.has(p.suggestionId));
-    if (checkInstagram && linked.some((p) => p.state === "published") && igReady(env)) {
-      const ig = await loadIg(env);
-      if (ig && (await checkRemoved(env, ig, posts, linked))) await saveDoc(env, "posts", posts);
-    }
-    const fate = (id) => {
-      const mine = linked.filter((p) => p.suggestionId === id);
-      if (mine.some((p) => p.state === "published" || p.state === "processing")) return "posted";
-      return mine.some((p) => p.state === "removed") ? "deleted" : "";
-    };
-    return json({ date: r.date, items: r.items.filter((i) => i.state !== "rejected").map((i) => ({ ...i, posted: fate(i.id) })) });
-  };
+  const visible = async (day, checkInstagram) =>
+    json({ date, items: await withFate(env, daily(day).filter((i) => i.state !== "rejected"), checkInstagram) });
   if (parts.length === 1 && method === "GET") {
     const day = await loadDoc(env, `suggestions/${date}`, []);
-    if (day.length || !env.ANTHROPIC_API_KEY) return visible({ date, items: day }, true);
-    return visible(await generateSuggestions(env, 8), false);
+    if (daily(day).length || !env.ANTHROPIC_API_KEY) return visible(day, true);
+    return visible((await generateSuggestions(env, DAILY)).items, false);
   }
-  if (parts[1] === "more" && method === "POST") return visible(await generateSuggestions(env, 6), false);
-  if (parts[1] === "from" && method === "POST") return visible(await suggestFrom(env, await body(request)), false);
   if (parts[2] === "feedback" && method === "POST") {
     const b = await body(request);
     if (!["used", "rejected"].includes(b.action)) return fail(400, "Unknown action.");
@@ -454,9 +462,32 @@ async function suggestionRoutes(request, env, parts) {
     const item = day.find((i) => i.id === parts[1]);
     if (!item) return fail(404, "That suggestion is no longer on today's list.");
     item.state = b.action;
-    const history = await loadDoc(env, "history", []);
-    history.push({ text: item.text, author: item.author, theme: item.theme, tone: item.tone, source: item.source.type, action: b.action, at: Date.now() });
-    await Promise.all([saveDoc(env, `suggestions/${date}`, day), saveDoc(env, "history", history.slice(-400))]);
+    await Promise.all([saveDoc(env, `suggestions/${date}`, day), recordChoice(env, item, b.action)]);
+    return json({ ok: true });
+  }
+  return fail(404, "Not found.");
+}
+
+// Quotes she asked Nishiii for directly. Kept apart from Today, newest first, until she skips them.
+const ASKED_KEEP = 40;
+async function askedRoutes(request, env, parts) {
+  const method = request.method;
+  const list = await loadDoc(env, "asked", []);
+  const reply = async (items, checkInstagram) => json({ items: await withFate(env, items.slice().reverse(), checkInstagram) });
+  if (parts.length === 1 && method === "GET") return reply(list, true);
+  if (parts.length === 1 && method === "POST") {
+    const fresh = await suggestFrom(env, await body(request), list);
+    const next = [...list, ...fresh].slice(-ASKED_KEEP);
+    await saveDoc(env, "asked", next);
+    return reply(next, false);
+  }
+  if (parts[2] === "feedback" && method === "POST") {
+    const b = await body(request);
+    if (!["used", "rejected"].includes(b.action)) return fail(400, "Unknown action.");
+    const item = list.find((i) => i.id === parts[1]);
+    if (!item) return fail(404, "That quote is no longer in the list.");
+    item.state = b.action;
+    await Promise.all([saveDoc(env, "asked", b.action === "rejected" ? list.filter((i) => i.id !== item.id) : list), recordChoice(env, item, b.action)]);
     return json({ ok: true });
   }
   return fail(404, "Not found.");
@@ -1276,7 +1307,7 @@ async function route(request, env, parts) {
     if (!isRenderer(request, env)) return fail(401, "Not allowed.");
     return renderRoutes(request, env, parts);
   }
-  if (["jobs", "library", "suggestions", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste"].includes(parts[0])) {
+  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste"].includes(parts[0])) {
     if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
     if (parts[0] === "jobs") return appRoutes(request, env, parts);
     if (parts[0] === "stock") return stockRoutes(request, env, parts);
@@ -1288,6 +1319,7 @@ async function route(request, env, parts) {
     if (parts[0] === "taste") return tasteRoutes(request, env, parts);
     if (parts[0] === "caption" && request.method === "POST") return writeCaption(request, env);
     if (parts[0] === "suggestions") return suggestionRoutes(request, env, parts);
+    if (parts[0] === "asked") return askedRoutes(request, env, parts);
     if (parts[0] === "edit" && request.method === "POST") return editQuote(request, env);
     if (parts[0] === "scan" && request.method === "POST") return scanPage(request, env);
   }
@@ -1327,7 +1359,7 @@ export default {
         await step("taste", () => buildTaste(env));
         await step("suggestions", async () => {
           const day = await loadDoc(env, `suggestions/${todayIST()}`, []);
-          if (!day.length) await generateSuggestions(env, 8);
+          if (!daily(day).length) await generateSuggestions(env, DAILY);
         });
       })());
       return;

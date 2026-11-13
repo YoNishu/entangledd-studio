@@ -6,7 +6,7 @@
 <title>Entangledd Studio</title>
 <meta name="theme-color" content="#0E1B24">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="Entangledd">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-180.png">
@@ -30,11 +30,12 @@
 </header>
 
 <section class="page" id="view-today" hidden>
-  <h2>Today's quotes</h2>
-  <button class="btn" id="ask-open" hidden>Get quotes from a book, film or page</button>
+  <header class="dayhead">
+    <p class="weekday" id="today-weekday"></p>
+    <p class="fulldate" id="today-date"></p>
+  </header>
   <p class="note" id="today-note" role="status"></p>
   <div class="cards" id="suggestions"></div>
-  <button class="btn" id="more" hidden>Suggest more</button>
 </section>
 
 <section class="page" id="view-library" hidden>
@@ -95,6 +96,12 @@
 </section>
 
 <section class="page" id="view-nishiii" hidden>
+  <h2>Ask Nishiii for quotes</h2>
+  <p class="note">Five quotes right now, from any book, film, series or page you choose. They stay here, apart from Today's five.</p>
+  <button class="btn primary" id="ask-open">Ask for quotes</button>
+  <p class="note" id="asked-note" role="status" hidden></p>
+  <div class="cards" id="asked-list"></div>
+
   <h2>What Nishiii has learned about your taste</h2>
   <p class="note" id="taste-note" role="status"></p>
   <div class="card" id="taste-card" hidden>

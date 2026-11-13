@@ -723,19 +723,6 @@
     replaceSelectedText: (t) => edit((b) => { b.text = t; }),
   };
 
-  // Some phones keep the very first, slightly soft rendering of a part of the page that never changes
-  // afterwards. Nudging the header makes the browser draw it again, sharply.
-  function redrawHeader() {
-    const bar = document.querySelector(".bar");
-    bar.style.opacity = "0.999";
-    requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.opacity = ""; }));
-  }
-  [300, 1200, 3000].forEach((ms) => setTimeout(redrawHeader, ms));
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(redrawHeader);
-  window.addEventListener("pageshow", redrawHeader);
-  window.addEventListener("resize", redrawHeader);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) redrawHeader(); });
-
   // ---------- start ----------
   async function start() {
     try { await Promise.all(FONTS.map((f) => document.fonts.load(f.css(40), "Entangledd"))); } catch (e) { /* falls back to system fonts */ }

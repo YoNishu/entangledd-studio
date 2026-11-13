@@ -57,12 +57,12 @@ weekly report, comment reply drafts.
 
 | Section | What it holds |
 |---|---|
-| Today | The day's suggestions: Use this, Reword, Skip |
+| Today | The day and date, and exactly five suggestions: Use this, Reword, Skip |
 | Create | The composer. Tabs: Background, Text, Style, Finish |
 | Library | What she feeds Nishiii: her own quotes, books, films and series, and reels and pages she loves |
 | Posts | Everything posted from the app with its numbers |
 | Settings (top right) | Face ID lock, the Instagram connection, signing out |
-| Nishiii | What Nishiii has learned about her taste, and notes she writes for Nishiii |
+| Nishiii | Ask for five quotes from chosen books, films, series or pages (kept here, apart from Today); what Nishiii has learned about her taste; notes she writes for Nishiii |
 
 ## How Nishiii learns (the taste profile)
 

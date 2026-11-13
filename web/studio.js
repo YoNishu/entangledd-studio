@@ -101,7 +101,8 @@
     return null;
   }
 
-  function card(item) {
+  // base is "suggestions" (Today's five) or "asked" (quotes she asked Nishiii for).
+  function card(item, base = "suggestions") {
     const use = el("button", { className: "btn primary", textContent: "Use this" });
     const reword = el("button", { className: "btn", textContent: "Reword" });
     const skip = el("button", { className: "btn quiet", textContent: "Skip" });
@@ -109,15 +110,16 @@
       el("p", { className: "q", textContent: item.text }),
       item.author ? el("p", { className: "by", textContent: "— " + item.author }) : null,
       el("p", { className: "src", textContent: sourceLine(item.source) }),
-      item.askedFor ? chip("info", `You asked for: ${item.askedFor}`) : null,
+      item.askedFor ? chip("info", `From: ${item.askedFor}`) : null,
       item.verify ? chip("bad", "Check the wording and author before posting") : null,
       fateLine(item),
       el("div", { className: "acts" }, use, reword, skip));
 
     const mark = (action) => {
       item.state = action;
-      if (action === "rejected" && todayData) todayData.items = todayData.items.filter((i) => i.id !== item.id);
-      return send(`suggestions/${item.id}/feedback`, "POST", { action }).catch(() => {});
+      const data = base === "asked" ? askedData : todayData;
+      if (action === "rejected" && data) data.items = data.items.filter((i) => i.id !== item.id);
+      return send(`${base}/${item.id}/feedback`, "POST", { action }).catch(() => {});
     };
     use.addEventListener("click", () => {
       mark("used");
@@ -135,19 +137,19 @@
     }));
     skip.addEventListener("click", () => {
       mark("rejected"); node.remove();
-      if (!$("suggestions").children.length) $("today-note").textContent = "Nothing left for today. Ask for more below.";
+      if (base === "suggestions" && !$("suggestions").children.length) $("today-note").textContent = "That's all five for today. For more, ask Nishiii in the Nishiii section.";
+      if (base === "asked" && !$("asked-list").children.length) askedNote("Nothing here now. Ask for more whenever you like.");
     });
     return node;
   }
 
   function renderToday(data) {
     todayData = data;
-    // What she just asked for comes first, newest request on top; the day's own picks follow.
-    const ordered = data.items.slice().sort((a, b) => (b.askedAt || 0) - (a.askedAt || 0));
-    $("suggestions").replaceChildren(...ordered.map(card));
-    $("ask-open").hidden = false;
-    $("today-note").textContent = data.items.length ? "" : "No quotes yet for today. Ask for some below.";
-    $("more").hidden = false;
+    const d = new Date(data.date + "T12:00:00");
+    $("today-weekday").textContent = d.toLocaleDateString(undefined, { weekday: "long" });
+    $("today-date").textContent = d.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
+    $("suggestions").replaceChildren(...data.items.map((i) => card(i)));
+    $("today-note").textContent = data.items.length ? "Five quotes Nishiii chose for you today." : "That's all five for today. For more, ask Nishiii in the Nishiii section.";
   }
 
   async function loadToday(force) {
@@ -164,15 +166,20 @@
     finally { todayBusy = false; }
   }
 
-  $("more").addEventListener("click", async () => {
-    const btn = $("more");
-    btn.disabled = true; btn.textContent = "Choosing more…";
-    try { renderToday(await send("suggestions/more", "POST")); }
-    catch (e) { $("today-note").textContent = friendly(e); }
-    finally { btn.disabled = false; btn.textContent = "Suggest more"; }
-  });
+  // ---------- Nishiii: quotes she asks for, kept apart from Today ----------
+  let askedData = null;
+  function askedNote(msg) { $("asked-note").textContent = msg; $("asked-note").hidden = !msg; }
+  function renderAsked(data) {
+    askedData = data;
+    $("asked-list").replaceChildren(...data.items.map((i) => card(i, "asked")));
+    askedNote("");
+  }
+  async function loadAsked() {
+    if (!S.server.ai) return;
+    try { renderAsked(await getJson("asked")); } catch (e) { askedNote(friendly(e)); }
+  }
 
-  // ---------- Today: quotes on request, from sources she picks ----------
+  // ---------- the sheet for choosing what to ask about ----------
   const asking = { picked: new Set(), lib: null, insp: null };
   function pickButton(id, label) {
     const b = el("button", { type: "button", textContent: label });
@@ -224,10 +231,9 @@
     btn.disabled = true; btn.textContent = "Finding quotes…";
     $("ask-status").textContent = "";
     try {
-      renderToday(await send("suggestions/from", "POST", { sources: [...asking.picked], about: $("ask-about").value, count: 5 }));
-      todayLoaded = true;
+      renderAsked(await send("asked", "POST", { sources: [...asking.picked], about: $("ask-about").value, count: 5 }));
       $("ask-sheet").hidden = true;
-      $("view-today").scrollTo({ top: 0 });
+      $("view-nishiii").scrollTo({ top: 0 });
     } catch (e) { $("ask-status").textContent = friendly(e); }
     finally { btn.disabled = false; btn.textContent = "Get 5 quotes"; }
   });
@@ -592,6 +598,8 @@
     }) : [el("li", {}, el("p", { className: "empty", textContent: "No notes yet." }))]));
   }
   async function loadTaste() {
+    $("ask-open").hidden = !S.server.ai;
+    loadAsked();
     if (!S.server.ai) { $("taste-note").textContent = "This switches on once Nishiii is connected on the server."; return; }
     try { renderTaste(await getJson("taste")); } catch (e) { $("taste-note").textContent = friendly(e); }
   }
@@ -711,7 +719,7 @@
       }
       if (post.state === "failed") throw new Error(post.error || "Instagram didn't accept the reel.");
       postStatus("Posted to Instagram.");
-      const from = todayData && todayData.items.find((i) => i.id === onCanvas.suggestionId);
+      const from = [...(todayData ? todayData.items : []), ...(askedData ? askedData.items : [])].find((i) => i.id === onCanvas.suggestionId);
       if (from) from.posted = "posted";
       if (post.permalink) { $("post-link").href = post.permalink; $("post-link").hidden = false; }
     } catch (e) { $("post-form").hidden = false; postStatus(friendly(e)); }
