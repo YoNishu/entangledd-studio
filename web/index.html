@@ -21,7 +21,8 @@
     <button id="nav-today" aria-pressed="false">Today</button>
     <button id="nav-create" aria-pressed="true">Create</button>
     <button id="nav-library" aria-pressed="false">Library</button>
-    <button id="nav-account" aria-pressed="false">Account</button>
+    <button id="nav-posts" aria-pressed="false">Posts</button>
+    <button id="nav-nishiii" aria-pressed="false">Nishiii</button>
   </nav>
 </header>
 
@@ -59,27 +60,51 @@
   </form>
   <ul class="list" id="list-books"></ul>
 
-  <h2>Accounts you like</h2>
-  <p class="note">Instagram pages whose style you want to learn from. Their numbers appear here once Instagram is connected.</p>
-  <form class="add row2" id="add-account">
-    <label class="stack"><span>Username</span><input id="a-handle" type="text" autocapitalize="none" autocorrect="off" required></label>
-    <button class="btn primary" type="submit">Add account</button>
+  <h2>Reels and pages you love</h2>
+  <p class="note">Paste a link to a reel or post, or an account's username. For any reel, a screenshot works best: Nishiii reads the words and notes the look.</p>
+  <form class="add row2" id="add-inspiration">
+    <label class="stack"><span>Link or username</span><input id="i-input" type="text" autocapitalize="none" autocorrect="off" placeholder="instagram.com/reel/… or @username" required></label>
+    <button class="btn primary" type="submit">Add</button>
   </form>
-  <ul class="list" id="list-accounts"></ul>
+  <label class="btn file">
+    Add a screenshot of a reel
+    <input type="file" id="i-shot" accept="image/*">
+  </label>
+  <p class="note" id="inspiration-note" role="status" hidden></p>
+  <div class="cards" id="list-inspirations"></div>
 </section>
 
-<section class="page" id="view-account" hidden>
-  <h2>Instagram</h2>
+<section class="page" id="view-posts" hidden>
+  <h2>Posts</h2>
+  <p class="note" id="posts-note" role="status"></p>
+  <div class="cards" id="list-posts"></div>
+
+  <h2>Instagram connection</h2>
   <p class="note" id="ig-status" role="status"></p>
   <form class="add" id="ig-connect" hidden>
-    <p class="note">Paste a user access token from Meta's Graph API Explorer. The app swaps it for a long-lasting one and keeps that on the server; the token you paste stops working after about an hour.</p>
+    <p class="note">Paste a user access token from Meta's Graph API Explorer. The app swaps it for a long-lasting one and keeps that on the server.</p>
     <label class="stack"><span>Access token</span><input id="ig-token" type="password" autocomplete="off" required></label>
     <button class="btn primary" type="submit">Connect Instagram</button>
   </form>
   <button class="btn quiet" id="ig-disconnect" hidden>Disconnect Instagram</button>
+</section>
 
-  <h2>Posts</h2>
-  <ul class="list" id="list-posts"></ul>
+<section class="page" id="view-nishiii" hidden>
+  <h2>What Nishiii has learned about your taste</h2>
+  <p class="note" id="taste-note" role="status"></p>
+  <div class="card" id="taste-card" hidden>
+    <p class="q" id="taste-summary"></p>
+    <div id="taste-lists"></div>
+  </div>
+  <button class="btn" id="taste-refresh">Update now</button>
+
+  <h2>Tell Nishiii directly</h2>
+  <p class="note">Anything you write here is always followed, such as "no quotes about hustle" or "I love lines about the sea".</p>
+  <form class="add" id="add-note">
+    <label class="stack"><span>Note</span><input id="note-text" type="text" required></label>
+    <button class="btn primary" type="submit">Add note</button>
+  </form>
+  <ul class="list" id="list-notes"></ul>
 </section>
 
 <main class="work" id="view-create">
@@ -93,7 +118,7 @@
       <button role="tab" id="tab-bg" aria-controls="pane-bg" aria-selected="false">Background</button>
       <button role="tab" id="tab-text" aria-controls="pane-text" aria-selected="false">Text</button>
       <button role="tab" id="tab-style" aria-controls="pane-style" aria-selected="false">Style</button>
-      <button role="tab" id="tab-save" aria-controls="pane-save" aria-selected="false">Save</button>
+      <button role="tab" id="tab-save" aria-controls="pane-save" aria-selected="false">Finish</button>
     </nav>
 
     <div class="pane" id="pane-bg" role="tabpanel" aria-labelledby="tab-bg" hidden>
@@ -145,8 +170,8 @@
 
     <div class="pane" id="pane-save" role="tabpanel" aria-labelledby="tab-save" hidden>
       <div id="save-image">
-        <button class="btn" id="save-img">Save image</button>
-        <p class="note">Saves a 1080 × 1920 picture you can post or add to a carousel.</p>
+        <button class="btn" id="save-img">Save as a picture</button>
+        <p class="note">Saves this exactly as shown, as a still image.</p>
       </div>
       <div id="reel-setup">
         <label class="row">
@@ -154,7 +179,8 @@
           <input type="range" id="len" min="5" max="30" step="1" value="8">
         </label>
         <label class="check"><input type="checkbox" id="fade"> Fade the text in</label>
-        <button class="btn primary" id="make-reel">Make reel</button>
+        <button class="btn primary" id="make-reel">Create reel</button>
+        <p class="note">Takes one to two minutes. When it's ready you can save it to your phone or post it to Instagram.</p>
         <p class="note" id="reel-note" hidden></p>
       </div>
       <div id="reel-progress" hidden>
@@ -162,10 +188,11 @@
         <progress id="bar" max="100" value="0"></progress>
       </div>
       <div id="reel-result" hidden>
-        <video id="result" controls playsinline loop></video>
+        <p class="status">Your reel is ready.</p>
         <button class="btn primary" id="post-open" hidden>Post to Instagram</button>
-        <button class="btn" id="save-reel">Save reel</button>
-        <button class="btn quiet" id="again">Make another</button>
+        <button class="btn" id="save-reel">Save to phone</button>
+        <video id="result" controls playsinline loop></video>
+        <button class="btn quiet" id="again">Start a new one</button>
       </div>
       <p class="done" id="done" role="status" hidden></p>
     </div>
@@ -188,7 +215,10 @@
       <h2 id="reword-title">Reword with Nishiii</h2>
       <button class="btn quiet close" id="reword-close">Close</button>
     </header>
-    <p class="q" id="reword-quote"></p>
+    <div class="compare">
+      <div><p class="tag">Original</p><p class="q small" id="reword-original"></p></div>
+      <div id="reword-new" hidden><p class="tag">Reworded</p><p class="q" id="reword-quote"></p></div>
+    </div>
     <p class="flag" id="reword-flag" hidden>Reworded, so these are no longer the author's exact words. The author's name will be left off.</p>
     <div class="log" id="reword-log" aria-live="polite"></div>
     <div class="chips" id="reword-chips">

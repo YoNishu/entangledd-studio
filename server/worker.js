@@ -296,6 +296,8 @@ Rules:
 - Set "verify" to true whenever you are not sure the wording is exact or the attribution is right. Be strict: when in doubt, true.
 - Keep each quote under 45 words, complete on its own, with no surrounding quotation marks.
 - Lean towards what the reader has picked before and away from what she skipped, while keeping some variety.
+- "taste" is a profile of what she likes, built up over time; follow it, and treat "herNotes" inside it as instructions from her.
+- "lovedElsewhere" are lines from other pages she admires. Use them only to understand her taste. Never suggest them or close rewordings of them.
 - Do not repeat anything in the "avoid" list.`;
 
 function shuffle(a) {
@@ -305,8 +307,9 @@ function shuffle(a) {
 
 async function generateSuggestions(env, count) {
   const date = todayIST();
-  const [lib, history, day] = await Promise.all([
+  const [lib, history, day, taste, insp] = await Promise.all([
     loadDoc(env, "library", emptyLibrary()), loadDoc(env, "history", []), loadDoc(env, `suggestions/${date}`, []),
+    tasteBrief(env), loadDoc(env, "inspirations", []),
   ]);
   const seen = new Set([...history, ...day].map((x) => norm(x.text)));
   const fresh = [];
@@ -326,6 +329,10 @@ async function generateSuggestions(env, count) {
       picked: history.filter((h) => h.action === "used").slice(-30).map((h) => ({ text: h.text, theme: h.theme, tone: h.tone })),
       skipped: history.filter((h) => h.action === "rejected").slice(-30).map((h) => ({ text: h.text, theme: h.theme, tone: h.tone })),
       avoid: [...history, ...day].slice(-120).map((x) => x.text),
+      // What Nishiii has learned about her taste over time, and lines she loved on other pages.
+      // Those lines show the kind of thing she likes; they belong to their creators and are not to be suggested themselves.
+      taste: taste || undefined,
+      lovedElsewhere: shuffle(insp.flatMap((i) => [i.quote, ...(i.top || []).map((t) => t.quote)]).filter(Boolean)).slice(0, 15),
     };
     const answer = parseJson(await claude(env, {
       system: SUGGEST_SYSTEM, maxTokens: 3000,
@@ -388,8 +395,16 @@ async function editQuote(request, env) {
   if (!quote || !turns.length || turns[turns.length - 1].role !== "user") return fail(400, "Tell Nishiii what to change.");
   if (turns[0].role !== "user") turns.shift();
   turns[0] = { role: "user", content: `Original quote:\n${quote}\nAuthor: ${author || "none given"}\n\n${turns[0].content}` };
-  const answer = parseJson(await claude(env, { system: EDIT_SYSTEM, messages: turns, maxTokens: 1200 }));
-  return json({ reply: lines(answer.reply, 400) || "Here you go.", quote: lines(answer.quote, 600) || quote, altered: !!answer.altered });
+  const asked = lines((Array.isArray(b.messages) ? b.messages : []).filter((m) => m.role !== "assistant").slice(-1)[0]?.content, 300);
+  const taste = await tasteBrief(env);
+  const system = taste ? `${EDIT_SYSTEM}\n\nWhat you know about her taste (follow it unless she asks otherwise):\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : EDIT_SYSTEM;
+  const answer = parseJson(await claude(env, { system, messages: turns, maxTokens: 1200 }));
+  const revised = lines(answer.quote, 600) || quote;
+  // Remember what she asked for: it says a lot about the wording she likes.
+  const rewords = await loadDoc(env, "rewords", []);
+  rewords.push({ at: Date.now(), asked, before: quote, after: revised });
+  await saveDoc(env, "rewords", rewords.slice(-80));
+  return json({ reply: lines(answer.reply, 400) || "Here you go.", quote: revised, altered: !!answer.altered });
 }
 
 // ---------- reading quotes off a photographed page ----------
@@ -535,6 +550,8 @@ async function graph(env, method, path, params) {
     console.error("Graph error", res.status, e.code, e.error_subcode, e.message);
     const err = new UserError(502, `Instagram said: ${e.error_user_msg || e.message || `the request failed (status ${res.status})`}`);
     err.expired = e.code === 190;
+    // Instagram's answer for something that has been deleted (or was never visible to this app).
+    err.gone = e.code === 100 && (e.error_subcode === 33 || /does not exist/i.test(e.message || ""));
     throw err;
   }
   return data;
@@ -576,8 +593,8 @@ async function igRoutes(request, env, parts) {
 
   if (parts[1] === "audio" && method === "GET") {
     const ig = await loadIg(env);
-    if (!ig) return fail(409, "Connect Instagram first, in Account.");
-    if (Date.now() > ig.userTokenExpires) return fail(409, "Music search needs Instagram reconnecting in Account. Posting still works.");
+    if (!ig) return fail(409, "Connect Instagram first, in Posts.");
+    if (Date.now() > ig.userTokenExpires) return fail(409, "Music search needs Instagram reconnecting in Posts. Posting still works.");
     const q = oneLine(new URL(request.url).searchParams.get("q"), 80);
     const params = { audio_type: "music", user_id: ig.igId, access_token: ig.userToken };
     if (q) params.search_query = q;
@@ -623,7 +640,7 @@ async function publicReel(request, env, parts) {
 }
 
 const publicPost = (p) => ({ id: p.id, state: p.state, error: p.error, caption: p.caption, quote: p.quote, author: p.author,
-  music: p.music, created: p.created, published: p.published, permalink: p.permalink });
+  music: p.music, created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null });
 const tokenFor = (ig, post) => (post.tokenKind === "user" ? ig.userToken : ig.pageToken);
 
 // Moves a post forward: once Instagram has finished processing the video, publish it.
@@ -670,15 +687,23 @@ async function postRoutes(request, env, parts) {
   const ig = await loadIg(env);
   const posts = await loadDoc(env, "posts", []);
 
-  if (parts.length === 1 && method === "GET") return json({ posts: posts.slice(-50).reverse().map(publicPost) });
+  if (parts.length === 1 && method === "GET") {
+    // Opening the list is when numbers are refreshed and posts deleted on Instagram are noticed.
+    if (ig) {
+      const removed = await checkRemoved(env, ig, posts);
+      const updated = await refreshInsights(env, ig, posts, { max: 6 });
+      if (removed || updated) await saveDoc(env, "posts", posts);
+    }
+    return json({ posts: posts.filter((p) => p.state !== "removed").slice(-50).reverse().map(publicPost) });
+  }
 
   if (parts.length === 1 && method === "POST") {
-    if (!ig) return fail(409, "Connect Instagram first, in Account.");
+    if (!ig) return fail(409, "Connect Instagram first, in Posts.");
     const b = await body(request);
-    if (!UUID.test(b.jobId || "")) return fail(400, "Make the reel first.");
+    if (!UUID.test(b.jobId || "")) return fail(400, "Create the reel first.");
     const job = await readJob(env, b.jobId);
-    if (!job || job.state !== "done" || !(await env.MEDIA.head(jobKey(b.jobId, "reel.mp4")))) return fail(409, "That reel is no longer on the server. Make it again, then post.");
-    if (posts.some((p) => p.jobId === b.jobId && p.state !== "failed")) return fail(409, "This reel has already been posted.");
+    if (!job || job.state !== "done" || !(await env.MEDIA.head(jobKey(b.jobId, "reel.mp4")))) return fail(409, "That reel is no longer on the server. Create it again, then post.");
+    if (posts.some((p) => p.jobId === b.jobId && (p.state === "processing" || p.state === "published"))) return fail(409, "This reel has already been posted.");
     const caption = String(b.caption || "").trim().slice(0, 2200);
     const params = { media_type: "REELS", video_url: await publicReelUrl(request, env, b.jobId), caption, share_to_feed: "true" };
     let music = null;
@@ -697,6 +722,11 @@ async function postRoutes(request, env, parts) {
   }
 
   const post = posts.find((p) => p.id === parts[1]);
+  if (post && method === "DELETE") {
+    // Takes it off the app's list only. Deleting from Instagram itself is done in Instagram.
+    await saveDoc(env, "posts", posts.filter((p) => p.id !== post.id));
+    return json({ ok: true });
+  }
   if (!post || method !== "GET") return fail(404, "No such post.");
   if (ig && (await advancePost(env, ig, post))) await saveDoc(env, "posts", posts);
   return json(publicPost(post));
@@ -712,10 +742,291 @@ async function writeCaption(request, env) {
   const b = await body(request);
   const quote = lines(b.quote, 600);
   if (!quote) return fail(400, "There is no quote to write a caption for.");
+  const taste = await tasteBrief(env);
   const answer = parseJson(await claude(env, { system: CAPTION_SYSTEM, maxTokens: 700,
-    messages: [{ role: "user", content: `Quote:\n${quote}\nAuthor: ${oneLine(b.author, 80) || "none"}` }] }));
+    messages: [{ role: "user", content: `Quote:\n${quote}\nAuthor: ${oneLine(b.author, 80) || "none"}${taste ? `\n\nHer taste, for the caption's voice:\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : ""}` }] }));
   const tags = (Array.isArray(answer.hashtags) ? answer.hashtags : []).map((t) => "#" + String(t).replace(/[^\p{L}\p{N}_]/gu, "")).filter((t) => t.length > 1).slice(0, 14);
   return json({ caption: lines(answer.caption, 600), hashtags: tags });
+}
+
+// ---------- Instagram helpers shared by insights and inspirations ----------
+// Tries the long-lived user token first while it is valid, then the Page token.
+async function graphAny(env, ig, method, path, params) {
+  const tokens = Date.now() < ig.userTokenExpires ? [ig.userToken, ig.pageToken] : [ig.pageToken];
+  let last;
+  for (const access_token of tokens) {
+    try { return await graph(env, method, path, { ...params, access_token }); }
+    catch (e) { if (!(e instanceof UserError)) throw e; last = e; }
+  }
+  throw last;
+}
+
+// ---------- insights: how her own posts did ----------
+const INSIGHT_METRICS = ["reach", "views", "likes", "comments", "saved", "shares"];
+async function refreshInsights(env, ig, posts, { force = false, max = 15 } = {}) {
+  let changed = false, done = 0;
+  const recent = posts.filter((p) => p.state === "published" && p.mediaId).slice(-60).reverse();
+  for (const post of recent) {
+    if (done >= max) break;
+    const age = Date.now() - (post.published || post.created);
+    const every = age < 3 * 24 * 3600 * 1000 ? 2 * 3600 * 1000 : 24 * 3600 * 1000;   // fresh posts change fastest
+    if (!force && post.insightsAt && Date.now() - post.insightsAt < every) continue;
+    done += 1;
+    try {
+      const data = await graphAny(env, ig, "GET", `/${post.mediaId}/insights`, { metric: INSIGHT_METRICS.join(",") });
+      const m = {};
+      for (const row of data.data || []) {
+        const v = row.total_value ? row.total_value.value : row.values && row.values[0] ? row.values[0].value : null;
+        if (INSIGHT_METRICS.includes(row.name) && Number.isFinite(Number(v))) m[row.name] = Number(v);
+      }
+      post.metrics = { ...(post.metrics || {}), ...m };
+      post.insightsAt = Date.now(); changed = true;
+    } catch (e) {
+      if (!(e instanceof UserError)) throw e;
+      // Numbers unavailable: find out whether the post still exists on Instagram.
+      try { await graphAny(env, ig, "GET", `/${post.mediaId}`, { fields: "id" }); post.insightsAt = Date.now(); changed = true; }
+      catch (e2) {
+        if (!(e2 instanceof UserError)) throw e2;
+        if (e2.gone) { post.state = "removed"; post.removedAt = Date.now(); changed = true; }
+      }
+    }
+  }
+  return changed;
+}
+
+// Notices posts she has deleted on Instagram, so the app's list matches. Checked every time the list opens.
+async function checkRemoved(env, ig, posts) {
+  const latest = posts.filter((p) => p.state === "published" && p.mediaId).slice(-8);
+  const gone = await Promise.all(latest.map(async (post) => {
+    try { await graphAny(env, ig, "GET", `/${post.mediaId}`, { fields: "id" }); return false; }
+    catch (e) { if (!(e instanceof UserError)) throw e; return !!e.gone; }
+  }));
+  latest.forEach((post, i) => { if (gone[i]) { post.state = "removed"; post.removedAt = Date.now(); } });
+  return gone.some(Boolean);
+}
+
+// ---------- inspiration: accounts, reels and screenshots she loves ----------
+const INSPIRE_LIMIT = 80;
+const SHOT_SYSTEM = `You look at a screenshot or frame of an Instagram quote post that the user loves.
+Reply with a JSON object only:
+{"quote": "the quote text exactly as shown, with line breaks as \\n, or \"\" if none is readable", "author": "the credited author if shown, else \"\"", "handle": "the account username if visible, without @, else \"\"", "style": "one or two plain sentences on the look: typeface feel, text size and placement, colours, background, mood"}
+Copy the quote exactly; do not correct or reword it.`;
+const READ_POSTS_SYSTEM = `You read the quote text off Instagram post images. You get several images in order.
+Reply with a JSON object only: {"quotes": ["text of image 1", "text of image 2", ...]}
+One entry per image, in the same order, copied exactly as shown with line breaks as \n. Use "" for an image with no readable quote.`;
+
+function parseInspiration(input) {
+  const raw = String(input || "").trim();
+  const m = /instagram\.com\/(?:([a-z0-9._]{1,30})\/)?(reel|reels|p|tv)\/([A-Za-z0-9_-]{5,40})/i.exec(raw);
+  if (m) return { kind: "reel", handle: (m[1] || "").toLowerCase(), code: m[3], url: `https://www.instagram.com/${m[2].toLowerCase() === "p" ? "p" : "reel"}/${m[3]}/` };
+  const handle = raw.replace(/^https?:\/\/(www\.)?instagram\.com\//i, "").replace(/^@/, "").replace(/[/?#].*$/, "");
+  if (/^[a-z0-9._]{1,30}$/i.test(handle)) return { kind: "account", handle: handle.toLowerCase(), url: `https://www.instagram.com/${handle.toLowerCase()}/` };
+  return null;
+}
+
+async function discover(env, ig, handle, limit) {
+  const rich = "caption,like_count,comments_count,view_count,media_type,media_product_type,media_url,permalink,timestamp";
+  const ask = (fields) => graphAny(env, ig, "GET", `/${ig.igId}`, {
+    fields: `business_discovery.username(${handle}){followers_count,media_count,media.limit(${limit}){${fields}}}`,
+  });
+  let data;
+  try { data = await ask(rich); }
+  catch (e) { if (!(e instanceof UserError)) throw e; data = await ask("caption,like_count,comments_count,permalink,timestamp"); }
+  const bd = data.business_discovery || {};
+  const media = ((bd.media && bd.media.data) || []).map((x) => ({
+    caption: lines(x.caption, 500), likes: Number(x.like_count) || 0, comments: Number(x.comments_count) || 0,
+    views: Number(x.view_count) || 0, type: x.media_type || "", image: x.media_type === "IMAGE" || x.media_type === "CAROUSEL_ALBUM" ? x.media_url || "" : "",
+    permalink: x.permalink || "", at: x.timestamp || "",
+  }));
+  return { followers: Number(bd.followers_count) || 0, mediaCount: Number(bd.media_count) || 0, media };
+}
+const score = (x) => x.likes + x.comments * 3 + x.views / 50;
+
+// Reads the quote off the top picture posts. Optional: if the pictures can't be fetched, captions still serve.
+async function readPostImages(env, top) {
+  const withImage = top.filter((t) => t.image).slice(0, 5);
+  if (!withImage.length || !env.ANTHROPIC_API_KEY) return;
+  try {
+    const answer = parseJson(await claude(env, { system: READ_POSTS_SYSTEM, maxTokens: 1500, messages: [{ role: "user", content: [
+      ...withImage.map((t) => ({ type: "image", source: { type: "url", url: t.image } })),
+      { type: "text", text: `Read the quote on each of these ${withImage.length} images.` },
+    ] }] }));
+    (Array.isArray(answer.quotes) ? answer.quotes : []).forEach((q, i) => { if (withImage[i]) withImage[i].quote = lines(q, 400); });
+  } catch (e) { if (!(e instanceof UserError)) throw e; }
+}
+
+async function examine(env, item) {
+  const ig = igReady(env) ? await loadIg(env) : null;
+  if (!ig) { item.status = "Saved. It will be read once Instagram is connected."; return; }
+  try {
+    if (item.kind === "account") {
+      const d = await discover(env, ig, item.handle, 40);
+      const top = d.media.slice().sort((a, b) => score(b) - score(a)).slice(0, 8);
+      await readPostImages(env, top);
+      item.followers = d.followers;
+      item.top = top.map(({ image, ...rest }) => rest);
+      item.status = top.length ? `Read ${d.media.length} recent posts; keeping the ${top.length} that did best.` : "The account has no posts that could be read.";
+    } else if (item.kind === "reel" && item.handle) {
+      const d = await discover(env, ig, item.handle, 50);
+      const hit = d.media.find((x) => x.permalink.includes(`/${item.code}`));
+      if (hit) {
+        if (hit.image) await readPostImages(env, [hit]);
+        item.caption = hit.caption; item.quote = hit.quote || item.quote || "";
+        item.metrics = { likes: hit.likes, comments: hit.comments, views: hit.views };
+        item.status = item.quote ? "Read from Instagram." : "Numbers and caption read. Add a screenshot so the words on the reel can be read too.";
+      } else item.status = "Saved. The post wasn't among that account's latest; add a screenshot so it can be read.";
+    } else if (item.kind === "reel") {
+      item.status = "Link saved. Instagram doesn't let apps open a reel from its link alone, so add a screenshot of it and Nishiii will read it.";
+    }
+  } catch (e) {
+    if (!(e instanceof UserError)) throw e;
+    item.status = /does not exist|cannot be found|not found|Invalid user/i.test(e.message)
+      ? "Instagram can't show this account's posts to apps. That happens with personal (non-professional) accounts. A screenshot still works."
+      : `Couldn't be read right now. ${e.message}`;
+  }
+  item.examinedAt = Date.now();
+}
+
+async function loadInspirations(env) {
+  const list = await loadDoc(env, "inspirations", []);
+  // Accounts saved before this feature existed move across once.
+  const lib = await loadDoc(env, "library", emptyLibrary());
+  if (lib.accounts && lib.accounts.length) {
+    for (const a of lib.accounts) {
+      if (!list.some((i) => i.kind === "account" && i.handle === a.handle)) {
+        list.push({ id: crypto.randomUUID(), kind: "account", handle: a.handle, url: `https://www.instagram.com/${a.handle}/`, added: a.added || Date.now(), status: "Not read yet." });
+      }
+    }
+    lib.accounts = [];
+    await Promise.all([saveDoc(env, "library", lib), saveDoc(env, "inspirations", list)]);
+  }
+  return list;
+}
+const publicInspiration = (i) => ({ id: i.id, kind: i.kind, handle: i.handle || "", url: i.url || "", quote: i.quote || "", author: i.author || "",
+  caption: i.caption || "", style: i.style || "", metrics: i.metrics || null, followers: i.followers || 0, status: i.status || "",
+  top: (i.top || []).slice(0, 5).map((t) => ({ quote: t.quote || "", caption: (t.caption || "").slice(0, 200), likes: t.likes, comments: t.comments, views: t.views, permalink: t.permalink })) });
+
+async function inspirationRoutes(request, env, parts) {
+  const method = request.method;
+  const list = await loadInspirations(env);
+  const reply = () => json({ items: list.slice().reverse().map(publicInspiration) });
+  if (parts.length === 1 && method === "GET") return reply();
+  if (parts.length === 2 && method === "DELETE") {
+    await saveDoc(env, "inspirations", list.filter((i) => i.id !== parts[1]));
+    return json({ items: list.filter((i) => i.id !== parts[1]).reverse().map(publicInspiration) });
+  }
+  if (parts.length === 3 && parts[2] === "refresh" && method === "POST") {
+    const item = list.find((i) => i.id === parts[1]);
+    if (!item) return fail(404, "That item is no longer in the list.");
+    await examine(env, item);
+    await saveDoc(env, "inspirations", list);
+    return reply();
+  }
+  if (parts.length !== 1 || method !== "POST") return fail(404, "Not found.");
+  if (list.length >= INSPIRE_LIMIT) return fail(400, "The inspiration list is full. Remove something first.");
+  const b = await body(request);
+  let item;
+  if (b.image) {
+    const image = String(b.image);
+    if (!/^[A-Za-z0-9+/=]+$/.test(image) || image.length < 200 || image.length > 4_000_000) return fail(400, "The screenshot is missing or too large.");
+    const a = parseJson(await claude(env, { system: SHOT_SYSTEM, maxTokens: 900, messages: [{ role: "user", content: [
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: image } },
+      { type: "text", text: "Read this post." },
+    ] }] }));
+    const handle = oneLine(a.handle, 40).replace(/^@/, "").toLowerCase();
+    item = { kind: "screenshot", handle: /^[a-z0-9._]{1,30}$/.test(handle) ? handle : "", quote: lines(a.quote, 500), author: oneLine(a.author, 80),
+      style: oneLine(a.style, 300), status: lines(a.quote, 500) ? "Read from your screenshot." : "No quote could be read. The look was still noted." };
+  } else {
+    const parsed = parseInspiration(b.input);
+    if (!parsed) return fail(400, "Paste an Instagram username, a profile link, or a link to a reel or post.");
+    if (list.some((i) => i.kind === parsed.kind && (parsed.kind === "account" ? i.handle === parsed.handle : i.code === parsed.code))) return fail(409, "That's already in the list.");
+    item = { ...parsed, status: "" };
+    await examine(env, item);
+  }
+  // A screenshot can be added to a link or account she saved earlier, to fill in what couldn't be read.
+  const target = b.forId && item.kind === "screenshot" ? list.find((i) => i.id === b.forId) : null;
+  if (target) {
+    Object.assign(target, { quote: item.quote, author: item.author || target.author, style: item.style, handle: target.handle || item.handle, status: item.status });
+    await saveDoc(env, "inspirations", list);
+    return reply();
+  }
+  list.push({ id: crypto.randomUUID(), added: Date.now(), ...item });
+  await saveDoc(env, "inspirations", list);
+  return reply();
+}
+
+// ---------- taste: what Nishiii has learned about what she likes ----------
+const TASTE_SYSTEM = `You keep a living profile of one person's taste in quotes, for an app that suggests quotes for her Instagram page.
+You get the previous profile (may be empty), notes she wrote herself, and recent evidence: quotes she picked and skipped, how she asked for quotes to be reworded, her own saved lines, posts she published with their results, and posts from other accounts she loves.
+Write the updated profile. Keep what earlier evidence established unless new evidence contradicts it; her own notes always win. Be specific and concrete, never generic. Do not invent preferences the evidence doesn't show; with little evidence, say less.
+Reply with a JSON object only:
+{"summary": "three to five plain sentences describing her taste as it stands now",
+ "loves": ["up to 8 specific things she is drawn to: themes, moods, kinds of line"],
+ "avoids": ["up to 6 things she passes over or dislikes"],
+ "voice": ["up to 5 points on wording she prefers: length, register, lowercase, line breaks, and so on"],
+ "look": ["up to 4 points on the visual style she likes, if the evidence shows any"],
+ "performs": ["up to 4 points on what has done well or badly on her page, with numbers where given; empty if no results yet"]}`;
+
+const emptyTaste = () => ({ profile: null, notes: [], updatedAt: 0 });
+async function gatherEvidence(env) {
+  const [history, rewords, lib, posts, insp] = await Promise.all([
+    loadDoc(env, "history", []), loadDoc(env, "rewords", []), loadDoc(env, "library", emptyLibrary()),
+    loadDoc(env, "posts", []), loadDoc(env, "inspirations", []),
+  ]);
+  const slim = (h) => ({ text: h.text, author: h.author, theme: h.theme, tone: h.tone, source: h.source });
+  return {
+    picked: history.filter((h) => h.action === "used").slice(-40).map(slim),
+    skipped: history.filter((h) => h.action === "rejected").slice(-40).map(slim),
+    rewordRequests: rewords.slice(-25).map((r) => ({ asked: r.asked, before: r.before, after: r.after })),
+    ownLines: (lib.quotes || []).slice(-25).map((q) => q.text),
+    posted: posts.filter((p) => p.state === "published").slice(-30).map((p) => ({ quote: p.quote, author: p.author, music: p.music || "", ...(p.metrics || {}) })),
+    loved: insp.slice(-30).map((i) => ({ from: i.handle ? "@" + i.handle : i.kind, quote: i.quote || "", look: i.style || "",
+      topPosts: (i.top || []).slice(0, 5).map((t) => ({ quote: t.quote || "", caption: (t.caption || "").slice(0, 160), likes: t.likes, views: t.views })) })),
+  };
+}
+const evidenceCount = (e) => e.picked.length + e.skipped.length + e.rewordRequests.length + e.ownLines.length + e.posted.length + e.loved.length;
+
+async function buildTaste(env) {
+  const taste = { ...emptyTaste(), ...(await loadDoc(env, "taste", emptyTaste())) };
+  const evidence = await gatherEvidence(env);
+  const count = evidenceCount(evidence);
+  if (!count && !taste.notes.length) return { ...taste, evidence: 0 };
+  const a = parseJson(await claude(env, { system: TASTE_SYSTEM, maxTokens: 1800, messages: [{ role: "user", content:
+    `Previous profile:\n${JSON.stringify(taste.profile || {})}\n\nHer own notes:\n${JSON.stringify(taste.notes.map((n) => n.text))}\n\nRecent evidence:\n${JSON.stringify(evidence)}` }] }));
+  const list = (v, n) => (Array.isArray(v) ? v : []).map((x) => oneLine(x, 200)).filter(Boolean).slice(0, n);
+  taste.profile = { summary: lines(a.summary, 900), loves: list(a.loves, 8), avoids: list(a.avoids, 6), voice: list(a.voice, 5), look: list(a.look, 4), performs: list(a.performs, 4) };
+  taste.updatedAt = Date.now(); taste.evidence = count;
+  await saveDoc(env, "taste", taste);
+  return taste;
+}
+// The short form handed to Claude whenever it suggests, rewords or captions.
+async function tasteBrief(env) {
+  const t = await loadDoc(env, "taste", emptyTaste());
+  if (!t.profile && !(t.notes || []).length) return null;
+  const p = t.profile || {};
+  return { summary: p.summary || "", loves: p.loves || [], avoids: p.avoids || [], voice: p.voice || [], performs: p.performs || [], herNotes: (t.notes || []).map((n) => n.text) };
+}
+
+async function tasteRoutes(request, env, parts) {
+  const method = request.method;
+  const taste = { ...emptyTaste(), ...(await loadDoc(env, "taste", emptyTaste())) };
+  const out = async (t) => json({ profile: t.profile, notes: t.notes, updatedAt: t.updatedAt, evidence: evidenceCount(await gatherEvidence(env)) });
+  if (parts.length === 1 && method === "GET") return out(taste);
+  if (parts[1] === "refresh" && method === "POST") return out(await buildTaste(env));
+  if (parts[1] === "notes" && method === "POST") {
+    const text = lines((await body(request)).text, 300);
+    if (!text) return fail(400, "Write the note first.");
+    if (taste.notes.length >= 30) return fail(400, "That's the most notes Nishiii keeps. Remove one first.");
+    taste.notes.push({ id: crypto.randomUUID(), text, at: Date.now() });
+    await saveDoc(env, "taste", taste);
+    return out(taste);
+  }
+  if (parts[1] === "notes" && parts[2] && method === "DELETE") {
+    taste.notes = taste.notes.filter((n) => n.id !== parts[2]);
+    await saveDoc(env, "taste", taste);
+    return out(taste);
+  }
+  return fail(404, "Not found.");
 }
 
 // ---------- called by the renderer on GitHub ----------
@@ -765,7 +1076,7 @@ async function route(request, env, parts) {
     if (!isRenderer(request, env)) return fail(401, "Not allowed.");
     return renderRoutes(request, env, parts);
   }
-  if (["jobs", "library", "suggestions", "edit", "scan", "stock", "instagram", "posts", "caption"].includes(parts[0])) {
+  if (["jobs", "library", "suggestions", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste"].includes(parts[0])) {
     if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
     if (parts[0] === "jobs") return appRoutes(request, env, parts);
     if (parts[0] === "stock") return stockRoutes(request, env, parts);
@@ -773,6 +1084,8 @@ async function route(request, env, parts) {
     if (parts[0] === "library") return libraryRoutes(request, env, parts);
     if (parts[0] === "instagram") return igRoutes(request, env, parts);
     if (parts[0] === "posts") return postRoutes(request, env, parts);
+    if (parts[0] === "inspirations") return inspirationRoutes(request, env, parts);
+    if (parts[0] === "taste") return tasteRoutes(request, env, parts);
     if (parts[0] === "caption" && request.method === "POST") return writeCaption(request, env);
     if (parts[0] === "suggestions") return suggestionRoutes(request, env, parts);
     if (parts[0] === "edit" && request.method === "POST") return editQuote(request, env);
@@ -800,10 +1113,23 @@ export default {
   async scheduled(event, env, ctx) {
     if (!env.MEDIA) return;
     if (event.cron === "30 0 * * *") {
-      // Once a day: have quotes waiting when she opens the app.
-      if (!env.ANTHROPIC_API_KEY) return;
-      const day = await loadDoc(env, `suggestions/${todayIST()}`, []);
-      if (!day.length) ctx.waitUntil(generateSuggestions(env, 8).catch((e) => console.error("daily suggestions failed", e)));
+      // Once a day, in order: fetch how her posts did, update what Nishiii knows about her taste,
+      // then choose the day's quotes with that fresh in mind.
+      ctx.waitUntil((async () => {
+        const step = async (name, fn) => { try { await fn(); } catch (e) { console.error(`daily ${name} failed`, e); } };
+        await step("insights", async () => {
+          const ig = igReady(env) ? await loadIg(env) : null;
+          if (!ig) return;
+          const posts = await loadDoc(env, "posts", []);
+          if (await refreshInsights(env, ig, posts, { max: 15 })) await saveDoc(env, "posts", posts);
+        });
+        if (!env.ANTHROPIC_API_KEY) return;
+        await step("taste", () => buildTaste(env));
+        await step("suggestions", async () => {
+          const day = await loadDoc(env, `suggestions/${todayIST()}`, []);
+          if (!day.length) await generateSuggestions(env, 8);
+        });
+      })());
       return;
     }
     // Every few minutes: finish any post still waiting on Instagram, in case she closed the app.

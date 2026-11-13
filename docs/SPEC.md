@@ -41,21 +41,38 @@ weekly report, comment reply drafts.
 |---|---|---|
 | 1 | Reel renderer and GitHub workflows | Done |
 | 2 | Composer: photo/video background, styles, drag and pinch, image export | Done |
-| 3 | Server: passcode, reels made from the phone | Done, working on the live app |
-| 4 | Quotes: Today's suggestions, Library (own quotes, books, accounts), page scan, rewording with Nishiii, free footage search | Built; needs `ANTHROPIC_API_KEY` and `PIXABAY_API_KEY` |
-| 5 | Instagram: connect the account, caption and hashtags, tap to post reels, music from Instagram's library | Built against a stand-in for Instagram; needs `META_APP_ID`, `META_APP_SECRET` and a first real post |
-| 5b | Carousel posts (needs a 4:5 canvas, since feed pictures can't be 9:16) | Next |
-| 6 | Insights: nightly stats pull, what-works view, results feeding the suggestions | After 5 |
-| 7 | Reference accounts: their top posts and numbers, read into suggestions | After 5 |
-| 8 | Nishiii as a chat bar that can run any task in the app | After 5 |
-| 9 | Book text: full-text quotes from public-domain books, imported highlights | Later |
-| 10 | Extras: attribution check, duplicate guard across posts, queue and best-time hints, saved styles, more fonts, weekly report, comment reply drafts, HDR clips | Later |
+| 3 | Server: passcode, reels created from the phone | Done, live |
+| 4 | Quotes: Today's suggestions, Library, page scan, rewording, free footage (Pixabay) | Done, live |
+| 5 | Instagram: connect, captions, music, tap to post reels | Done, live; first real posts made |
+| 6 | Post results: reach, views, likes, comments, saves, shares; deleted posts drop off | Built against a stand-in; first run on real posts pending |
+| 7 | Inspiration: accounts (top posts), reel links, screenshots read by Claude | Built against a stand-in; first real run pending |
+| 8 | Taste profile: what Nishiii has learned, her notes, daily update, used in every suggestion | Built against a stand-in; first real run pending |
+| 5b | Carousel posts (needs a 4:5 canvas) | Next |
+| 9 | Nishiii as a chat bar that can run any task | Next |
+| 10 | Quotes from public-domain book text; imported highlights | Later |
+| 11 | Extras: attribution check, queue and best-time hints, saved styles, more fonts, weekly report, comment reply drafts, HDR clips | Later |
 
-### How suggestions learn today
+## How the app is laid out
 
-Each "Use this" and "Skip" is recorded with the quote's theme and tone, and the last 30 of each
-are given to Claude when it picks the next batch. Her own saved quotes are mixed in word for word.
-Results from Instagram (reach, likes, saves) join this once stage 6 exists.
+| Section | What it holds |
+|---|---|
+| Today | The day's suggestions: Use this, Reword, Skip |
+| Create | The composer. Tabs: Background, Text, Style, Finish |
+| Library | What she feeds Nishiii: her own quotes, books, and reels and pages she loves |
+| Posts | Everything posted from the app with its numbers, and the Instagram connection |
+| Nishiii | What Nishiii has learned about her taste, and notes she writes for Nishiii |
+
+## How Nishiii learns (the taste profile)
+
+Evidence is collected as she uses the app: quotes she picks and skips, how she asks for
+rewording, her own saved lines, her posts and their numbers, and the reels, accounts and
+screenshots she adds as inspiration. Each morning (and on "Update now") Claude is given the
+previous profile, her notes and the recent evidence, and writes the updated profile: a short
+summary plus lists of what she is drawn to, what she passes over, wording, look, and what has
+worked on her page. Because each update starts from the previous profile, it keeps what was
+learned long ago even after the raw evidence has aged out. The profile and her notes are sent
+with every request for suggestions, rewording and captions. Lines from other creators are used
+only to understand her taste and are never suggested back.
 
 ## Reel look (from the three reference posts)
 

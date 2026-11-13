@@ -522,6 +522,7 @@
     $("reel-note").hidden = ready;
     $("reel-note").textContent = "Reels need the app's server, which isn't fully set up yet. Images can still be saved.";
     if (mode) {
+      $("pane-save").classList.toggle("busy", mode !== "setup");   // hides "Save as a picture" while a reel is being made or shown
       $("reel-setup").hidden = mode !== "setup";
       $("reel-progress").hidden = mode !== "progress";
       $("reel-result").hidden = mode !== "result";
@@ -563,7 +564,7 @@
       await api(`jobs/${job.id}/overlay`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: overlay });
       await api(`jobs/${job.id}/start`, { method: "POST" });
 
-      progress("Putting the reel together. This usually takes a minute or two.", null);
+      progress("Creating the reel. This usually takes one to two minutes; you can keep this open.", null);
       for (;;) {
         await sleep(4000);
         const st = await (await api(`jobs/${job.id}`)).json();

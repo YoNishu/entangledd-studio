@@ -95,6 +95,7 @@ const env = {
 
 // ---- a pretend Instagram Graph API. Paste any token starting with SHORT to connect. ----
 const graphLog = [];
+const deleted = new Set();   // media ids "deleted on Instagram", set through /__graph_delete?id=M1
 const containers = new Map();
 let graphN = 0;
 async function pretendGraph(method, url, form) {
@@ -149,7 +150,27 @@ async function pretendGraph(method, url, form) {
     c.polls += 1;
     return { status: 200, body: { status_code: c.polls > 1 ? "FINISHED" : "IN_PROGRESS", id: p.slice(1) } };
   }
-  if (/^\/M\d+$/.test(p)) return { status: 200, body: { permalink: `https://www.instagram.com/reel/TEST${p.slice(2)}/`, id: p.slice(1) } };
+  if (/^\/M\d+\/insights$/.test(p)) {
+    const id = p.split("/")[1];
+    if (deleted.has(id)) return err("Unsupported get request. Object with ID does not exist.", 100);
+    const n = Number(id.slice(1));
+    const val = { reach: 1200 * n, views: 2100 * n, likes: 90 * n, comments: 4 * n, saved: 31 * n, shares: 12 * n };
+    return { status: 200, body: { data: q.get("metric").split(",").map((name) => ({ name, period: "lifetime", values: [{ value: val[name] }] })) } };
+  }
+  if (/^\/M\d+$/.test(p)) {
+    if (deleted.has(p.slice(1))) return err("Unsupported get request. Object with ID does not exist.", 100);
+    return { status: 200, body: { permalink: `https://www.instagram.com/reel/TEST${p.slice(2)}/`, id: p.slice(1) } };
+  }
+  if (p === "/17890" && /business_discovery/.test(q.get("fields") || "")) {
+    const handle = (/username\(([^)]+)\)/.exec(q.get("fields")) || [])[1];
+    if (handle === "private.person") return err("Invalid user id", 110);
+    const media = [
+      { caption: "for the days you forget", like_count: 48000, comments_count: 90, view_count: 0, media_type: "IMAGE", media_url: `http://localhost:${PORT}/__media/sky.jpg`, permalink: "https://www.instagram.com/p/DOf4p2lDNfd/", timestamp: "2026-09-12T10:00:00+0000" },
+      { caption: "upskilling maybe?", like_count: 813000, comments_count: 1300, view_count: 9000000, media_type: "VIDEO", media_product_type: "REELS", permalink: "https://www.instagram.com/reel/DTam9m6Aubx/", timestamp: "2026-01-12T10:00:00+0000" },
+      { caption: "small one", like_count: 900, comments_count: 3, view_count: 20000, media_type: "VIDEO", permalink: "https://www.instagram.com/reel/AAAAAAA1/", timestamp: "2026-10-01T10:00:00+0000" },
+    ];
+    return { status: 200, body: { business_discovery: { followers_count: 512000, media_count: 420, media: { data: media }, id: "999" }, id: "17890" } };
+  }
   return err("Unsupported request.");
 }
 const MEDIA_DIR = process.env.DEV_MEDIA || "";   // folder holding sea.mp4 and sky.jpg for the pretend Pexels
@@ -182,6 +203,17 @@ function pretendClaude(req) {
     const original = (first.match(/Original quote:\n([\s\S]*?)\nAuthor:/) || [])[1] || "";
     const short = original.split(/\s+/).slice(0, 5).join(" ") + ".";
     text = JSON.stringify({ reply: "Shortened it. This is no longer the author's exact words.", quote: short, altered: true });
+  } else if (system.startsWith("You keep a living profile")) {
+    const ev = JSON.parse(req.messages[0].content.split("Recent evidence:\n")[1]);
+    text = JSON.stringify({
+      summary: `She leans towards short Stoic lines about the mind. Built from ${ev.picked.length} picks, ${ev.skipped.length} skips, ${ev.rewordRequests.length} rewording requests, ${ev.posted.length} posts and ${ev.loved.length} loved items.`,
+      loves: ["calm lines about the mind", "Stoic authors"], avoids: ["long quotes"], voice: ["short", "lowercase is fine"],
+      look: ev.loved.some((l) => l.look) ? ["small centred serif on sea footage"] : [], performs: ev.posted.length ? [`posts average ${Math.round(ev.posted.reduce((a, p) => a + (p.reach || 0), 0) / ev.posted.length)} reach`] : [] });
+  } else if (system.startsWith("You look at a screenshot")) {
+    text = JSON.stringify({ quote: "you are allowed to\nstart again", author: "", handle: "serenity.scripts__", style: "Tiny white italic sans, two staggered lines low on a blue sky photo." });
+  } else if (system.startsWith("You read the quote text off")) {
+    const n = req.messages[0].content.filter((c) => c.type === "image" && c.source?.type === "url").length;
+    text = JSON.stringify({ quotes: Array.from({ length: n }, (_, i) => `so what did you learn? (${i + 1})`) });
   } else if (system.startsWith("You write Instagram captions")) {
     text = JSON.stringify({ caption: "a small reminder for a loud day.\n— Seneca", hashtags: ["#stoic quotes", "#calm", "quietthoughts", "#seneca"] });
   } else if (system.startsWith("You read photographed")) {
@@ -239,6 +271,7 @@ http.createServer(async (req, res) => {
       res.writeHead(204).end();
       return;
     }
+    if (url.pathname === "/__graph_delete") { deleted.add(url.searchParams.get("id")); res.writeHead(204).end(); return; }
     if (url.pathname === "/__graph_log") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(graphLog)); return; }
     if (url.pathname.startsWith("/__graph/")) {
       const form = new URLSearchParams(req.method === "GET" ? "" : (await readBody(req)).toString());

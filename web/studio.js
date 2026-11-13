@@ -1,5 +1,7 @@
-/* Entangledd Studio: Today's quotes, the Library, rewording with Nishiii, and free footage.
-   The composer itself lives in app.js and exposes what this file needs as window.Studio. */
+/* Entangledd Studio: everything around the composer.
+   Today's quotes, the Library, rewording with Nishiii, free footage, posting, post history and
+   Nishiii's picture of her taste. The composer itself lives in app.js and exposes what this file
+   needs as window.Studio. */
 (() => {
   "use strict";
   const S = window.Studio;
@@ -14,9 +16,27 @@
     method, headers: { "Content-Type": "application/json" }, body: data ? JSON.stringify(data) : undefined,
   });
   const friendly = (e) => (e.message === "Failed to fetch" ? "No connection. Check the internet and try again." : e.message);
+  const day = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const compact = (n) => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n || 0);
 
-  // ---------- moving between Today, Create and Library ----------
-  const VIEWS = ["today", "create", "library", "account"];
+  // Shrinks a photo on the phone before it is sent to be read.
+  function shrink(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file), img = new Image();
+      img.onload = () => {
+        const k = Math.min(1, 1568 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = el("canvas", { width: Math.round(img.naturalWidth * k), height: Math.round(img.naturalHeight * k) });
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        resolve(c.toDataURL("image/jpeg", 0.82).split(",")[1]);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That picture couldn't be opened.")); };
+      img.src = url;
+    });
+  }
+
+  // ---------- moving between the five sections ----------
+  const VIEWS = ["today", "create", "library", "posts", "nishiii"];
   let current = "create";
   function show(view) {
     current = view;
@@ -27,7 +47,8 @@
     $("hello").hidden = view !== "today";
     if (view === "today") loadToday();
     if (view === "library") loadLibrary();
-    if (view === "account") loadAccount();
+    if (view === "posts") loadPosts();
+    if (view === "nishiii") loadTaste();
   }
   VIEWS.forEach((v) => $("nav-" + v).addEventListener("click", () => show(v)));
 
@@ -44,13 +65,12 @@
     const use = el("button", { className: "btn primary", textContent: "Use this" });
     const reword = el("button", { className: "btn", textContent: "Reword" });
     const skip = el("button", { className: "btn quiet", textContent: "Skip" });
-    const usedNote = item.state === "used" ? el("p", { className: "used", textContent: "Already used today" }) : null;
     const node = el("article", { className: "card" },
       el("p", { className: "q", textContent: item.text }),
       item.author ? el("p", { className: "by", textContent: "— " + item.author }) : null,
       el("p", { className: "src", textContent: sourceLine(item.source) }),
       item.verify ? el("p", { className: "flag", textContent: "Check the wording and author before posting" }) : null,
-      usedNote,
+      item.state === "used" ? el("p", { className: "used", textContent: "Already used today" }) : null,
       el("div", { className: "acts" }, use, reword, skip));
 
     const mark = (action) => {
@@ -72,7 +92,10 @@
         S.setQuote(quote, altered ? "" : item.author); show("create");
       },
     }));
-    skip.addEventListener("click", () => { mark("rejected"); node.remove(); if (!$("suggestions").children.length) $("today-note").textContent = "Nothing left for today. Ask for more below."; });
+    skip.addEventListener("click", () => {
+      mark("rejected"); node.remove();
+      if (!$("suggestions").children.length) $("today-note").textContent = "Nothing left for today. Ask for more below.";
+    });
     return node;
   }
 
@@ -105,7 +128,7 @@
     finally { btn.disabled = false; btn.textContent = "Suggest more"; }
   });
 
-  // ---------- Library ----------
+  // ---------- Library: her quotes and books ----------
   function note(msg) { $("library-note").textContent = msg; $("library-note").hidden = !msg; if (msg) $("library-note").scrollIntoView({ block: "nearest" }); }
 
   function renderLibrary(lib) {
@@ -120,12 +143,12 @@
     const fill = (id, rows, empty) => $(id).replaceChildren(...(rows.length ? rows : [el("li", {}, el("p", { className: "empty", textContent: empty }))]));
     fill("list-quotes", lib.quotes.slice().reverse().map((q) => row("quotes", q, q.text, [q.author, q.from].filter(Boolean).join(", "))), "No quotes saved yet.");
     fill("list-books", lib.books.map((b) => row("books", b, b.title, b.author)), "No books yet.");
-    fill("list-accounts", lib.accounts.map((a) => row("accounts", a, "@" + a.handle, "")), "No accounts yet.");
   }
 
   async function loadLibrary() {
     if (!S.server.on) { note("The library needs the app's server, which this copy isn't connected to."); return; }
     try { renderLibrary(await getJson("library")); note(""); } catch (e) { note(friendly(e)); }
+    try { renderInspirations(await getJson("inspirations")); } catch (e) { inspNote(friendly(e)); }
   }
 
   function addForm(formId, kind, read, clear) {
@@ -139,23 +162,8 @@
     () => { $("q-text").value = ""; });
   addForm("add-book", "books", () => ({ title: $("b-title").value, author: $("b-author").value }),
     () => { $("b-title").value = ""; $("b-author").value = ""; });
-  addForm("add-account", "accounts", () => ({ handle: $("a-handle").value }), () => { $("a-handle").value = ""; });
 
-  // Scan: shrink the photo on the phone, let Claude read it, then she picks which lines to keep.
-  function shrink(file) {
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file), img = new Image();
-      img.onload = () => {
-        const k = Math.min(1, 1568 / Math.max(img.naturalWidth, img.naturalHeight));
-        const c = el("canvas", { width: Math.round(img.naturalWidth * k), height: Math.round(img.naturalHeight * k) });
-        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-        URL.revokeObjectURL(url);
-        resolve(c.toDataURL("image/jpeg", 0.82).split(",")[1]);
-      };
-      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That photo couldn't be opened.")); };
-      img.src = url;
-    });
-  }
+  // Scan: let Claude read a photographed page, then she picks which lines to keep.
   $("scan").addEventListener("change", async () => {
     const file = $("scan").files[0];
     $("scan").value = "";
@@ -180,14 +188,82 @@
     } catch (e) { $("scan-results").replaceChildren(el("p", { className: "flag", textContent: friendly(e) })); }
   });
 
+  // ---------- Library: reels and pages she loves ----------
+  function inspNote(msg) { $("inspiration-note").textContent = msg; $("inspiration-note").hidden = !msg; }
+
+  function inspirationCard(item) {
+    const title = item.kind === "account" ? `@${item.handle}${item.followers ? `, ${compact(item.followers)} followers` : ""}`
+      : item.kind === "reel" ? `Reel${item.handle ? ` from @${item.handle}` : ""}` : `Screenshot${item.handle ? ` from @${item.handle}` : ""}`;
+    const kids = [el("p", { className: "tag", textContent: title })];
+    if (item.quote) kids.push(el("p", { className: "q", textContent: item.quote }));
+    if (item.author) kids.push(el("p", { className: "by", textContent: "— " + item.author }));
+    if (item.caption) kids.push(el("p", { className: "cap", textContent: "Caption: " + item.caption }));
+    if (item.style) kids.push(el("p", { className: "cap", textContent: "Look: " + item.style }));
+    if (item.metrics) kids.push(el("p", { className: "src", textContent: [`${compact(item.metrics.likes)} likes`, `${compact(item.metrics.comments)} comments`, item.metrics.views ? `${compact(item.metrics.views)} views` : ""].filter(Boolean).join(", ") }));
+    if (item.top.length) {
+      kids.push(el("h3", { textContent: "Posts that did best" }));
+      kids.push(el("ul", {}, ...item.top.map((t) => el("li", { textContent: `${t.quote || t.caption || "No text"} (${compact(t.likes)} likes${t.views ? `, ${compact(t.views)} views` : ""})` }))));
+    }
+    if (item.status) kids.push(el("p", { className: "src", textContent: item.status }));
+
+    const links = el("div", { className: "links" });
+    if (item.url) links.append(el("a", { href: item.url, target: "_blank", rel: "noopener", textContent: "Open" }));
+    if (item.kind !== "screenshot") {
+      const again = el("button", { type: "button", textContent: "Read again" });
+      again.addEventListener("click", async () => {
+        again.disabled = true; again.textContent = "Reading…";
+        try { renderInspirations(await send(`inspirations/${item.id}/refresh`, "POST")); inspNote(""); } catch (e) { inspNote(friendly(e)); again.disabled = false; again.textContent = "Read again"; }
+      });
+      links.append(again);
+    }
+    if (item.kind === "reel" && !item.quote) {
+      const pick = el("input", { type: "file", accept: "image/*", hidden: true });
+      const add = el("button", { type: "button", textContent: "Add its screenshot" });
+      add.addEventListener("click", () => pick.click());
+      pick.addEventListener("change", () => { if (pick.files[0]) addScreenshot(pick.files[0], item.id); });
+      links.append(add, pick);
+    }
+    const remove = el("button", { type: "button", textContent: "Remove" });
+    remove.addEventListener("click", async () => {
+      try { renderInspirations(await send(`inspirations/${item.id}`, "DELETE")); } catch (e) { inspNote(friendly(e)); }
+    });
+    links.append(remove);
+    kids.push(links);
+    return el("article", { className: "card" }, ...kids);
+  }
+  function renderInspirations(data) {
+    $("list-inspirations").replaceChildren(...(data.items.length ? data.items.map(inspirationCard)
+      : [el("p", { className: "empty", textContent: "Nothing here yet. Add a reel you wish you'd made." })]));
+  }
+  async function addScreenshot(file, forId) {
+    if (!S.server.ai) { inspNote("Reading screenshots switches on once Nishiii is connected on the server."); return; }
+    inspNote("Reading the screenshot…");
+    try { renderInspirations(await send("inspirations", "POST", { image: await shrink(file), forId })); inspNote(""); }
+    catch (e) { inspNote(friendly(e)); }
+  }
+  $("add-inspiration").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    inspNote("Looking it up on Instagram…");
+    try { renderInspirations(await send("inspirations", "POST", { input: $("i-input").value })); $("i-input").value = ""; inspNote(""); }
+    catch (err) { inspNote(friendly(err)); }
+  });
+  $("i-shot").addEventListener("change", () => {
+    const file = $("i-shot").files[0];
+    $("i-shot").value = "";
+    if (file) addScreenshot(file);
+  });
+
   // ---------- Reword with Nishiii ----------
   let session = null;   // { original, author, quote, altered, messages, apply }
   function openReword({ quote, author, apply }) {
     session = { original: quote, author: author || "", quote, altered: false, messages: [], apply };
-    $("reword-quote").textContent = quote;
+    $("reword-original").textContent = quote;
+    $("reword-new").hidden = true;
+    $("reword-quote").textContent = "";
     $("reword-flag").hidden = true;
     $("reword-log").replaceChildren();
     $("reword-input").value = "";
+    $("reword-use").textContent = "Keep the original";
     $("reword").hidden = false;
     $("reword-input").focus();
   }
@@ -212,6 +288,8 @@
       mine.quote = r.quote; mine.altered = r.altered;
       waiting.textContent = r.reply;
       $("reword-quote").textContent = r.quote;
+      $("reword-new").hidden = false;
+      $("reword-use").textContent = "Use the reworded version";
       $("reword-flag").hidden = !(r.altered && mine.author);
     } catch (e) {
       mine.messages.pop();
@@ -284,9 +362,8 @@
     newSearch();
   });
 
-  // ---------- Account: Instagram connection and past posts ----------
+  // ---------- Posts: history, results, and the Instagram connection ----------
   let ig = null;
-  const day = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 
   function renderIg() {
     const on = !!(ig && ig.connected);
@@ -297,25 +374,43 @@
       ? `Connected as @${ig.username}${ig.page ? ` through the Facebook Page "${ig.page}"` : ""}. Music search works until ${day(ig.musicUntil)}; after that, connect again. Posting keeps working.`
       : "Not connected yet.";
   }
-  function renderPosts(posts) {
+
+  function postCard(p) {
     const label = { processing: "Being processed by Instagram", published: "Posted", failed: "Didn't post" };
-    $("list-posts").replaceChildren(...(posts.length ? posts.map((p) => {
-      const state = el("p", { className: "sub " + (p.state === "published" ? "ok" : p.state === "failed" ? "bad" : ""),
-        textContent: `${label[p.state] || p.state}, ${day(p.published || p.created)}${p.music ? `, music: ${p.music}` : ""}${p.error ? `. ${p.error}` : ""}` });
-      const link = p.permalink ? el("a", { href: p.permalink, target: "_blank", rel: "noopener", textContent: "Open" }) : el("span");
-      return el("li", {}, el("div", {}, el("p", { className: "main", textContent: p.quote || p.caption || "Reel" }), state), link);
-    }) : [el("li", {}, el("p", { className: "empty", textContent: "Nothing posted from the app yet." }))]));
+    const kids = [el("p", { className: "q", textContent: p.quote || p.caption || "Reel" })];
+    kids.push(el("p", { className: p.state === "failed" ? "flag" : "used",
+      textContent: `${label[p.state] || p.state}, ${day(p.published || p.created)}${p.music ? `, music: ${p.music}` : ""}${p.error ? `. ${p.error}` : ""}` }));
+    const m = p.metrics;
+    if (m && Object.keys(m).length) {
+      const names = [["reach", "Reach"], ["views", "Views"], ["likes", "Likes"], ["comments", "Comments"], ["saved", "Saves"], ["shares", "Shares"]];
+      kids.push(el("dl", { className: "nums" }, ...names.filter(([k]) => m[k] != null).map(([k, name]) => el("div", {}, el("dt", { textContent: name }), el("dd", { textContent: compact(m[k]) })))));
+    } else if (p.state === "published") kids.push(el("p", { className: "src", textContent: "Numbers appear a little while after posting." }));
+    const links = el("div", { className: "links" });
+    if (p.permalink) links.append(el("a", { href: p.permalink, target: "_blank", rel: "noopener", textContent: "Open on Instagram" }));
+    const remove = el("button", { type: "button", textContent: "Remove from this list" });
+    remove.addEventListener("click", async () => {
+      try { await send("posts/" + p.id, "DELETE"); loadPosts(); } catch (e) { $("posts-note").textContent = friendly(e); }
+    });
+    links.append(remove);
+    kids.push(links);
+    return el("article", { className: "card" }, ...kids);
   }
+
   async function loadIg() {
     if (!S.server.instagram) { ig = null; return ig; }
     try { ig = await getJson("instagram"); } catch (e) { ig = null; $("ig-status").textContent = friendly(e); }
     return ig;
   }
-  async function loadAccount() {
+  async function loadPosts() {
     await loadIg();
     renderIg();
-    if (S.server.instagram) { try { renderPosts((await getJson("posts")).posts); } catch (e) { /* the status line already explains */ } }
-    else renderPosts([]);
+    if (!S.server.instagram) { $("posts-note").textContent = ""; $("list-posts").replaceChildren(); return; }
+    $("posts-note").textContent = "Checking Instagram for the latest numbers…";
+    try {
+      const { posts } = await getJson("posts");
+      $("list-posts").replaceChildren(...posts.map(postCard));
+      $("posts-note").textContent = posts.length ? "Posts you delete on Instagram disappear from here the next time this opens." : "Nothing posted from the app yet.";
+    } catch (e) { $("posts-note").textContent = friendly(e); }
   }
   $("ig-connect").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -325,6 +420,43 @@
   });
   $("ig-disconnect").addEventListener("click", async () => {
     try { ig = await send("instagram", "DELETE"); renderIg(); } catch (err) { $("ig-status").textContent = friendly(err); }
+  });
+
+  // ---------- Nishiii: her picture of what Dhruuu likes ----------
+  function renderTaste(t) {
+    const p = t.profile;
+    $("taste-card").hidden = !p;
+    if (p) {
+      $("taste-summary").textContent = p.summary;
+      const groups = [["Drawn to", p.loves], ["Passes over", p.avoids], ["Wording", p.voice], ["Look", p.look], ["What has worked on your page", p.performs]];
+      $("taste-lists").replaceChildren(...groups.filter(([, list]) => list && list.length).flatMap(([name, list]) =>
+        [el("h3", { textContent: name }), el("ul", {}, ...list.map((x) => el("li", { textContent: x })))]));
+      $("taste-note").textContent = `Last updated ${day(t.updatedAt)}, from ${t.evidence} things you've picked, skipped, reworded, saved, posted or added. It updates itself every morning.`;
+    } else {
+      $("taste-note").textContent = t.evidence
+        ? `Nothing written yet. There are ${t.evidence} things to learn from so far: tap Update now.`
+        : "Nothing to learn from yet. This fills in as you pick and skip quotes, reword them, post, and add to the Library.";
+    }
+    $("list-notes").replaceChildren(...(t.notes.length ? t.notes.map((n) => {
+      const remove = el("button", { textContent: "Remove" });
+      remove.addEventListener("click", async () => { try { renderTaste(await send("taste/notes/" + n.id, "DELETE")); } catch (e) { $("taste-note").textContent = friendly(e); } });
+      return el("li", {}, el("p", { className: "main", textContent: n.text }), remove);
+    }) : [el("li", {}, el("p", { className: "empty", textContent: "No notes yet." }))]));
+  }
+  async function loadTaste() {
+    if (!S.server.ai) { $("taste-note").textContent = "This switches on once Nishiii is connected on the server."; return; }
+    try { renderTaste(await getJson("taste")); } catch (e) { $("taste-note").textContent = friendly(e); }
+  }
+  $("taste-refresh").addEventListener("click", async () => {
+    const btn = $("taste-refresh");
+    btn.disabled = true; btn.textContent = "Thinking it over…";
+    try { renderTaste(await send("taste/refresh", "POST")); } catch (e) { $("taste-note").textContent = friendly(e); }
+    finally { btn.disabled = false; btn.textContent = "Update now"; }
+  });
+  $("add-note").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try { renderTaste(await send("taste/notes", "POST", { text: $("note-text").value })); $("note-text").value = ""; }
+    catch (err) { $("taste-note").textContent = friendly(err); }
   });
 
   // ---------- Post to Instagram ----------
@@ -373,7 +505,7 @@
   $("post-open").addEventListener("click", async () => {
     if (!S.currentReel()) return;
     await loadIg();
-    if (!ig || !ig.connected) { show("account"); renderIg(); $("ig-status").textContent = "Connect Instagram here first, then come back to post the reel."; return; }
+    if (!ig || !ig.connected) { show("posts"); $("ig-status").textContent = "Connect Instagram here first, then go back to Create to post the reel."; $("ig-status").scrollIntoView({ block: "center" }); return; }
     chooseMusic(null);
     $("music-list").replaceChildren();
     $("post-form").hidden = false; $("post-link").hidden = true; postStatus("");
