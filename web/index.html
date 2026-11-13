@@ -107,7 +107,7 @@
   <ul class="list" id="list-notes"></ul>
 
   <h2>Make Nishiii forget</h2>
-  <p class="note">"Forget the profile" erases what is written above; it is written again from your activity. "Forget everything" also erases your notes and the record of what you picked, skipped and reworded. Your Library, the reels you added and your posts stay, and can be removed in their own sections.</p>
+  <p class="note">Each of these asks you to confirm first. Your Library, the reels you added and your posts are never touched here; remove those in their own sections.</p>
   <button class="btn" id="forget-profile">Forget the profile</button>
   <button class="btn quiet" id="forget-all">Forget everything and start fresh</button>
 </section>
@@ -237,6 +237,17 @@
       <button class="btn" type="submit" id="reword-send">Send</button>
     </form>
     <button class="btn primary" id="reword-use">Use this version</button>
+  </div>
+</div>
+
+<div class="sheet center" id="confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body" hidden>
+  <div class="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-body"></p>
+    <div class="pair">
+      <button class="btn" id="confirm-no">Cancel</button>
+      <button class="btn danger" id="confirm-yes"></button>
+    </div>
   </div>
 </div>
 

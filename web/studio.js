@@ -19,6 +19,36 @@
   const day = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   const compact = (n) => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n || 0);
 
+  // A small coloured label for the state of something. The words carry the meaning; the colour helps at a glance.
+  //   ok = done and live, wait = started but unfinished, info = in progress, gone = no longer there, bad = needs attention
+  const chip = (kind, text) => el("p", { className: "chip " + kind, textContent: text });
+
+  // A proper yes/no pop-up for things that can't be undone. Resolves true only if she confirms.
+  function confirmDialog({ title, body, yes }) {
+    return new Promise((resolve) => {
+      $("confirm-title").textContent = title;
+      $("confirm-body").textContent = body;
+      $("confirm-yes").textContent = yes;
+      $("confirm").hidden = false;
+      $("confirm-no").focus();
+      const done = (answer) => {
+        $("confirm").hidden = true;
+        $("confirm-yes").removeEventListener("click", onYes);
+        $("confirm-no").removeEventListener("click", onNo);
+        $("confirm").removeEventListener("click", onBackdrop);
+        document.removeEventListener("keydown", onKey);
+        resolve(answer);
+      };
+      const onYes = () => done(true), onNo = () => done(false);
+      const onBackdrop = (e) => { if (e.target === $("confirm")) done(false); };
+      const onKey = (e) => { if (e.key === "Escape") done(false); };
+      $("confirm-yes").addEventListener("click", onYes);
+      $("confirm-no").addEventListener("click", onNo);
+      $("confirm").addEventListener("click", onBackdrop);
+      document.addEventListener("keydown", onKey);
+    });
+  }
+
   // Shrinks a photo on the phone before it is sent to be read.
   function shrink(file) {
     return new Promise((resolve, reject) => {
@@ -63,9 +93,9 @@
 
   // What actually happened to a suggestion, so "used" is never mistaken for "posted".
   function fateLine(item) {
-    if (item.posted === "posted") return el("p", { className: "used", textContent: "Posted to Instagram" });
-    if (item.posted === "deleted") return el("p", { className: "src", textContent: "Posted earlier, then deleted on Instagram. Free to use again." });
-    if (item.state === "used") return el("p", { className: "src", textContent: "Opened in Create, not posted" });
+    if (item.posted === "posted") return chip("ok", "Posted to Instagram");
+    if (item.posted === "deleted") return chip("gone", "Posted earlier, then deleted. Free to use again");
+    if (item.state === "used") return chip("wait", "Opened in Create, not posted");
     return null;
   }
 
@@ -77,7 +107,7 @@
       el("p", { className: "q", textContent: item.text }),
       item.author ? el("p", { className: "by", textContent: "— " + item.author }) : null,
       el("p", { className: "src", textContent: sourceLine(item.source) }),
-      item.verify ? el("p", { className: "flag", textContent: "Check the wording and author before posting" }) : null,
+      item.verify ? chip("bad", "Check the wording and author before posting") : null,
       fateLine(item),
       el("div", { className: "acts" }, use, reword, skip));
 
@@ -384,10 +414,11 @@
   }
 
   function postCard(p) {
-    const label = { processing: "Being processed by Instagram", published: "Posted", failed: "Didn't post" };
-    const kids = [el("p", { className: "q", textContent: p.quote || p.caption || "Reel" })];
-    kids.push(el("p", { className: p.state === "failed" ? "flag" : "used",
-      textContent: `${label[p.state] || p.state}, ${day(p.published || p.created)}${p.music ? `, music: ${p.music}` : ""}${p.error ? `. ${p.error}` : ""}` }));
+    const label = { processing: ["info", "Being processed by Instagram"], published: ["ok", "Posted"], failed: ["bad", "Didn't post"] };
+    const [kind, words] = label[p.state] || ["gone", p.state];
+    const kids = [el("p", { className: "q", textContent: p.quote || p.caption || "Reel" }), chip(kind, words)];
+    kids.push(el("p", { className: "src", textContent: `${day(p.published || p.created)}${p.music ? `, music: ${p.music}` : ""}` }));
+    if (p.error) kids.push(el("p", { className: "flag", textContent: p.error }));
     const m = p.metrics;
     if (m && Object.keys(m).length) {
       const names = [["reach", "Reach"], ["views", "Views"], ["likes", "Likes"], ["comments", "Comments"], ["saved", "Saves"], ["shares", "Shares"]];
@@ -427,6 +458,8 @@
     catch (err) { $("ig-status").textContent = friendly(err); }
   });
   $("ig-disconnect").addEventListener("click", async () => {
+    if (!(await confirmDialog({ title: "Disconnect Instagram?", yes: "Disconnect",
+      body: "The app will stop being able to post, read numbers or search music until you paste a new token here. Nothing on Instagram is deleted." }))) return;
     try { ig = await send("instagram", "DELETE"); renderIg(); } catch (err) { $("ig-status").textContent = friendly(err); }
   });
 
@@ -461,20 +494,22 @@
     try { renderTaste(await send("taste/refresh", "POST")); } catch (e) { $("taste-note").textContent = friendly(e); }
     finally { btn.disabled = false; btn.textContent = "Update now"; }
   });
-  // Forgetting asks for a second tap, since it can't be undone.
-  function forgetButton(id, scope, label, done) {
-    const btn = $(id);
-    let armed = null;
-    const reset = () => { clearTimeout(armed); armed = null; btn.textContent = label; };
-    btn.addEventListener("click", async () => {
-      if (!armed) { btn.textContent = "Tap again to confirm"; armed = setTimeout(reset, 5000); return; }
-      reset();
-      try { renderTaste(await send("taste?scope=" + scope, "DELETE")); $("taste-note").textContent = done; }
-      catch (e) { $("taste-note").textContent = friendly(e); }
-    });
+  // Forgetting can't be undone, so each asks first in a pop-up.
+  async function forget(scope, ask, done) {
+    if (!(await confirmDialog(ask))) return;
+    try { renderTaste(await send("taste?scope=" + scope, "DELETE")); $("taste-note").textContent = done; }
+    catch (e) { $("taste-note").textContent = friendly(e); }
   }
-  forgetButton("forget-profile", "profile", "Forget the profile", "The profile was erased. It will be written again from your activity at the next update.");
-  forgetButton("forget-all", "all", "Forget everything and start fresh", "Everything Nishiii had learned was erased, along with your notes and the record of picks, skips and rewording.");
+  $("forget-profile").addEventListener("click", () => forget("profile", {
+    title: "Forget the profile?",
+    body: "What Nishiii has written about your taste will be erased. It gets written again from your activity at the next update. Your notes stay.",
+    yes: "Forget the profile",
+  }, "The profile was erased. It will be written again from your activity at the next update."));
+  $("forget-all").addEventListener("click", () => forget("all", {
+    title: "Forget everything?",
+    body: "This erases the profile, your notes, and the record of every quote you picked, skipped or reworded. It can't be undone. Your Library, the reels you added and your posts are not touched.",
+    yes: "Forget everything",
+  }, "Everything Nishiii had learned was erased, along with your notes and the record of picks, skips and rewording."));
 
   $("add-note").addEventListener("submit", async (e) => {
     e.preventDefault();

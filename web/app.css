@@ -15,6 +15,8 @@
   --mist: #9DB4B8;     /* secondary text */
   --glass: #7FC8B2;    /* sea-glass accent */
   --coral: #F0A98A;    /* warnings */
+  --amber: #EBCB7A;    /* started, not finished */
+  --sky: #9CC3F0;      /* in progress */
   --radius: 14px;
 }
 
@@ -242,3 +244,17 @@ a.btn { text-decoration: none; }
 .card li { margin: 2px 0; }
 .card .cap { margin: 0; font-size: 13.5px; color: var(--mist); white-space: pre-line; }
 .pane.busy #save-image { display: none; }
+
+/* ---------- status chips and the confirm pop-up ---------- */
+.chip { margin: 0; justify-self: start; padding: 3px 10px; border-radius: 999px; border: 1px solid currentColor; font: 500 12px/1.4 "Poppins", sans-serif; }
+.chip.ok { color: var(--glass); background: rgba(127, 200, 178, 0.12); }
+.chip.wait { color: var(--amber); background: rgba(235, 203, 122, 0.12); }
+.chip.info { color: var(--sky); background: rgba(156, 195, 240, 0.12); }
+.chip.gone { color: var(--mist); background: rgba(157, 180, 184, 0.10); }
+.chip.bad { color: var(--coral); background: rgba(240, 169, 138, 0.12); }
+
+.sheet.center { align-items: center; padding: 24px; z-index: 12; }
+.dialog { width: min(100%, 380px); background: var(--tide); border-radius: 18px; padding: 20px; display: grid; gap: 12px; box-shadow: 0 24px 60px rgba(2, 10, 14, 0.7); }
+.dialog h2 { margin: 0; font: 500 20px/1.3 "Lora", serif; }
+.dialog p { margin: 0; font-size: 14.5px; color: var(--foam); }
+.btn.danger { background: var(--coral); border-color: var(--coral); color: #3a1408; }
