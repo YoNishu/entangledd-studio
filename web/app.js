@@ -371,7 +371,6 @@
     $("clear-bg").hidden = !state.bg;
     $("video-opts").hidden = !video;
     $("save-image").hidden = video;
-    $("save-video").hidden = !video;
     $("len-out").textContent = state.length + " s";
     $("len").value = state.length;
     $("done").hidden = true;
@@ -391,7 +390,7 @@
       v.muted = true; v.loop = true; v.playsInline = true; v.setAttribute("playsinline", "");
       v.addEventListener("loadeddata", () => {
         clearBackground();
-        state.bg = { kind: "video", el: v, url, name: file.name };
+        state.bg = { kind: "video", el: v, url, name: file.name, file };
         if (isFinite(v.duration)) state.length = Math.round(Math.min(30, Math.max(5, v.duration)));
         v.play().catch(() => {});
         syncBackgroundPane();
@@ -400,7 +399,7 @@
       v.src = url; v.load();
     } else {
       const img = new Image();
-      img.onload = () => { clearBackground(); state.bg = { kind: "image", el: img, url, name: file.name }; syncBackgroundPane(); };
+      img.onload = () => { clearBackground(); state.bg = { kind: "image", el: img, url, name: file.name, file }; syncBackgroundPane(); };
       img.onerror = fail;
       img.src = url;
     }
@@ -434,11 +433,134 @@
     $("done").textContent = "Image saved to your downloads."; $("done").hidden = false;
   });
 
-  $("save-layer").addEventListener("click", async () => {
-    download(await toBlob(compose(true), "image/png"), "entangledd-text.png");
-    const settings = { length: state.length, mute: state.mute, fade: state.fade, background: state.bg ? state.bg.name : null };
-    download(new Blob([JSON.stringify(settings, null, 2)], { type: "application/json" }), "entangledd-settings.json");
-    $("done").textContent = "Text layer and settings saved."; $("done").hidden = false;
+  // ---------- server: passcode and reels ----------
+  const TOKEN_KEY = "entangledd.token.v1";
+  const server = { on: false, reels: false, token: "" };
+  try { server.token = localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { /* no storage: she signs in each visit */ }
+
+  async function api(path, opts = {}) {
+    const res = await fetch("/api/" + path, { ...opts, headers: { ...(opts.headers || {}), Authorization: "Bearer " + server.token } });
+    if (res.status === 401) { showLock(); throw new Error("Enter the passcode to continue."); }
+    if (!res.ok) {
+      let msg = "The server didn't respond as expected. Try again.";
+      try { msg = (await res.json()).error || msg; } catch (e) { /* keep the generic message */ }
+      throw new Error(msg);
+    }
+    return res;
+  }
+
+  function showLock() {
+    $("lock").hidden = false;
+    $("passcode").value = "";
+    $("passcode").focus();
+  }
+  $("lock").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = $("lock-error");
+    err.hidden = true;
+    try {
+      const res = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: $("passcode").value }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "That didn't work. Try again.");
+      server.token = data.token;
+      try { localStorage.setItem(TOKEN_KEY, server.token); } catch (e2) { /* stays signed in for this visit only */ }
+      $("lock").hidden = true;
+    } catch (e2) {
+      err.textContent = e2.message === "Failed to fetch" ? "No connection. Check the internet and try again." : e2.message;
+      err.hidden = false;
+    }
+  });
+
+  async function connect() {
+    try {
+      const res = await fetch("/api/status", { headers: { Authorization: "Bearer " + server.token } });
+      if (!res.ok) return;                       // no server behind this copy of the app
+      const st = await res.json();
+      server.on = true; server.reels = !!st.reels;
+      if (st.configured && !st.signedIn) showLock();
+    } catch (e) { /* offline or static hosting: the composer still works */ }
+    finally { syncReelPane(); }
+  }
+
+  let reel = null;   // { id, blob } once a reel is finished
+  function syncReelPane(mode) {
+    const ready = server.on && server.reels;
+    $("make-reel").disabled = !ready;
+    $("reel-note").hidden = ready;
+    $("reel-note").textContent = "Reels need the app's server, which isn't fully set up yet. Images can still be saved.";
+    if (mode) {
+      $("reel-setup").hidden = mode !== "setup";
+      $("reel-progress").hidden = mode !== "progress";
+      $("reel-result").hidden = mode !== "result";
+    }
+  }
+  function progress(text, pct) {
+    $("progress").textContent = text;
+    if (pct == null) $("bar").removeAttribute("value"); else $("bar").value = pct;
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function makeReel() {
+    $("done").hidden = true;
+    syncReelPane("progress");
+    try {
+      // The background: her video as it is, or the still picture exactly as shown.
+      let bg, bgName;
+      if (state.bg && state.bg.kind === "video") { bg = state.bg.file; bgName = /\.[a-z0-9]{2,5}$/i.test(bg.name) ? bg.name : "clip.mp4"; }
+      else {
+        const c = document.createElement("canvas"); c.width = W; c.height = H;
+        drawBackground(c.getContext("2d"));
+        bg = await toBlob(c, "image/jpeg", 0.93); bgName = "background.jpg";
+      }
+      const overlay = await toBlob(compose(true), "image/png");
+
+      progress("Sending the background…", 0);
+      const job = await (await api("jobs", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ length: state.length, keepAudio: !state.mute, fade: state.fade, bgName, bgSize: bg.size }) })).json();
+      const total = Math.max(1, Math.ceil(bg.size / job.partSize)), parts = [];
+      for (let i = 0; i < total; i++) {
+        const chunk = bg.slice(i * job.partSize, (i + 1) * job.partSize);
+        const part = await (await api(`jobs/${job.id}/bg/${i + 1}?uploadId=${encodeURIComponent(job.uploadId)}`,
+          { method: "PUT", body: chunk })).json();
+        parts.push(part);
+        progress("Sending the background…", Math.round(((i + 1) / total) * 100));
+      }
+      await api(`jobs/${job.id}/bg/complete`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uploadId: job.uploadId, parts }) });
+      await api(`jobs/${job.id}/overlay`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: overlay });
+      await api(`jobs/${job.id}/start`, { method: "POST" });
+
+      progress("Putting the reel together. This usually takes a minute or two.", null);
+      for (;;) {
+        await sleep(4000);
+        const st = await (await api(`jobs/${job.id}`)).json();
+        if (st.state === "done") break;
+        if (st.state === "failed") throw new Error(st.error || "The reel could not be put together.");
+      }
+      progress("Fetching the finished reel…", null);
+      const blob = await (await api(`jobs/${job.id}/reel`)).blob();
+      if (reel && reel.url) URL.revokeObjectURL(reel.url);
+      reel = { id: job.id, blob, url: URL.createObjectURL(blob) };
+      $("result").src = reel.url;
+      syncReelPane("result");
+    } catch (e) {
+      syncReelPane("setup");
+      $("done").textContent = e.message === "Failed to fetch" ? "The connection dropped. Check the internet and try again." : e.message;
+      $("done").hidden = false;
+    }
+  }
+  $("make-reel").addEventListener("click", makeReel);
+  $("again").addEventListener("click", () => { $("result").pause(); syncReelPane("setup"); $("done").hidden = true; });
+  $("save-reel").addEventListener("click", async () => {
+    if (!reel) return;
+    const file = new File([reel.blob], "entangledd-reel.mp4", { type: "video/mp4" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); $("done").textContent = "Reel shared."; $("done").hidden = false; return; }
+      catch (e) { if (e.name === "AbortError") return; }
+    }
+    download(reel.blob, "entangledd-reel.mp4");
+    $("done").textContent = "Reel saved to your downloads."; $("done").hidden = false;
   });
 
   // ---------- draft (text and settings only; the background file is not kept) ----------
@@ -471,6 +593,7 @@
     $("mute").checked = state.mute; $("fade").checked = state.fade; $("shadow").checked = state.shadow;
     syncBackgroundPane();
     if (window.matchMedia("(min-width: 900px)").matches) showTab("text");
+    connect();
     setInterval(checkContrast, 700);
     loop();
   }

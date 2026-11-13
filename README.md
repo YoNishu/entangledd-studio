@@ -12,6 +12,14 @@ straight from the phone as a 1080x1920 image. It is a plain static site with no 
 serve the `web/` folder (for example `python3 -m http.server --directory web`) or host it on
 Cloudflare Pages with `web` as the output directory.
 
+**Server.** `server/worker.js` runs on Cloudflare next to the app. It checks the passcode, stores
+uploads in the `entangledd-media` R2 bucket, asks GitHub to render (the "Render job" workflow),
+and hands the finished reel back to the phone. To try the whole thing on one machine without
+Cloudflare or GitHub: `node server/dev.mjs`, then open http://localhost:8787 (passcode `letmein`).
+
+Secrets it needs, set in the Cloudflare dashboard: `APP_PASSCODE`, `RENDER_SECRET`,
+`GITHUB_TOKEN`. The GitHub repo needs the same `RENDER_SECRET` as an Actions secret.
+
 **Reel maker.** `render/render.py` turns a quote into a 1080x1920 MP4 (H.264 + AAC) with a slow
 background zoom, a text fade-in, an optional background photo and optional music.
 
@@ -42,6 +50,7 @@ python3 render/render.py --overlay entangledd-text.png --bg clip.mov --keep-audi
 | Folder | What goes in it |
 |---|---|
 | `web/` | The phone app (composer) |
+| `server/` | The Cloudflare server code and a local stand-in for development |
 | `render/` | The reel renderer and its fonts |
 | `backgrounds/` | Background images you own or have rights to use |
 | `music/` | Audio you own or that is royalty-free |

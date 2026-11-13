@@ -41,7 +41,8 @@ weekly report, comment reply drafts.
 |---|---|---|
 | 1 | Reel maker (renderer + GitHub workflow) | Done |
 | 2 | Composer app: photo/video background, styles, drag and pinch, image export | Done |
-| 3 | Server (Cloudflare Worker + storage): video reel rendering from the phone, free footage search, carousel posts | Next |
+| 3 | Server: passcode, video and photo reels made from the phone | Built; needs the three secrets set |
+| 3a | Free footage search, carousel posts | Next |
 | 3b | Publishing to Instagram | Needs the Meta developer app settings |
 | 4 | Daily suggestions, reference books/accounts, her own quotes, scan | Needs the Anthropic API key |
 | 5 | Edit with Claude and Nishiii | Needs the Anthropic API key |

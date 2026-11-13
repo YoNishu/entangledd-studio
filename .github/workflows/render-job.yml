@@ -1,0 +1,43 @@
+name: Render job
+
+# Started by the app when she taps "Make reel". Not meant to be run by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Job id from the app"
+        required: true
+        type: string
+      app_url:
+        description: "Address of the app"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg and Pillow
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet pillow
+
+      - name: Render and send back
+        # Inputs go through env vars so they can never be run as shell code.
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          APP_URL: ${{ inputs.app_url }}
+          RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
+        run: bash render/run_job.sh

@@ -1,8 +1,20 @@
 {
-  // Cloudflare reads this file to host the app. "web" is the folder that gets served.
+  // Cloudflare reads this file to host the app.
   "name": "entangledd-studio",
   "compatibility_date": "2026-06-20",
+  // Server code for everything under /api/
+  "main": "./server/worker.js",
+  // "web" is the folder served as the app itself
   "assets": {
     "directory": "./web"
+  },
+  // Storage for uploaded backgrounds and finished reels
+  "r2_buckets": [
+    { "binding": "MEDIA", "bucket_name": "entangledd-media" }
+  ],
+  "vars": {
+    "GITHUB_REPO": "YoNishu/entangledd-studio"
   }
+  // Secrets are added in the Cloudflare dashboard, not here:
+  // APP_PASSCODE, RENDER_SECRET, GITHUB_TOKEN
 }

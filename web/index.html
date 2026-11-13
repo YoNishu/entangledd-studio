@@ -42,12 +42,7 @@
       <p class="note">Free footage search turns on once the app is connected to its server.</p>
       <button class="btn quiet" id="clear-bg" hidden>Remove background</button>
       <div id="video-opts" hidden>
-        <label class="row">
-          <span>Reel length <output id="len-out">8 s</output></span>
-          <input type="range" id="len" min="5" max="30" step="1" value="8">
-        </label>
         <label class="check"><input type="checkbox" id="mute" checked> Mute the video's own sound</label>
-        <label class="check"><input type="checkbox" id="fade"> Fade the text in</label>
       </div>
     </div>
 
@@ -86,17 +81,41 @@
 
     <div class="pane" id="pane-save" role="tabpanel" aria-labelledby="tab-save" hidden>
       <div id="save-image">
-        <button class="btn primary" id="save-img">Save image</button>
+        <button class="btn" id="save-img">Save image</button>
         <p class="note">Saves a 1080 × 1920 picture you can post or add to a carousel.</p>
       </div>
-      <div id="save-video" hidden>
-        <p class="note">Video reels are put together by the app's server, which isn't connected yet. Until then you can save the text layer and settings.</p>
-        <button class="btn" id="save-layer">Save text layer</button>
+      <div id="reel-setup">
+        <label class="row">
+          <span>Reel length <output id="len-out">8 s</output></span>
+          <input type="range" id="len" min="5" max="30" step="1" value="8">
+        </label>
+        <label class="check"><input type="checkbox" id="fade"> Fade the text in</label>
+        <button class="btn primary" id="make-reel">Make reel</button>
+        <p class="note" id="reel-note" hidden></p>
+      </div>
+      <div id="reel-progress" hidden>
+        <p class="status" id="progress" role="status"></p>
+        <progress id="bar" max="100" value="0"></progress>
+      </div>
+      <div id="reel-result" hidden>
+        <video id="result" controls playsinline loop></video>
+        <button class="btn primary" id="save-reel">Save reel</button>
+        <button class="btn quiet" id="again">Make another</button>
       </div>
       <p class="done" id="done" role="status" hidden></p>
     </div>
   </section>
 </main>
+
+<form class="lock" id="lock" hidden>
+  <h2 class="wordmark">Entangledd Studio</h2>
+  <label class="stack">
+    <span>Passcode</span>
+    <input type="password" id="passcode" autocomplete="current-password" required>
+  </label>
+  <button class="btn primary" type="submit">Open the studio</button>
+  <p class="oops" id="lock-error" role="alert" hidden></p>
+</form>
 
 <script src="app.js"></script>
 </body>
