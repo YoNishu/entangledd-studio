@@ -1,0 +1,8 @@
+{
+  // Cloudflare reads this file to host the app. "web" is the folder that gets served.
+  "name": "entangledd-studio",
+  "compatibility_date": "2026-06-20",
+  "assets": {
+    "directory": "./web"
+  }
+}
