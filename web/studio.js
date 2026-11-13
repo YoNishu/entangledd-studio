@@ -54,12 +54,20 @@
 
   // ---------- Today ----------
   let todayLoaded = false, todayBusy = false, todayData = null;
-  let onCanvas = { author: "", theme: "", tone: "", source: "" };   // where the quote now on the canvas came from
+  let onCanvas = { author: "", theme: "", tone: "", source: "", suggestionId: "" };   // where the quote now on the canvas came from
   const sourceLine = (s) => {
     if (s.type === "own") return s.title ? `Your own collection: ${s.title}` : "Your own collection";
     if (s.type === "book") return `From your book list: ${s.title}`;
     return s.title ? `Well-known line, from ${s.title}` : "Well-known line";
   };
+
+  // What actually happened to a suggestion, so "used" is never mistaken for "posted".
+  function fateLine(item) {
+    if (item.posted === "posted") return el("p", { className: "used", textContent: "Posted to Instagram" });
+    if (item.posted === "deleted") return el("p", { className: "src", textContent: "Posted earlier, then deleted on Instagram. Free to use again." });
+    if (item.state === "used") return el("p", { className: "src", textContent: "Opened in Create, not posted" });
+    return null;
+  }
 
   function card(item) {
     const use = el("button", { className: "btn primary", textContent: "Use this" });
@@ -70,7 +78,7 @@
       item.author ? el("p", { className: "by", textContent: "— " + item.author }) : null,
       el("p", { className: "src", textContent: sourceLine(item.source) }),
       item.verify ? el("p", { className: "flag", textContent: "Check the wording and author before posting" }) : null,
-      item.state === "used" ? el("p", { className: "used", textContent: "Already used today" }) : null,
+      fateLine(item),
       el("div", { className: "acts" }, use, reword, skip));
 
     const mark = (action) => {
@@ -80,7 +88,7 @@
     };
     use.addEventListener("click", () => {
       mark("used");
-      onCanvas = { author: item.author, theme: item.theme, tone: item.tone, source: item.source.type };
+      onCanvas = { author: item.author, theme: item.theme, tone: item.tone, source: item.source.type, suggestionId: item.id };
       S.setQuote(item.text, item.author);
       show("create");
     });
@@ -88,7 +96,7 @@
       quote: item.text, author: item.author,
       apply: (quote, altered) => {
         mark("used");
-        onCanvas = { author: altered ? "" : item.author, theme: item.theme, tone: item.tone, source: item.source.type };
+        onCanvas = { author: altered ? "" : item.author, theme: item.theme, tone: item.tone, source: item.source.type, suggestionId: item.id };
         S.setQuote(quote, altered ? "" : item.author); show("create");
       },
     }));
@@ -112,7 +120,7 @@
       return;
     }
     if (todayBusy) return;
-    if (todayLoaded && !force) { renderToday(todayData); return; }
+    if (todayLoaded && !force) renderToday(todayData);   // show what we have at once, then refresh quietly
     todayBusy = true;
     if (!todayLoaded) $("today-note").textContent = "Nishiii is choosing today's quotes. This can take half a minute…";
     try { renderToday(await getJson("suggestions")); todayLoaded = true; }
@@ -453,6 +461,21 @@
     try { renderTaste(await send("taste/refresh", "POST")); } catch (e) { $("taste-note").textContent = friendly(e); }
     finally { btn.disabled = false; btn.textContent = "Update now"; }
   });
+  // Forgetting asks for a second tap, since it can't be undone.
+  function forgetButton(id, scope, label, done) {
+    const btn = $(id);
+    let armed = null;
+    const reset = () => { clearTimeout(armed); armed = null; btn.textContent = label; };
+    btn.addEventListener("click", async () => {
+      if (!armed) { btn.textContent = "Tap again to confirm"; armed = setTimeout(reset, 5000); return; }
+      reset();
+      try { renderTaste(await send("taste?scope=" + scope, "DELETE")); $("taste-note").textContent = done; }
+      catch (e) { $("taste-note").textContent = friendly(e); }
+    });
+  }
+  forgetButton("forget-profile", "profile", "Forget the profile", "The profile was erased. It will be written again from your activity at the next update.");
+  forgetButton("forget-all", "all", "Forget everything and start fresh", "Everything Nishiii had learned was erased, along with your notes and the record of picks, skips and rewording.");
+
   $("add-note").addEventListener("submit", async (e) => {
     e.preventDefault();
     try { renderTaste(await send("taste/notes", "POST", { text: $("note-text").value })); $("note-text").value = ""; }
@@ -541,6 +564,8 @@
       }
       if (post.state === "failed") throw new Error(post.error || "Instagram didn't accept the reel.");
       postStatus("Posted to Instagram.");
+      const from = todayData && todayData.items.find((i) => i.id === onCanvas.suggestionId);
+      if (from) from.posted = "posted";
       if (post.permalink) { $("post-link").href = post.permalink; $("post-link").hidden = false; }
     } catch (e) { $("post-form").hidden = false; postStatus(friendly(e)); }
     finally { posting = false; $("post-go").disabled = false; }

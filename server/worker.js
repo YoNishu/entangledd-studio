@@ -355,13 +355,29 @@ async function generateSuggestions(env, count) {
 
 async function suggestionRoutes(request, env, parts) {
   const method = request.method, date = todayIST();
-  const visible = (r) => json({ date: r.date, items: r.items.filter((i) => i.state !== "rejected") });
+  // Each suggestion is marked with what really happened to it: "posted", or "deleted" if the post
+  // made from it was later removed on Instagram. "Used" alone only means it was opened in Create.
+  const visible = async (r, checkInstagram) => {
+    const posts = await loadDoc(env, "posts", []);
+    const ids = new Set(r.items.map((i) => i.id));
+    const linked = posts.filter((p) => p.suggestionId && ids.has(p.suggestionId));
+    if (checkInstagram && linked.some((p) => p.state === "published") && igReady(env)) {
+      const ig = await loadIg(env);
+      if (ig && (await checkRemoved(env, ig, posts, linked))) await saveDoc(env, "posts", posts);
+    }
+    const fate = (id) => {
+      const mine = linked.filter((p) => p.suggestionId === id);
+      if (mine.some((p) => p.state === "published" || p.state === "processing")) return "posted";
+      return mine.some((p) => p.state === "removed") ? "deleted" : "";
+    };
+    return json({ date: r.date, items: r.items.filter((i) => i.state !== "rejected").map((i) => ({ ...i, posted: fate(i.id) })) });
+  };
   if (parts.length === 1 && method === "GET") {
     const day = await loadDoc(env, `suggestions/${date}`, []);
-    if (day.length || !env.ANTHROPIC_API_KEY) return visible({ date, items: day });
-    return visible(await generateSuggestions(env, 8));
+    if (day.length || !env.ANTHROPIC_API_KEY) return visible({ date, items: day }, true);
+    return visible(await generateSuggestions(env, 8), false);
   }
-  if (parts[1] === "more" && method === "POST") return visible(await generateSuggestions(env, 6));
+  if (parts[1] === "more" && method === "POST") return visible(await generateSuggestions(env, 6), false);
   if (parts[2] === "feedback" && method === "POST") {
     const b = await body(request);
     if (!["used", "rejected"].includes(b.action)) return fail(400, "Unknown action.");
@@ -715,7 +731,8 @@ async function postRoutes(request, env, parts) {
     const made = await createContainer(env, ig, params, !!music);
     const post = { id: crypto.randomUUID(), jobId: b.jobId, ...made, state: "processing", error: null, caption, music,
       quote: lines(b.quote, 600), author: oneLine(b.author, 80), theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20),
-      source: oneLine(b.source, 20), created: Date.now(), published: null, permalink: "" };
+      source: oneLine(b.source, 20), suggestionId: UUID.test(b.suggestionId || "") ? b.suggestionId : "",
+      created: Date.now(), published: null, permalink: "" };
     posts.push(post);
     await saveDoc(env, "posts", posts.slice(-500));
     return json(publicPost(post));
@@ -795,8 +812,8 @@ async function refreshInsights(env, ig, posts, { force = false, max = 15 } = {})
 }
 
 // Notices posts she has deleted on Instagram, so the app's list matches. Checked every time the list opens.
-async function checkRemoved(env, ig, posts) {
-  const latest = posts.filter((p) => p.state === "published" && p.mediaId).slice(-8);
+async function checkRemoved(env, ig, posts, only) {
+  const latest = (only || posts).filter((p) => p.state === "published" && p.mediaId).slice(-8);
   const gone = await Promise.all(latest.map(async (post) => {
     try { await graphAny(env, ig, "GET", `/${post.mediaId}`, { fields: "id" }); return false; }
     catch (e) { if (!(e instanceof UserError)) throw e; return !!e.gone; }
@@ -1013,6 +1030,19 @@ async function tasteRoutes(request, env, parts) {
   const out = async (t) => json({ profile: t.profile, notes: t.notes, updatedAt: t.updatedAt, evidence: evidenceCount(await gatherEvidence(env)) });
   if (parts.length === 1 && method === "GET") return out(taste);
   if (parts[1] === "refresh" && method === "POST") return out(await buildTaste(env));
+  if (parts.length === 1 && method === "DELETE") {
+    // "profile": erase what Nishiii has written; it is rebuilt from her activity at the next update.
+    // "all": also erase the record of picks, skips and rewording requests, and her notes.
+    const scope = new URL(request.url).searchParams.get("scope");
+    if (scope === "all") {
+      await env.MEDIA.delete(["data/taste.json", "data/history.json", "data/rewords.json"]);
+      return out(emptyTaste());
+    }
+    if (scope !== "profile") return fail(400, "Say what to forget.");
+    taste.profile = null; taste.updatedAt = 0;
+    await saveDoc(env, "taste", taste);
+    return out(taste);
+  }
   if (parts[1] === "notes" && method === "POST") {
     const text = lines((await body(request)).text, 300);
     if (!text) return fail(400, "Write the note first.");
