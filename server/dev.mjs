@@ -282,6 +282,18 @@ http.createServer(async (req, res) => {
       res.writeHead(204).end();
       return;
     }
+    if (url.pathname === "/__seed_history") {
+      // Fills the previous days with pretend suggestions, so the "earlier this week" list can be tried.
+      for (let n = 1; n <= 9; n++) {
+        if (n === 3) continue;                                  // one day with nothing, as when the app wasn't opened
+        const date = new Date(Date.now() + 5.5 * 3600 * 1000 - n * 24 * 3600 * 1000).toISOString().slice(0, 10);
+        const items = CANNED.slice(0, 5).map(([text, author, type, title, theme, tone, verify], i) => ({
+          id: crypto.randomUUID(), state: i === 0 ? "used" : i === 4 ? "rejected" : "new",
+          text: `${text} (day -${n})`, author, source: { type, title }, theme, tone, verify }));
+        await env.MEDIA.put(`data/suggestions/${date}.json`, JSON.stringify(items));
+      }
+      res.writeHead(204).end(); return;
+    }
     if (url.pathname === "/__graph_delete") { deleted.add(url.searchParams.get("id")); res.writeHead(204).end(); return; }
     if (url.pathname === "/__graph_log") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(graphLog)); return; }
     if (url.pathname.startsWith("/__graph/")) {

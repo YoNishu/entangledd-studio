@@ -57,7 +57,7 @@ weekly report, comment reply drafts.
 
 | Section | What it holds |
 |---|---|
-| Today | The day and date, and exactly five suggestions: Use this, Reword, Skip |
+| Today | The day and date, exactly five suggestions (Use this, Reword, Skip), and the previous seven days folded one row per day, still usable |
 | Create | The composer. Tabs: Background, Text, Style, Finish |
 | Library | What she feeds Nishiii: her own quotes, books, films and series, and reels and pages she loves |
 | Posts | Everything posted from the app with its numbers |

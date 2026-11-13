@@ -543,6 +543,7 @@
       const got = await navigator.credentials.get({ publicKey: {
         challenge: b64u.dec(ch.challenge), userVerification: "required", timeout: 60000,
         allowCredentials: [{ type: "public-key", id: b64u.dec(store.get(FACEID_KEY)), transports: ["internal"] }],
+        hints: ["client-device"],
       } });
       const r = got.response;
       unlocked((await postJson("passkey/login", { challengeId: ch.id, credentialId: b64u.enc(got.rawId),
@@ -562,6 +563,7 @@
       user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "Entangledd Studio", displayName: "Entangledd Studio" },
       challenge: b64u.dec(ch.challenge), pubKeyCredParams: [{ type: "public-key", alg: -7 }],
       authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "preferred" },
+      hints: ["client-device"],      // asks for this device's own lock; a page can't pick where the phone stores the key
       timeout: 60000, attestation: "none",
     } });
     const r = made.response;

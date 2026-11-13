@@ -444,7 +444,9 @@ async function recordChoice(env, item, action) {
 }
 
 // Today is exactly the day's five suggestions, nothing else.
-const DAILY = 5;
+const DAILY = 5, HISTORY_DAYS = 7;
+// The n dates before today (India time), newest first, as YYYY-MM-DD.
+const pastDates = (n) => Array.from({ length: n }, (_, i) => new Date(Date.now() + 5.5 * 3600 * 1000 - (i + 1) * 24 * 3600 * 1000).toISOString().slice(0, 10));
 const daily = (day) => day.filter((i) => !i.askedFor).slice(0, DAILY);
 async function suggestionRoutes(request, env, parts) {
   const method = request.method, date = todayIST();
@@ -455,14 +457,26 @@ async function suggestionRoutes(request, env, parts) {
     if (daily(day).length || !env.ANTHROPIC_API_KEY) return visible(day, true);
     return visible((await generateSuggestions(env, DAILY)).items, false);
   }
+  if (parts[1] === "history" && method === "GET") {
+    // The previous seven days, newest first. Days with nothing left to show are left out.
+    const dates = pastDates(HISTORY_DAYS);
+    const days = await Promise.all(dates.map((d) => loadDoc(env, `suggestions/${d}`, [])));
+    const kept = days.map((day) => daily(day).filter((i) => i.state !== "rejected"));
+    const marked = await withFate(env, kept.flat(), false);
+    let at = 0;
+    const out = dates.map((d, n) => ({ date: d, items: marked.slice(at, (at += kept[n].length)) })).filter((x) => x.items.length);
+    return json({ days: out });
+  }
   if (parts[2] === "feedback" && method === "POST") {
     const b = await body(request);
     if (!["used", "rejected"].includes(b.action)) return fail(400, "Unknown action.");
-    const day = await loadDoc(env, `suggestions/${date}`, []);
+    // A quote from an earlier day can still be used or skipped, as long as that day is within the week shown.
+    const when = b.date && pastDates(HISTORY_DAYS).includes(b.date) ? b.date : date;
+    const day = await loadDoc(env, `suggestions/${when}`, []);
     const item = day.find((i) => i.id === parts[1]);
-    if (!item) return fail(404, "That suggestion is no longer on today's list.");
+    if (!item) return fail(404, "That suggestion is no longer on the list.");
     item.state = b.action;
-    await Promise.all([saveDoc(env, `suggestions/${date}`, day), recordChoice(env, item, b.action)]);
+    await Promise.all([saveDoc(env, `suggestions/${when}`, day), recordChoice(env, item, b.action)]);
     return json({ ok: true });
   }
   return fail(404, "Not found.");

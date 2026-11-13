@@ -102,7 +102,8 @@
   }
 
   // base is "suggestions" (Today's five) or "asked" (quotes she asked Nishiii for).
-  function card(item, base = "suggestions") {
+  // date is set for a quote from an earlier day, so the server knows which day's list it belongs to.
+  function card(item, base = "suggestions", date = "") {
     const use = el("button", { className: "btn primary", textContent: "Use this" });
     const reword = el("button", { className: "btn", textContent: "Reword" });
     const skip = el("button", { className: "btn quiet", textContent: "Skip" });
@@ -119,7 +120,7 @@
       item.state = action;
       const data = base === "asked" ? askedData : todayData;
       if (action === "rejected" && data) data.items = data.items.filter((i) => i.id !== item.id);
-      return send(`${base}/${item.id}/feedback`, "POST", { action }).catch(() => {});
+      return send(`${base}/${item.id}/feedback`, "POST", { action, date: date || undefined }).catch(() => {});
     };
     use.addEventListener("click", () => {
       mark("used");
@@ -137,7 +138,7 @@
     }));
     skip.addEventListener("click", () => {
       mark("rejected"); node.remove();
-      if (base === "suggestions" && !$("suggestions").children.length) $("today-note").textContent = "That's all five for today. For more, ask Nishiii in the Nishiii section.";
+      if (base === "suggestions" && !date && !$("suggestions").children.length) $("today-note").textContent = "That's all five for today. For more, ask Nishiii in the Nishiii section.";
       if (base === "asked" && !$("asked-list").children.length) askedNote("Nothing here now. Ask for more whenever you like.");
     });
     return node;
@@ -164,6 +165,28 @@
     try { renderToday(await getJson("suggestions")); todayLoaded = true; }
     catch (e) { $("today-note").textContent = friendly(e); }
     finally { todayBusy = false; }
+    loadWeek();
+  }
+
+  // The previous seven days, one folded row each. Their quotes can still be used, reworded or skipped.
+  const openDays = new Set();
+  async function loadWeek() {
+    let days;
+    try { days = (await getJson("suggestions/history")).days; } catch (e) { return; }   // Today still works without it
+    $("week").hidden = !days.length;
+    $("week-days").replaceChildren(...days.map((d) => {
+      const when = new Date(d.date + "T12:00:00");
+      const posted = d.items.filter((i) => i.posted === "posted").length;
+      const tally = `${d.items.length} ${d.items.length === 1 ? "quote" : "quotes"}${posted ? `, ${posted} posted` : ""}`;
+      const row = el("details", {},
+        el("summary", {},
+          el("span", { className: "when", textContent: when.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" }) }),
+          el("span", { className: "tally", textContent: tally })),
+        el("div", { className: "cards" }, ...d.items.map((i) => card(i, "suggestions", d.date))));
+      row.open = openDays.has(d.date);
+      row.addEventListener("toggle", () => { if (row.open) openDays.add(d.date); else openDays.delete(d.date); });
+      return row;
+    }));
   }
 
   // ---------- Nishiii: quotes she asks for, kept apart from Today ----------
