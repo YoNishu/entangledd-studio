@@ -2,6 +2,8 @@
   // Cloudflare reads this file to host the app.
   "name": "entangledd-studio",
   "compatibility_date": "2026-06-20",
+  // Keep the values entered in the Cloudflare dashboard (passcode, keys) when a new version deploys
+  "keep_vars": true,
   // Server code for everything under /api/
   "main": "./server/worker.js",
   // "web" is the folder served as the app itself
