@@ -207,7 +207,7 @@ async function loadDoc(env, name, fallback) {
 const saveDoc = (env, name, doc) => env.MEDIA.put(`data/${name}.json`, JSON.stringify(doc), {
   httpMetadata: { contentType: "application/json" },
 });
-const emptyLibrary = () => ({ quotes: [], books: [], accounts: [] });
+const emptyLibrary = () => ({ quotes: [], books: [], screen: [], accounts: [] });
 const oneLine = (v, max) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 const lines = (v, max) => String(v ?? "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, max);
 const norm = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -218,12 +218,12 @@ async function body(request) {
 class UserError extends Error { constructor(status, message) { super(message); this.status = status; } }
 
 // ---------- her library: own quotes, books, accounts ----------
-const LIMITS = { quotes: 500, books: 100, accounts: 50 };
+const LIMITS = { quotes: 500, books: 100, screen: 150, accounts: 50 };
 async function libraryRoutes(request, env, parts) {
   const lib = { ...emptyLibrary(), ...(await loadDoc(env, "library", emptyLibrary())) };
   const kind = parts[1], id = parts[2], method = request.method;
   if (!kind && method === "GET") return json(lib);
-  if (!["quotes", "books", "accounts"].includes(kind)) return fail(404, "Not found.");
+  if (!["quotes", "books", "screen", "accounts"].includes(kind)) return fail(404, "Not found.");
 
   if (method === "DELETE" && id) {
     lib[kind] = lib[kind].filter((x) => x.id !== id);
@@ -242,6 +242,10 @@ async function libraryRoutes(request, env, parts) {
     item = { title: oneLine(b.title, 120), author: oneLine(b.author, 80) };
     if (!item.title) return fail(400, "Add the book's title.");
     if (lib.books.some((x) => norm(x.title) === norm(item.title))) return fail(409, "That book is already on the list.");
+  } else if (kind === "screen") {
+    item = { title: oneLine(b.title, 120), kind: b.kind === "series" ? "series" : "film" };
+    if (!item.title) return fail(400, "Add the title.");
+    if (lib.screen.some((x) => norm(x.title) === norm(item.title) && x.kind === item.kind)) return fail(409, "That's already on the list.");
   } else {
     const handle = oneLine(b.handle, 80).replace(/^https?:\/\/(www\.)?instagram\.com\//i, "").replace(/^@/, "").replace(/[/?].*$/, "");
     if (!/^[a-z0-9._]{1,30}$/i.test(handle)) return fail(400, "That doesn't look like an Instagram username.");
@@ -287,12 +291,14 @@ function parseJson(text) {
 // ---------- daily suggestions ----------
 const SUGGEST_SYSTEM = `You choose quotes for a quiet, reflective Instagram quotes page.
 Reply with a JSON array only, no other text. Each item:
-{"text": "...", "author": "...", "source": {"type": "book" or "classic", "title": "..."}, "theme": "one or two words", "tone": "one word", "verify": true or false}
+{"text": "...", "author": "...", "source": {"type": "book", "film", "series" or "classic", "title": "..."}, "theme": "one or two words", "tone": "one word", "verify": true or false}
 
 Rules:
 - Real quotes only, in the author's real words. Never invent a quote or an attribution.
 - "book" means a line from one of the reader's listed books; use it only for passages you actually know from that book, and put the book's title in source.title.
+- "film" and "series" mean a line of dialogue or narration from one of the reader's listed films or series; put its title in source.title and the character or person who says it in "author". Use only lines you actually know from it.
 - "classic" means a well-known line from elsewhere; put the work or occasion in source.title, or "" if unknown.
+- If the request has an "only" list, every quote must come from those works and nowhere else; spread them across the works listed. If it has "inTheSpiritOf", choose real, attributable quotes that match the feel of those pages. If it has "about", keep to that subject or mood.
 - Set "verify" to true whenever you are not sure the wording is exact or the attribution is right. Be strict: when in doubt, true.
 - Keep each quote under 45 words, complete on its own, with no surrounding quotation marks.
 - Lean towards what the reader has picked before and away from what she skipped, while keeping some variety.
@@ -326,6 +332,8 @@ async function generateSuggestions(env, count) {
     const brief = {
       count: want,
       books: (lib.books || []).map((b) => ({ title: b.title, author: b.author })),
+      films: (lib.screen || []).filter((x) => x.kind === "film").map((x) => x.title),
+      series: (lib.screen || []).filter((x) => x.kind === "series").map((x) => x.title),
       picked: history.filter((h) => h.action === "used").slice(-30).map((h) => ({ text: h.text, theme: h.theme, tone: h.tone })),
       skipped: history.filter((h) => h.action === "rejected").slice(-30).map((h) => ({ text: h.text, theme: h.theme, tone: h.tone })),
       avoid: [...history, ...day].slice(-120).map((x) => x.text),
@@ -341,14 +349,74 @@ async function generateSuggestions(env, count) {
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
       if (!text || seen.has(norm(text))) continue;
-      const type = s.source && s.source.type === "book" ? "book" : "classic";
-      fresh.push({ text, author: oneLine(s.author, 80), source: { type, title: oneLine(s.source && s.source.title, 120) },
-        theme: oneLine(s.theme, 30), tone: oneLine(s.tone, 20), verify: s.verify !== false });
+      fresh.push(cleanSuggestion(s, text));
       seen.add(norm(text));
       if (fresh.length >= count) break;
     }
   }
   const items = fresh.map((f) => ({ id: crypto.randomUUID(), state: "new", ...f }));
+  await saveDoc(env, `suggestions/${date}`, [...day, ...items]);
+  return { date, items: [...day, ...items] };
+}
+function cleanSuggestion(s, text) {
+  const t = s.source && s.source.type;
+  const type = ["book", "film", "series"].includes(t) ? t : "classic";
+  return { text, author: oneLine(s.author, 80), source: { type, title: oneLine(s.source && s.source.title, 120) },
+    theme: oneLine(s.theme, 30), tone: oneLine(s.tone, 20), verify: s.verify !== false };
+}
+
+// Quotes on request, from sources she picks: any mix of her books, films, series, pages she loves,
+// her own lines, and an optional subject. The results join today's list, marked with what she asked for.
+async function suggestFrom(env, b) {
+  const date = todayIST();
+  const count = Math.min(8, Math.max(1, Number(b.count) || 5));
+  const about = oneLine(b.about, 120);
+  const [lib, history, day, taste, insp] = await Promise.all([
+    loadDoc(env, "library", emptyLibrary()), loadDoc(env, "history", []), loadDoc(env, `suggestions/${date}`, []),
+    tasteBrief(env), loadDoc(env, "inspirations", []),
+  ]);
+  const ids = new Set((Array.isArray(b.sources) ? b.sources : []).map(String));
+  const books = (lib.books || []).filter((x) => ids.has(x.id));
+  const screen = (lib.screen || []).filter((x) => ids.has(x.id));
+  const pages = insp.filter((x) => ids.has(x.id));
+  const wantOwn = ids.has("own");
+  if (!books.length && !screen.length && !pages.length && !wantOwn && !about) throw new UserError(400, "Pick at least one source, or say what the quotes should be about.");
+
+  const label = [...books.map((x) => x.title), ...screen.map((x) => x.title), ...pages.map((x) => (x.handle ? "@" + x.handle : "a reel you saved")),
+    wantOwn ? "your own lines" : "", about ? `about ${about}` : ""].filter(Boolean).join(", ").slice(0, 160);
+  const seen = new Set([...history, ...day].map((x) => norm(x.text)));
+  const fresh = [];
+  const fromWorks = books.length + screen.length + pages.length > 0 || !!about;
+
+  if (wantOwn) {
+    const mine = shuffle((lib.quotes || []).filter((q) => !seen.has(norm(q.text)))).slice(0, fromWorks ? 2 : count);
+    for (const q of mine) { fresh.push({ text: q.text, author: q.author || "", source: { type: "own", title: q.from || "" }, theme: "", tone: "", verify: false }); seen.add(norm(q.text)); }
+    if (!mine.length && !fromWorks) throw new UserError(409, "There are no unused lines of your own left. Add some in the Library.");
+  }
+  const want = count - fresh.length;
+  if (want > 0 && fromWorks) {
+    const brief = {
+      count: want,
+      only: books.length || screen.length ? [...books.map((x) => ({ type: "book", title: x.title, author: x.author })), ...screen.map((x) => ({ type: x.kind, title: x.title }))] : undefined,
+      inTheSpiritOf: pages.length ? pages.map((x) => ({ page: x.handle ? "@" + x.handle : "saved reel", look: x.style || "",
+        linesSheLoved: [x.quote, ...(x.top || []).map((t) => t.quote)].filter(Boolean).slice(0, 6) })) : undefined,
+      about: about || undefined,
+      avoid: [...history, ...day].slice(-120).map((x) => x.text),
+      taste: taste || undefined,
+    };
+    const answer = parseJson(await claude(env, { system: SUGGEST_SYSTEM, maxTokens: 2500,
+      messages: [{ role: "user", content: `Suggest ${want} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] }));
+    for (const s of Array.isArray(answer) ? answer : []) {
+      const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
+      if (!text || seen.has(norm(text))) continue;
+      fresh.push(cleanSuggestion(s, text));
+      seen.add(norm(text));
+      if (fresh.length >= count) break;
+    }
+  }
+  if (!fresh.length) throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
+  const now = Date.now();
+  const items = fresh.map((f) => ({ id: crypto.randomUUID(), state: "new", askedFor: label, askedAt: now, ...f }));
   await saveDoc(env, `suggestions/${date}`, [...day, ...items]);
   return { date, items: [...day, ...items] };
 }
@@ -378,6 +446,7 @@ async function suggestionRoutes(request, env, parts) {
     return visible(await generateSuggestions(env, 8), false);
   }
   if (parts[1] === "more" && method === "POST") return visible(await generateSuggestions(env, 6), false);
+  if (parts[1] === "from" && method === "POST") return visible(await suggestFrom(env, await body(request)), false);
   if (parts[2] === "feedback" && method === "POST") {
     const b = await body(request);
     if (!["used", "rejected"].includes(b.action)) return fail(400, "Unknown action.");
@@ -1027,7 +1096,12 @@ async function tasteBrief(env) {
 async function tasteRoutes(request, env, parts) {
   const method = request.method;
   const taste = { ...emptyTaste(), ...(await loadDoc(env, "taste", emptyTaste())) };
-  const out = async (t) => json({ profile: t.profile, notes: t.notes, updatedAt: t.updatedAt, evidence: evidenceCount(await gatherEvidence(env)) });
+  const out = async (t) => {
+    const [history, rewords] = await Promise.all([loadDoc(env, "history", []), loadDoc(env, "rewords", [])]);
+    return json({ profile: t.profile, notes: t.notes, updatedAt: t.updatedAt, evidence: evidenceCount(await gatherEvidence(env)),
+      // What each "forget" would actually erase right now.
+      canForget: { profile: !!t.profile, all: !!t.profile || t.notes.length > 0 || history.length > 0 || rewords.length > 0 } });
+  };
   if (parts.length === 1 && method === "GET") return out(taste);
   if (parts[1] === "refresh" && method === "POST") return out(await buildTaste(env));
   if (parts.length === 1 && method === "DELETE") {
@@ -1055,6 +1129,101 @@ async function tasteRoutes(request, env, parts) {
     taste.notes = taste.notes.filter((n) => n.id !== parts[2]);
     await saveDoc(env, "taste", taste);
     return out(taste);
+  }
+  return fail(404, "Not found.");
+}
+
+// ---------- Face ID lock (passkeys) ----------
+// The phone holds a private key that only Face ID (or Touch ID, or the screen lock) can use.
+// To unlock, the server sends a random challenge, the phone signs it, and the signature is checked
+// here against the public key saved when the lock was switched on. Only then is the session issued.
+const b64u = {
+  dec: (str) => Uint8Array.from(atob(String(str).replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)),
+  enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+};
+// WebAuthn signatures arrive in DER form; the verifier wants the two 32-byte numbers side by side.
+function derToRaw(der) {
+  let i = 0;
+  if (der[i++] !== 0x30) throw new Error("bad signature");
+  if (der[i++] & 0x80) i += der[i - 1] & 0x7f;
+  const int = () => {
+    if (der[i++] !== 0x02) throw new Error("bad signature");
+    const len = der[i++];
+    let v = der.slice(i, i + len); i += len;
+    while (v.length > 32 && v[0] === 0) v = v.slice(1);
+    if (v.length > 32) throw new Error("bad signature");
+    const out = new Uint8Array(32); out.set(v, 32 - v.length);
+    return out;
+  };
+  const raw = new Uint8Array(64);
+  raw.set(int(), 0); raw.set(int(), 32);
+  return raw;
+}
+async function takeChallenge(env, id, clientDataB64, type, request) {
+  if (!UUID.test(id || "")) throw new UserError(400, "That unlock attempt has expired. Try again.");
+  const key = `auth/challenge-${id}.json`;
+  const obj = await env.MEDIA.get(key);
+  if (!obj) throw new UserError(400, "That unlock attempt has expired. Try again.");
+  const saved = await obj.json();
+  await env.MEDIA.delete(key);                       // each challenge works once
+  let client;
+  try { client = JSON.parse(new TextDecoder().decode(b64u.dec(clientDataB64))); } catch (e) { throw new UserError(400, "The device's reply couldn't be read."); }
+  if (Date.now() > saved.exp || client.type !== type || !safeEqual(String(client.challenge), saved.challenge) || client.origin !== new URL(request.url).origin) {
+    throw new UserError(401, "That unlock attempt wasn't valid. Try again.");
+  }
+}
+
+async function passkeyRoutes(request, env, parts, authed) {
+  const method = request.method;
+  if (!env.APP_PASSCODE || !env.MEDIA) return fail(503, "The app lock isn't set up on the server yet.");
+  const keys = await loadDoc(env, "passkeys", []);
+
+  if (parts[1] === "challenge" && method === "POST") {
+    const id = crypto.randomUUID(), challenge = b64u.enc(crypto.getRandomValues(new Uint8Array(32)));
+    await env.MEDIA.put(`auth/challenge-${id}.json`, JSON.stringify({ challenge, exp: Date.now() + 5 * 60 * 1000 }));
+    return json({ id, challenge });
+  }
+
+  if (parts[1] === "login" && method === "POST") {
+    const b = await body(request);
+    const saved = keys.find((k) => k.id === b.credentialId);
+    if (!saved) return fail(401, "This device's Face ID lock isn't known to the server. Use the passcode, then switch the lock on again in Settings.");
+    await takeChallenge(env, b.challengeId, b.clientDataJSON, "webauthn.get", request);
+    let ok = false;
+    try {
+      const auth = b64u.dec(b.authenticatorData), client = b64u.dec(b.clientDataJSON);
+      const rpHash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(new URL(request.url).hostname)));
+      const flags = auth[32];
+      const rpOk = auth.length >= 37 && rpHash.every((v, i) => v === auth[i]);
+      const key = await crypto.subtle.importKey("spki", b64u.dec(saved.publicKey), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+      const clientHash = new Uint8Array(await crypto.subtle.digest("SHA-256", client));
+      const signed = new Uint8Array(auth.length + 32); signed.set(auth, 0); signed.set(clientHash, auth.length);
+      // 0x01 = someone was present, 0x04 = they were verified (face, finger or device passcode)
+      ok = rpOk && (flags & 0x01) === 0x01 && (flags & 0x04) === 0x04 &&
+        await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, derToRaw(b64u.dec(b.signature)), signed);
+    } catch (e) { ok = false; }
+    if (!ok) return fail(401, "Face ID couldn't be confirmed. Try again or use the passcode.");
+    return json({ token: await sessionToken(env) });
+  }
+
+  if (!authed) return fail(401, "Enter the passcode to continue.");
+  if (parts.length === 1 && method === "GET") return json({ devices: keys.map((k) => ({ id: k.id, label: k.label, added: k.added })) });
+  if (parts[1] === "register" && method === "POST") {
+    const b = await body(request);
+    if (Number(b.alg) !== -7) return fail(400, "This device's lock uses a kind of key the app doesn't support.");
+    await takeChallenge(env, b.challengeId, b.clientDataJSON, "webauthn.create", request);
+    const id = String(b.credentialId || ""), publicKey = String(b.publicKey || "");
+    if (!/^[A-Za-z0-9_-]{16,1400}$/.test(id) || !/^[A-Za-z0-9_-]{80,400}$/.test(publicKey)) return fail(400, "The device's reply couldn't be read.");
+    try { await crypto.subtle.importKey("spki", b64u.dec(publicKey), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]); }
+    catch (e) { return fail(400, "The device's key couldn't be read."); }
+    const next = keys.filter((k) => k.id !== id).slice(-9);
+    next.push({ id, publicKey, label: oneLine(b.label, 60) || "A device", added: Date.now() });
+    await saveDoc(env, "passkeys", next);
+    return json({ ok: true });
+  }
+  if (parts[1] && method === "DELETE") {
+    await saveDoc(env, "passkeys", keys.filter((k) => k.id !== parts[1]));
+    return json({ ok: true });
   }
   return fail(404, "Not found.");
 }
@@ -1101,6 +1270,7 @@ async function route(request, env, parts) {
       ai: !!(env.ANTHROPIC_API_KEY && env.MEDIA), stock: !!stockProvider(env), instagram: igReady(env) });
   }
   if (parts[0] === "login" && request.method === "POST") return login(request, env);
+  if (parts[0] === "passkey") return passkeyRoutes(request, env, parts, await signedIn(request, env));
   if (parts[0] === "public" && parts[1] === "reel" && ["GET", "HEAD"].includes(request.method)) return publicReel(request, env, parts);
   if (parts[0] === "render") {
     if (!isRenderer(request, env)) return fail(401, "Not allowed.");

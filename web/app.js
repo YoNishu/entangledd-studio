@@ -52,6 +52,7 @@
     mute: true,
     length: 8,
     style: "sea",
+    author: "",          // the author of the quote on the canvas, if it came with one
   };
   let nextId = 1;
 
@@ -268,6 +269,8 @@
   }
 
   function syncTextPane() {
+    $("author-row").hidden = !state.author;
+    $("show-author").checked = state.blocks.some((x) => x.role === "author");
     const b = selectedBlock();
     const off = !b;
     for (const id of ["words", "size", "width", "font", "lower", "remove"]) $(id).disabled = off;
@@ -347,17 +350,31 @@
     const s = STYLES[state.style];
     const parts = s.split ? text.split("\n").map((t) => t.trim()).filter(Boolean) : [text.trim()];
     state.blocks = parts.map((t, i) => newBlock(t, state.style, i));
-    if (author) {
-      const last = state.blocks[state.blocks.length - 1], L = layout(ctx, last);
-      const by = newBlock("— " + author, state.style, state.blocks.length);
-      by.size = Math.max(16, Math.round(last.size * 0.72));
-      by.x = last.x;
-      by.y = Math.min(0.95, last.y + (L.h / 2 + by.size * 2.4) / H);
-      state.blocks.push(by);
-    }
+    state.author = author || "";
+    if (author) addAuthorLine();
     select(state.blocks[0].id);
     saveDraft();
   }
+  // The author's name is its own small line under the quote, so it can be moved, restyled or left off.
+  function addAuthorLine() {
+    const quoteLines = state.blocks.filter((b) => b.role !== "author");
+    const last = quoteLines[quoteLines.length - 1];
+    if (!last || !state.author) return;
+    const L = layout(ctx, last);
+    const by = newBlock("— " + state.author, state.style, state.blocks.length);
+    by.role = "author";
+    by.size = Math.max(16, Math.round(last.size * 0.72));
+    by.x = last.x;
+    by.y = Math.min(0.95, last.y + (L.h / 2 + by.size * 2.4) / H);
+    state.blocks.push(by);
+  }
+  $("show-author").addEventListener("change", () => {
+    state.blocks = state.blocks.filter((b) => b.role !== "author");
+    if ($("show-author").checked) addAuthorLine();
+    if (!selectedBlock()) select(state.blocks.length ? state.blocks[0].id : null);
+    syncTextPane();
+    saveDraft();
+  });
 
   Object.entries(STYLES).forEach(([key, s]) => {
     const b = document.createElement("button");
@@ -456,9 +473,16 @@
   });
 
   // ---------- server: passcode and reels ----------
-  const TOKEN_KEY = "entangledd.token.v1";
+  const TOKEN_KEY = "entangledd.token.v1", FACEID_KEY = "entangledd.faceid.v1";
   const server = { on: false, reels: false, ai: false, stock: false, instagram: false, locked: false, token: "" };
-  try { server.token = localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { /* no storage: she signs in each visit */ }
+  const store = {
+    get: (k) => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* no storage: nothing is remembered on this device */ } },
+    del: (k) => { try { localStorage.removeItem(k); } catch (e) { /* nothing to remove */ } },
+  };
+  // With the Face ID lock on, the sign-in is never kept on the phone: every fresh open needs Face ID.
+  const faceIdOn = () => !!store.get(FACEID_KEY);
+  if (!faceIdOn()) server.token = store.get(TOKEN_KEY);
 
   async function api(path, opts = {}) {
     const res = await fetch("/api/" + path, { ...opts, headers: { ...(opts.headers || {}), Authorization: "Bearer " + server.token } });
@@ -472,28 +496,100 @@
   }
 
   function showLock() {
+    const face = faceIdOn() && !!window.PublicKeyCredential;
+    $("faceid-unlock").hidden = !face;
+    $("lock-or").hidden = !face;
+    $("passcode-go").classList.toggle("primary", !face);
     $("lock").hidden = false;
     $("passcode").value = "";
-    $("passcode").focus();
+    if (face) $("faceid-unlock").focus(); else $("passcode").focus();
+  }
+  function unlocked(token) {
+    server.token = token;
+    if (!faceIdOn()) store.set(TOKEN_KEY, token);
+    $("lock").hidden = true;
+    $("lock-error").hidden = true;
+    server.locked = false;
+    document.dispatchEvent(new CustomEvent("studio:ready"));
+  }
+  function lockError(e) {
+    $("lock-error").textContent = e.message === "Failed to fetch" ? "No connection. Check the internet and try again." : e.message;
+    $("lock-error").hidden = false;
+  }
+  async function postJson(path, data, auth) {
+    const res = await fetch("/api/" + path, { method: "POST", body: JSON.stringify(data || {}),
+      headers: { "Content-Type": "application/json", ...(auth ? { Authorization: "Bearer " + server.token } : {}) } });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || "That didn't work. Try again.");
+    return out;
   }
   $("lock").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const err = $("lock-error");
-    err.hidden = true;
+    $("lock-error").hidden = true;
+    try { unlocked((await postJson("login", { passcode: $("passcode").value })).token); }
+    catch (e2) { lockError(e2); }
+  });
+
+  // ---- Face ID lock. The phone signs a one-time challenge with a key only Face ID can use. ----
+  const b64u = {
+    enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+    dec: (str) => Uint8Array.from(atob(str.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)),
+  };
+  const faceIdName = /iPhone|iPad/.test(navigator.userAgent) ? "Face ID" : "your device's screen lock";
+  async function faceIdUnlock() {
+    $("lock-error").hidden = true;
     try {
-      const res = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode: $("passcode").value }) });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "That didn't work. Try again.");
-      server.token = data.token;
-      try { localStorage.setItem(TOKEN_KEY, server.token); } catch (e2) { /* stays signed in for this visit only */ }
-      $("lock").hidden = true;
-      server.locked = false;
-      document.dispatchEvent(new CustomEvent("studio:ready"));
-    } catch (e2) {
-      err.textContent = e2.message === "Failed to fetch" ? "No connection. Check the internet and try again." : e2.message;
-      err.hidden = false;
+      const ch = await postJson("passkey/challenge");
+      const got = await navigator.credentials.get({ publicKey: {
+        challenge: b64u.dec(ch.challenge), userVerification: "required", timeout: 60000,
+        allowCredentials: [{ type: "public-key", id: b64u.dec(store.get(FACEID_KEY)), transports: ["internal"] }],
+      } });
+      const r = got.response;
+      unlocked((await postJson("passkey/login", { challengeId: ch.id, credentialId: b64u.enc(got.rawId),
+        authenticatorData: b64u.enc(r.authenticatorData), clientDataJSON: b64u.enc(r.clientDataJSON), signature: b64u.enc(r.signature) })).token);
+    } catch (e) {
+      // NotAllowedError is what a cancelled or timed-out Face ID prompt looks like.
+      lockError(e.name === "NotAllowedError" ? new Error("Face ID was cancelled. Try again, or use the passcode.") : e);
     }
+  }
+  $("faceid-unlock").addEventListener("click", faceIdUnlock);
+
+  async function faceIdEnable() {
+    if (!window.PublicKeyCredential) throw new Error("This browser can't use Face ID for websites.");
+    const ch = await postJson("passkey/challenge");
+    const made = await navigator.credentials.create({ publicKey: {
+      rp: { name: "Entangledd Studio" },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "Entangledd Studio", displayName: "Entangledd Studio" },
+      challenge: b64u.dec(ch.challenge), pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+      authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "preferred" },
+      timeout: 60000, attestation: "none",
+    } });
+    const r = made.response;
+    if (!r.getPublicKey || !r.getPublicKey()) throw new Error("This device didn't share a key the app can use.");
+    const id = b64u.enc(made.rawId);
+    await postJson("passkey/register", { challengeId: ch.id, credentialId: id, publicKey: b64u.enc(r.getPublicKey()),
+      alg: r.getPublicKeyAlgorithm(), clientDataJSON: b64u.enc(r.clientDataJSON),
+      label: /iPhone/.test(navigator.userAgent) ? "iPhone" : /iPad/.test(navigator.userAgent) ? "iPad" : "A computer" }, true);
+    store.set(FACEID_KEY, id);
+    store.del(TOKEN_KEY);            // from now on the sign-in lives only in memory
+  }
+  async function faceIdDisable() {
+    const id = store.get(FACEID_KEY);
+    store.del(FACEID_KEY);
+    store.set(TOKEN_KEY, server.token);
+    if (id) await fetch("/api/passkey/" + encodeURIComponent(id), { method: "DELETE", headers: { Authorization: "Bearer " + server.token } }).catch(() => {});
+  }
+  function signOut() {
+    server.token = "";
+    store.del(TOKEN_KEY);
+    server.locked = true;
+    showLock();
+  }
+  // Coming back after a while with the lock on: ask for Face ID again.
+  let hiddenAt = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (faceIdOn() && server.token && hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000) { server.token = ""; server.locked = true; showLock(); }
   });
 
   async function connect() {
@@ -601,7 +697,7 @@
   function saveDraft() {
     try {
       localStorage.setItem(KEY, JSON.stringify({ blocks: state.blocks, shadow: state.shadow, fade: state.fade,
-        mute: state.mute, length: state.length, style: state.style }));
+        mute: state.mute, length: state.length, style: state.style, author: state.author }));
     } catch (e) { /* private mode or full storage: the draft just isn't kept */ }
   }
   function loadDraft() {
@@ -612,18 +708,33 @@
       state.shadow = d.shadow !== false; state.fade = !!d.fade; state.mute = d.mute !== false;
       state.length = Math.min(30, Math.max(5, +d.length || 8));
       state.style = STYLES[d.style] ? d.style : "sea";
+      state.author = typeof d.author === "string" ? d.author : "";
       return true;
     } catch (e) { return false; }
   }
 
   // What studio.js (Today, Library, rewording, free footage) needs from the composer.
   window.Studio = {
-    api, server, loadBackground, setQuote, showTab,
+    api, server, loadBackground, setQuote, showTab, signOut,
+    faceId: { on: faceIdOn, supported: () => !!window.PublicKeyCredential, name: faceIdName, enable: faceIdEnable, disable: faceIdDisable },
     selectedText: () => (selectedBlock() ? selectedBlock().text : ""),
     currentReel: () => reel,
     quoteText: () => state.blocks.map((b) => b.text.trim()).filter(Boolean).join("\n"),
     replaceSelectedText: (t) => edit((b) => { b.text = t; }),
   };
+
+  // Some phones keep the very first, slightly soft rendering of a part of the page that never changes
+  // afterwards. Nudging the header makes the browser draw it again, sharply.
+  function redrawHeader() {
+    const bar = document.querySelector(".bar");
+    bar.style.opacity = "0.999";
+    requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.opacity = ""; }));
+  }
+  [300, 1200, 3000].forEach((ms) => setTimeout(redrawHeader, ms));
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(redrawHeader);
+  window.addEventListener("pageshow", redrawHeader);
+  window.addEventListener("resize", redrawHeader);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) redrawHeader(); });
 
   // ---------- start ----------
   async function start() {

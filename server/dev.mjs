@@ -192,10 +192,21 @@ function pretendClaude(req) {
   let text;
   if (system.startsWith("You choose quotes")) {
     const want = Number((req.messages[0].content.match(/Suggest (\d+)/) || [])[1] || 6);
+    let brief = {};
+    try { brief = JSON.parse(req.messages[0].content.split("as JSON:\n")[1]); } catch (e) { /* older wording */ }
     const items = [];
-    for (let i = 0; i < want; i++) {
-      const [t, author, type, title, theme, tone, verify] = CANNED[(cannedAt++) % CANNED.length];
-      items.push({ text: t, author, source: { type, title }, theme, tone, verify });
+    if (brief.only) {
+      // Asked for quotes from particular works: answer only from those, as the real model is told to.
+      for (let i = 0; i < want; i++) {
+        const w = brief.only[i % brief.only.length];
+        items.push({ text: `A line from ${w.title}, number ${Math.floor(i / brief.only.length) + 1}${brief.about ? `, about ${brief.about}` : ""}.`,
+          author: w.type === "book" ? (w.author || "Unknown") : "A character", source: { type: w.type, title: w.title }, theme: "asked", tone: "plain", verify: true });
+      }
+    } else {
+      for (let i = 0; i < want; i++) {
+        const [t, author, type, title, theme, tone, verify] = CANNED[(cannedAt++) % CANNED.length];
+        items.push({ text: brief.inTheSpiritOf || brief.about ? `${t} (${brief.about || brief.inTheSpiritOf[0].page} ${cannedAt})` : t, author, source: { type, title }, theme, tone, verify });
+      }
     }
     text = "Here are the quotes:\n```json\n" + JSON.stringify(items) + "\n```";
   } else if (system.startsWith("You are Nishiii")) {

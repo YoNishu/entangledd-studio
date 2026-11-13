@@ -47,6 +47,7 @@ weekly report, comment reply drafts.
 | 6 | Post results: reach, views, likes, comments, saves, shares; deleted posts drop off | Built against a stand-in; first run on real posts pending |
 | 7 | Inspiration: accounts (top posts), reel links, screenshots read by Claude | Built against a stand-in; first real run pending |
 | 8 | Taste profile: what Nishiii has learned, her notes, daily update, used in every suggestion | Built against a stand-in; first real run pending |
+| 8b | Films and series as sources; quotes on request from any mix of her sources; Face ID lock; Settings | Built; Face ID tested with a simulated authenticator, first run on a real iPhone pending |
 | 5b | Carousel posts (needs a 4:5 canvas) | Next |
 | 9 | Nishiii as a chat bar that can run any task | Next |
 | 10 | Quotes from public-domain book text; imported highlights | Later |
@@ -58,8 +59,9 @@ weekly report, comment reply drafts.
 |---|---|
 | Today | The day's suggestions: Use this, Reword, Skip |
 | Create | The composer. Tabs: Background, Text, Style, Finish |
-| Library | What she feeds Nishiii: her own quotes, books, and reels and pages she loves |
-| Posts | Everything posted from the app with its numbers, and the Instagram connection |
+| Library | What she feeds Nishiii: her own quotes, books, films and series, and reels and pages she loves |
+| Posts | Everything posted from the app with its numbers |
+| Settings (top right) | Face ID lock, the Instagram connection, signing out |
 | Nishiii | What Nishiii has learned about her taste, and notes she writes for Nishiii |
 
 ## How Nishiii learns (the taste profile)

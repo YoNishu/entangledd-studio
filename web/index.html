@@ -15,7 +15,10 @@
 </head>
 <body>
 <header class="bar">
-  <h1 class="wordmark">Entangledd Studio</h1>
+  <div class="top">
+    <h1 class="wordmark" id="wordmark">Entangledd Studio</h1>
+    <button class="settings" id="settings-open">Settings</button>
+  </div>
   <p class="hello" id="hello">Hi Dhruuu, what are we posting today? <span class="sig">Nishiii</span></p>
   <nav class="views" aria-label="Sections">
     <button id="nav-today" aria-pressed="false">Today</button>
@@ -28,6 +31,7 @@
 
 <section class="page" id="view-today" hidden>
   <h2>Today's quotes</h2>
+  <button class="btn" id="ask-open" hidden>Get quotes from a book, film or page</button>
   <p class="note" id="today-note" role="status"></p>
   <div class="cards" id="suggestions"></div>
   <button class="btn" id="more" hidden>Suggest more</button>
@@ -60,6 +64,15 @@
   </form>
   <ul class="list" id="list-books"></ul>
 
+  <h2>Films and series</h2>
+  <p class="note">Nishiii draws on lines from these too.</p>
+  <form class="add row2" id="add-screen">
+    <label class="stack"><span>Title</span><input id="s-title" type="text" required></label>
+    <label class="stack"><span>Kind</span><select id="s-kind"><option value="film">Film</option><option value="series">Series</option></select></label>
+    <button class="btn primary" type="submit">Add</button>
+  </form>
+  <ul class="list" id="list-screen"></ul>
+
   <h2>Reels and pages you love</h2>
   <p class="note">Paste a link to a reel or post, or an account's username. For any reel, a screenshot works best: Nishiii reads the words and notes the look.</p>
   <form class="add row2" id="add-inspiration">
@@ -79,14 +92,6 @@
   <p class="note" id="posts-note" role="status"></p>
   <div class="cards" id="list-posts"></div>
 
-  <h2>Instagram connection</h2>
-  <p class="note" id="ig-status" role="status"></p>
-  <form class="add" id="ig-connect" hidden>
-    <p class="note">Paste a user access token from Meta's Graph API Explorer. The app swaps it for a long-lasting one and keeps that on the server.</p>
-    <label class="stack"><span>Access token</span><input id="ig-token" type="password" autocomplete="off" required></label>
-    <button class="btn primary" type="submit">Connect Instagram</button>
-  </form>
-  <button class="btn quiet" id="ig-disconnect" hidden>Disconnect Instagram</button>
 </section>
 
 <section class="page" id="view-nishiii" hidden>
@@ -144,6 +149,7 @@
         <span>Words</span>
         <textarea id="words" rows="3" placeholder="Write the line here"></textarea>
       </label>
+      <label class="check" id="author-row" hidden><input type="checkbox" id="show-author" checked> Show the author's name</label>
       <button class="btn" id="reword-open" hidden>Reword with Nishiii</button>
       <div class="pair">
         <button class="btn" id="add">Add a separate line</button>
@@ -206,11 +212,13 @@
 
 <form class="lock" id="lock" hidden>
   <h2 class="wordmark">Entangledd Studio</h2>
+  <button class="btn primary" type="button" id="faceid-unlock" hidden>Unlock with Face ID</button>
+  <p class="note" id="lock-or" hidden>Or use the passcode:</p>
   <label class="stack">
     <span>Passcode</span>
     <input type="password" id="passcode" autocomplete="current-password" required>
   </label>
-  <button class="btn primary" type="submit">Open the studio</button>
+  <button class="btn primary" type="submit" id="passcode-go">Open the studio</button>
   <p class="oops" id="lock-error" role="alert" hidden></p>
 </form>
 
@@ -237,6 +245,50 @@
       <button class="btn" type="submit" id="reword-send">Send</button>
     </form>
     <button class="btn primary" id="reword-use">Use this version</button>
+  </div>
+</div>
+
+<div class="sheet" id="ask-sheet" role="dialog" aria-modal="true" aria-labelledby="ask-title" hidden>
+  <div class="sheet-body">
+    <header class="sheet-head">
+      <h2 id="ask-title">Get quotes from…</h2>
+      <button class="btn quiet close" id="ask-close">Close</button>
+    </header>
+    <p class="note">Tap whatever you want quotes from right now. Pick one or several. Everything here also stays in your Library and shapes future suggestions.</p>
+    <div id="ask-groups"></div>
+    <form class="add row3" id="ask-add">
+      <label class="stack"><span>Add something new</span><input id="ask-new" type="text" placeholder="A title" required></label>
+      <label class="stack"><span>Kind</span><select id="ask-new-kind"><option value="book">Book</option><option value="film">Film</option><option value="series">Series</option></select></label>
+      <button class="btn" type="submit">Add</button>
+    </form>
+    <label class="stack"><span>About (optional), such as "letting go" or "the sea"</span><input id="ask-about" type="text"></label>
+    <p class="status" id="ask-status" role="status"></p>
+    <button class="btn primary" id="ask-go">Get 5 quotes</button>
+  </div>
+</div>
+
+<div class="sheet" id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+  <div class="sheet-body">
+    <header class="sheet-head">
+      <h2 id="settings-title">Settings</h2>
+      <button class="btn quiet close" id="settings-close">Close</button>
+    </header>
+
+    <h3>Face ID lock</h3>
+    <p class="note" id="faceid-status" role="status"></p>
+    <button class="btn" id="faceid-toggle" hidden></button>
+
+    <h3>Instagram connection</h3>
+    <p class="note" id="ig-status" role="status"></p>
+    <form class="add" id="ig-connect" hidden>
+      <p class="note">Paste a user access token from Meta's Graph API Explorer. The app swaps it for a long-lasting one and keeps that on the server.</p>
+      <label class="stack"><span>Access token</span><input id="ig-token" type="password" autocomplete="off" required></label>
+      <button class="btn primary" type="submit">Connect Instagram</button>
+    </form>
+    <button class="btn quiet" id="ig-disconnect" hidden>Disconnect Instagram</button>
+
+    <h3>This device</h3>
+    <button class="btn" id="sign-out">Sign out on this device</button>
   </div>
 </div>
 

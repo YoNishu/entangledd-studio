@@ -88,6 +88,8 @@
   const sourceLine = (s) => {
     if (s.type === "own") return s.title ? `Your own collection: ${s.title}` : "Your own collection";
     if (s.type === "book") return `From your book list: ${s.title}`;
+    if (s.type === "film") return `From the film ${s.title}`;
+    if (s.type === "series") return `From the series ${s.title}`;
     return s.title ? `Well-known line, from ${s.title}` : "Well-known line";
   };
 
@@ -107,6 +109,7 @@
       el("p", { className: "q", textContent: item.text }),
       item.author ? el("p", { className: "by", textContent: "— " + item.author }) : null,
       el("p", { className: "src", textContent: sourceLine(item.source) }),
+      item.askedFor ? chip("info", `You asked for: ${item.askedFor}`) : null,
       item.verify ? chip("bad", "Check the wording and author before posting") : null,
       fateLine(item),
       el("div", { className: "acts" }, use, reword, skip));
@@ -139,7 +142,10 @@
 
   function renderToday(data) {
     todayData = data;
-    $("suggestions").replaceChildren(...data.items.map(card));
+    // What she just asked for comes first, newest request on top; the day's own picks follow.
+    const ordered = data.items.slice().sort((a, b) => (b.askedAt || 0) - (a.askedAt || 0));
+    $("suggestions").replaceChildren(...ordered.map(card));
+    $("ask-open").hidden = false;
     $("today-note").textContent = data.items.length ? "" : "No quotes yet for today. Ask for some below.";
     $("more").hidden = false;
   }
@@ -166,6 +172,66 @@
     finally { btn.disabled = false; btn.textContent = "Suggest more"; }
   });
 
+  // ---------- Today: quotes on request, from sources she picks ----------
+  const asking = { picked: new Set(), lib: null, insp: null };
+  function pickButton(id, label) {
+    const b = el("button", { type: "button", textContent: label });
+    b.setAttribute("aria-pressed", String(asking.picked.has(id)));
+    b.addEventListener("click", () => {
+      if (asking.picked.has(id)) asking.picked.delete(id); else asking.picked.add(id);
+      b.setAttribute("aria-pressed", String(asking.picked.has(id)));
+    });
+    return b;
+  }
+  function renderAsk() {
+    const lib = asking.lib, insp = asking.insp;
+    const group = (name, buttons) => (buttons.length ? el("div", {}, el("h3", { textContent: name }), el("div", { className: "picks" }, ...buttons)) : null);
+    const screen = lib.screen || [];
+    const groups = [
+      group("Books", lib.books.map((x) => pickButton(x.id, x.title))),
+      group("Films", screen.filter((x) => x.kind === "film").map((x) => pickButton(x.id, x.title))),
+      group("Series", screen.filter((x) => x.kind === "series").map((x) => pickButton(x.id, x.title))),
+      group("In the spirit of a page you love", insp.filter((x) => x.handle || x.quote).map((x) => pickButton(x.id, x.handle ? "@" + x.handle : (x.quote || "").slice(0, 28) + "…"))),
+      group("Yours", lib.quotes.length ? [pickButton("own", "Your own saved lines")] : []),
+    ].filter(Boolean);
+    $("ask-groups").replaceChildren(...(groups.length ? groups
+      : [el("p", { className: "empty", textContent: "Nothing saved yet. Add a book, film or series below, or just say what the quotes should be about." })]));
+  }
+  $("ask-open").addEventListener("click", async () => {
+    $("ask-status").textContent = "";
+    $("ask-sheet").hidden = false;
+    try {
+      [asking.lib, asking.insp] = await Promise.all([getJson("library"), getJson("inspirations").then((d) => d.items)]);
+      renderAsk();
+    } catch (e) { $("ask-status").textContent = friendly(e); }
+  });
+  $("ask-close").addEventListener("click", () => { $("ask-sheet").hidden = true; });
+  $("ask-sheet").addEventListener("click", (e) => { if (e.target === $("ask-sheet")) $("ask-sheet").hidden = true; });
+  $("ask-add").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = $("ask-new").value.trim(), kind = $("ask-new-kind").value;
+    try {
+      const before = new Set([...(asking.lib ? asking.lib.books : []), ...((asking.lib && asking.lib.screen) || [])].map((x) => x.id));
+      asking.lib = kind === "book" ? await send("library/books", "POST", { title }) : await send("library/screen", "POST", { title, kind });
+      // Select what was just added, so one more tap gets quotes from it.
+      [...asking.lib.books, ...(asking.lib.screen || [])].filter((x) => !before.has(x.id)).forEach((x) => asking.picked.add(x.id));
+      $("ask-new").value = ""; $("ask-status").textContent = "";
+      renderAsk();
+    } catch (err) { $("ask-status").textContent = friendly(err); }
+  });
+  $("ask-go").addEventListener("click", async () => {
+    const btn = $("ask-go");
+    btn.disabled = true; btn.textContent = "Finding quotes…";
+    $("ask-status").textContent = "";
+    try {
+      renderToday(await send("suggestions/from", "POST", { sources: [...asking.picked], about: $("ask-about").value, count: 5 }));
+      todayLoaded = true;
+      $("ask-sheet").hidden = true;
+      $("view-today").scrollTo({ top: 0 });
+    } catch (e) { $("ask-status").textContent = friendly(e); }
+    finally { btn.disabled = false; btn.textContent = "Get 5 quotes"; }
+  });
+
   // ---------- Library: her quotes and books ----------
   function note(msg) { $("library-note").textContent = msg; $("library-note").hidden = !msg; if (msg) $("library-note").scrollIntoView({ block: "nearest" }); }
 
@@ -181,6 +247,7 @@
     const fill = (id, rows, empty) => $(id).replaceChildren(...(rows.length ? rows : [el("li", {}, el("p", { className: "empty", textContent: empty }))]));
     fill("list-quotes", lib.quotes.slice().reverse().map((q) => row("quotes", q, q.text, [q.author, q.from].filter(Boolean).join(", "))), "No quotes saved yet.");
     fill("list-books", lib.books.map((b) => row("books", b, b.title, b.author)), "No books yet.");
+    fill("list-screen", (lib.screen || []).map((x) => row("screen", x, x.title, x.kind === "series" ? "Series" : "Film")), "No films or series yet.");
   }
 
   async function loadLibrary() {
@@ -200,6 +267,8 @@
     () => { $("q-text").value = ""; });
   addForm("add-book", "books", () => ({ title: $("b-title").value, author: $("b-author").value }),
     () => { $("b-title").value = ""; $("b-author").value = ""; });
+
+  addForm("add-screen", "screen", () => ({ title: $("s-title").value, kind: $("s-kind").value }), () => { $("s-title").value = ""; });
 
   // Scan: let Claude read a photographed page, then she picks which lines to keep.
   $("scan").addEventListener("change", async () => {
@@ -441,16 +510,52 @@
     return ig;
   }
   async function loadPosts() {
+    if (!S.server.instagram) { $("posts-note").textContent = "Posting switches on once Instagram is set up on the server."; $("list-posts").replaceChildren(); return; }
     await loadIg();
-    renderIg();
-    if (!S.server.instagram) { $("posts-note").textContent = ""; $("list-posts").replaceChildren(); return; }
     $("posts-note").textContent = "Checking Instagram for the latest numbers…";
     try {
       const { posts } = await getJson("posts");
       $("list-posts").replaceChildren(...posts.map(postCard));
-      $("posts-note").textContent = posts.length ? "Posts you delete on Instagram disappear from here the next time this opens." : "Nothing posted from the app yet.";
+      $("posts-note").textContent = !(ig && ig.connected) ? "Instagram isn't connected. Connect it in Settings, at the top right."
+        : posts.length ? "Posts you delete on Instagram disappear from here the next time this opens." : "Nothing posted from the app yet.";
     } catch (e) { $("posts-note").textContent = friendly(e); }
   }
+
+  // ---------- Settings: Face ID lock, Instagram connection, signing out ----------
+  function renderFaceId(msg) {
+    const f = S.faceId, btn = $("faceid-toggle");
+    btn.hidden = !f.supported() || !S.server.on;
+    btn.textContent = f.on() ? "Turn the lock off on this device" : `Lock the app with ${f.name}`;
+    $("faceid-status").textContent = msg || (!f.supported() ? "This browser can't use Face ID for websites."
+      : f.on() ? `On. The app asks for ${f.name} each time it is opened, and again after five minutes away. The passcode still works as a fallback.`
+      : `Off. The passcode was asked once and this device stays signed in. Turn this on to ask for ${f.name} every time.`);
+  }
+  $("faceid-toggle").addEventListener("click", async () => {
+    const btn = $("faceid-toggle");
+    btn.disabled = true;
+    try {
+      if (S.faceId.on()) { await S.faceId.disable(); renderFaceId(); }
+      else { await S.faceId.enable(); renderFaceId(); }
+    } catch (e) { renderFaceId(e.name === "NotAllowedError" ? "That was cancelled, so nothing changed." : friendly(e)); }
+    finally { btn.disabled = false; }
+  });
+  async function openSettings(message) {
+    $("settings").hidden = false;
+    renderFaceId();
+    await loadIg();
+    renderIg();
+    if (message) { $("ig-status").textContent = message; $("ig-status").scrollIntoView({ block: "center" }); }
+  }
+  $("settings-open").addEventListener("click", () => openSettings());
+  $("settings-close").addEventListener("click", () => { $("settings").hidden = true; });
+  $("settings").addEventListener("click", (e) => { if (e.target === $("settings")) $("settings").hidden = true; });
+  $("sign-out").addEventListener("click", async () => {
+    if (!(await confirmDialog({ title: "Sign out on this device?", yes: "Sign out",
+      body: "The app will ask for the passcode the next time it is opened here. Nothing is deleted." }))) return;
+    $("settings").hidden = true;
+    S.signOut();
+  });
+
   $("ig-connect").addEventListener("submit", async (e) => {
     e.preventDefault();
     $("ig-status").textContent = "Connecting…";
@@ -464,7 +569,9 @@
   });
 
   // ---------- Nishiii: her picture of what Dhruuu likes ----------
+  let canForget = { profile: false, all: false };
   function renderTaste(t) {
+    canForget = t.canForget || canForget;
     const p = t.profile;
     $("taste-card").hidden = !p;
     if (p) {
@@ -496,6 +603,11 @@
   });
   // Forgetting can't be undone, so each asks first in a pop-up.
   async function forget(scope, ask, done) {
+    if (!canForget[scope]) {
+      $("taste-note").textContent = scope === "profile" ? "There's no profile to forget yet." : "There's nothing to forget: no profile, no notes and no record of picks.";
+      $("taste-note").scrollIntoView({ block: "center" });
+      return;
+    }
     if (!(await confirmDialog(ask))) return;
     try { renderTaste(await send("taste?scope=" + scope, "DELETE")); $("taste-note").textContent = done; }
     catch (e) { $("taste-note").textContent = friendly(e); }
@@ -563,7 +675,7 @@
   $("post-open").addEventListener("click", async () => {
     if (!S.currentReel()) return;
     await loadIg();
-    if (!ig || !ig.connected) { show("posts"); $("ig-status").textContent = "Connect Instagram here first, then go back to Create to post the reel."; $("ig-status").scrollIntoView({ block: "center" }); return; }
+    if (!ig || !ig.connected) { openSettings("Connect Instagram here first, then go back to Create to post the reel."); return; }
     chooseMusic(null);
     $("music-list").replaceChildren();
     $("post-form").hidden = false; $("post-link").hidden = true; postStatus("");
