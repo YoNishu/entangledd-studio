@@ -77,8 +77,10 @@ const env = {
   // Stand-ins for Claude and Pexels, so nothing here costs money or needs a key.
   ANTHROPIC_API_KEY: "dev-key",
   ANTHROPIC_API: `http://localhost:${PORT}/__anthropic`,
-  PEXELS_API_KEY: "dev-key",
-  PEXELS_API: `http://localhost:${PORT}/__pexels`,
+  // Pixabay by default; run with STOCK=pexels to try the Pexels path instead.
+  ...(process.env.STOCK === "pexels"
+    ? { PEXELS_API_KEY: "dev-key", PEXELS_API: `http://localhost:${PORT}/__pexels` }
+    : { PIXABAY_API_KEY: "dev-key", PIXABAY_API: `http://localhost:${PORT}/__pixabay` }),
   STOCK_HOSTS: "localhost",
 };
 const MEDIA_DIR = process.env.DEV_MEDIA || "";   // folder holding sea.mp4 and sky.jpg for the pretend Pexels
@@ -116,6 +118,19 @@ function pretendClaude(req) {
     text = JSON.stringify({ passages: hasImage ? ["The sea keeps no calendar.", "Whatever you can do, begin it."] : [] });
   } else text = "{}";
   return { status: 200, body: { content: [{ type: "text", text }] } };
+}
+function pretendPixabay(url) {
+  const media = `http://localhost:${PORT}/__media`;
+  const rendition = (w, h, name) => ({ url: `${media}/${name}`, width: w, height: h, size: 1000, thumbnail: `${media}/sky.jpg` });
+  if (url.pathname.endsWith("/videos/")) {
+    const hit = (id, upright) => ({ id, pageURL: "https://pixabay.com/videos/id-" + id, duration: 6, user: "Sample Filmer " + id,
+      videos: upright
+        ? { large: rendition(2160, 3840, "sea.mp4?4k"), medium: rendition(1080, 1920, "sea.mp4"), small: rendition(540, 960, "sea.mp4?s"), tiny: rendition(360, 640, "sea.mp4?t") }
+        : { large: { url: "", width: 0, height: 0, size: 0, thumbnail: "" }, medium: rendition(1920, 1080, "sea.mp4?wide"), small: rendition(1280, 720, "sea.mp4?ws") } });
+    return { total: 3, totalHits: 3, hits: [hit(11, false), hit(12, true), hit(13, true)] };
+  }
+  return { total: 2, totalHits: 2, hits: [1, 2].map((n) => ({ id: n, pageURL: "https://pixabay.com/photos/id-" + n, user: "Sample Shooter " + n,
+    webformatURL: `${media}/sky.jpg`, largeImageURL: `${media}/sky.jpg` })) };
 }
 function pretendPexels(url) {
   const media = `http://localhost:${PORT}/__media`;
@@ -157,6 +172,11 @@ http.createServer(async (req, res) => {
       if (req.headers["x-api-key"] !== env.ANTHROPIC_API_KEY) { res.writeHead(401).end("{}"); return; }
       const out = pretendClaude(JSON.parse((await readBody(req)).toString()));
       res.writeHead(out.status, { "Content-Type": "application/json" }).end(JSON.stringify(out.body));
+      return;
+    }
+    if (url.pathname.startsWith("/__pixabay/")) {
+      if (url.searchParams.get("key") !== env.PIXABAY_API_KEY) { res.writeHead(400).end("[ERROR 400] Invalid or missing API key"); return; }
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(pretendPixabay(url)));
       return;
     }
     if (url.pathname.startsWith("/__pexels/")) {

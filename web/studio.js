@@ -111,7 +111,7 @@
       return el("li", {}, el("div", {}, el("p", { className: "main", textContent: main }), sub ? el("p", { className: "sub", textContent: sub }) : null), remove);
     };
     const fill = (id, rows, empty) => $(id).replaceChildren(...(rows.length ? rows : [el("li", {}, el("p", { className: "empty", textContent: empty }))]));
-    fill("list-quotes", lib.quotes.slice().reverse().map((q) => row("quotes", q, q.text, [q.author, q.from].filter(Boolean).join(" · "))), "No quotes saved yet.");
+    fill("list-quotes", lib.quotes.slice().reverse().map((q) => row("quotes", q, q.text, [q.author, q.from].filter(Boolean).join(", "))), "No quotes saved yet.");
     fill("list-books", lib.books.map((b) => row("books", b, b.title, b.author)), "No books yet.");
     fill("list-accounts", lib.accounts.map((a) => row("accounts", a, "@" + a.handle, "")), "No accounts yet.");
   }
@@ -231,8 +231,8 @@
 
   function thumb(item) {
     const b = el("button", { type: "button" },
-      el("img", { src: item.thumb, alt: `${item.kind === "video" ? "Video" : "Photo"} by ${item.credit || "a Pexels creator"}`, loading: "lazy" }),
-      el("span", { textContent: (item.seconds ? item.seconds + " s · " : "") + (item.credit || "Pexels") }));
+      el("img", { src: item.thumb, alt: `${item.kind === "video" ? "Video" : "Photo"} by ${item.credit || "a contributor"}`, loading: "lazy" }),
+      el("span", { textContent: [item.seconds ? item.seconds + " s" : "", item.credit].filter(Boolean).join(", ") }));
     b.addEventListener("click", async () => {
       if (b.getAttribute("aria-busy") === "true") return;
       b.setAttribute("aria-busy", "true");
@@ -240,7 +240,7 @@
       try {
         const blob = await (await S.api("stock/file?url=" + encodeURIComponent(item.file))).blob();
         const video = item.kind === "video";
-        await S.loadBackground(new File([blob], `pexels-${item.id}.${video ? "mp4" : "jpg"}`, { type: video ? "video/mp4" : "image/jpeg" }));
+        await S.loadBackground(new File([blob], `stock-${item.id}.${video ? "mp4" : "jpg"}`, { type: video ? "video/mp4" : "image/jpeg" }));
         $("stock-sheet").hidden = true;
         status("");
       } catch (e) { status(friendly(e)); }
@@ -256,6 +256,10 @@
       const nodes = data.items.map(thumb);
       if (append) $("stock-grid").append(...nodes); else $("stock-grid").replaceChildren(...nodes);
       $("stock-more").hidden = !data.more;
+      if (data.provider) {
+        $("stock-provider").textContent = data.provider.name; $("stock-provider").href = data.provider.url;
+        $("stock-credit").hidden = false;
+      }
       status(data.items.length || append ? "" : "Nothing found. Try different words.");
     } catch (e) { status(friendly(e)); }
   }

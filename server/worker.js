@@ -7,7 +7,7 @@
      RENDER_SECRET  shared with GitHub Actions so only the renderer can fetch and return files
      GITHUB_TOKEN   lets the app start a render on GitHub
      ANTHROPIC_API_KEY  for Nishiii: quote suggestions, rewording, reading a scanned page
-     PEXELS_API_KEY     for the free footage search
+     PIXABAY_API_KEY    for the free footage search (or PEXELS_API_KEY; Pixabay is used if both are set)
    Bindings and vars (wrangler.jsonc):
      MEDIA          R2 bucket for uploads and finished reels
      GITHUB_REPO    "owner/repo" that holds the render workflow
@@ -85,8 +85,8 @@ async function login(request, env) {
 // ---------- jobs, called by the app ----------
 async function purgeOld(env) {
   const cutoff = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
-  const list = await env.MEDIA.list({ prefix: "jobs/", limit: 500 });
-  const old = list.objects.filter((o) => new Date(o.uploaded).getTime() < cutoff).map((o) => o.key);
+  const lists = await Promise.all(["jobs/", "data/stockcache/"].map((prefix) => env.MEDIA.list({ prefix, limit: 500 })));
+  const old = lists.flatMap((l) => l.objects).filter((o) => new Date(o.uploaded).getTime() < cutoff).map((o) => o.key);
   if (old.length) await env.MEDIA.delete(old);
 }
 
@@ -411,51 +411,105 @@ async function scanPage(request, env) {
   return json({ passages });
 }
 
-// ---------- free footage (Pexels) ----------
+// ---------- free footage (Pixabay or Pexels, whichever key is set) ----------
+const PROVIDERS = {
+  pixabay: { name: "Pixabay", url: "https://pixabay.com", hosts: ["pixabay.com"] },
+  pexels: { name: "Pexels", url: "https://www.pexels.com", hosts: ["pexels.com"] },
+};
+const stockProvider = (env) => (env.PIXABAY_API_KEY ? "pixabay" : env.PEXELS_API_KEY ? "pexels" : null);
+
 function stockHostAllowed(env, host) {
-  if (host === "pexels.com" || host.endsWith(".pexels.com")) return true;
+  for (const p of Object.values(PROVIDERS)) for (const h of p.hosts) if (host === h || host.endsWith("." + h)) return true;
   return !!env.STOCK_HOSTS && env.STOCK_HOSTS.split(",").includes(host);   // used only by the local dev server
 }
+function stockError(name, status) {
+  if (status === 400 || status === 401 || status === 403) return new UserError(502, `The ${name} key was rejected. Check it in Cloudflare.`);
+  if (status === 429) return new UserError(502, `${name}'s request limit was reached. Try again in a minute.`);
+  return new UserError(502, `${name} couldn't be searched (status ${status}).`);
+}
+
+async function searchPexels(env, kind, q, page) {
+  const base = env.PEXELS_API || "https://api.pexels.com";
+  const path = kind === "video" ? "/v1/videos/search" : "/v1/search";
+  const res = await fetch(`${base}${path}?query=${encodeURIComponent(q)}&orientation=portrait&per_page=18&page=${page}`, {
+    headers: { Authorization: env.PEXELS_API_KEY },
+  });
+  if (!res.ok) throw stockError("Pexels", res.status);
+  const data = await res.json();
+  let items;
+  if (kind === "video") {
+    items = (data.videos || []).map((v) => {
+      // The MP4 closest to 1080x1920: big enough to look sharp, small enough to download quickly.
+      const files = (v.video_files || []).filter((f) => f.file_type === "video/mp4" && f.width && f.height && f.link);
+      files.sort((a, b2) => Math.abs(a.height - 1920) - Math.abs(b2.height - 1920));
+      return files.length ? { id: String(v.id), kind, thumb: v.image, seconds: v.duration, credit: v.user && v.user.name,
+        page: v.url, file: files[0].link } : null;
+    }).filter(Boolean);
+  } else {
+    items = (data.photos || []).filter((p) => p.src && p.src.original).map((p) => ({
+      id: String(p.id), kind, thumb: p.src.medium, credit: p.photographer, page: p.url,
+      file: `${p.src.original}?auto=compress&cs=tinysrgb&fit=crop&w=1080&h=1920`,
+    }));
+  }
+  return { items, more: !!data.next_page };
+}
+
+async function searchPixabay(env, kind, q, page) {
+  const base = env.PIXABAY_API || "https://pixabay.com";
+  const common = `key=${encodeURIComponent(env.PIXABAY_API_KEY)}&q=${encodeURIComponent(q)}&safesearch=true&page=${page}`;
+  if (kind === "photo") {
+    const res = await fetch(`${base}/api/?${common}&image_type=photo&orientation=vertical&per_page=18`);
+    if (!res.ok) throw stockError("Pixabay", res.status);
+    const data = await res.json();
+    const items = (data.hits || []).filter((h) => h.largeImageURL).map((h) => ({
+      id: String(h.id), kind, thumb: h.webformatURL, credit: h.user, page: h.pageURL, file: h.largeImageURL,
+    }));
+    return { items, more: page * 18 < (data.totalHits || 0) };
+  }
+  // Pixabay can't filter videos by shape, so ask for a larger batch and put the upright ones first.
+  const res = await fetch(`${base}/api/videos/?${common}&per_page=60`);
+  if (!res.ok) throw stockError("Pixabay", res.status);
+  const data = await res.json();
+  const items = (data.hits || []).map((h) => {
+    const files = Object.values(h.videos || {}).filter((f) => f && f.url && f.width && f.height);
+    if (!files.length) return null;
+    // The rendition whose long side is closest to 1920: sharp enough, quick to download.
+    files.sort((a, b2) => Math.abs(Math.max(a.width, a.height) - 1920) - Math.abs(Math.max(b2.width, b2.height) - 1920));
+    const f = files[0];
+    return { id: String(h.id), kind, thumb: f.thumbnail, seconds: h.duration, credit: h.user, page: h.pageURL,
+      file: f.url, upright: f.height > f.width };
+  }).filter(Boolean);
+  items.sort((a, b2) => Number(b2.upright) - Number(a.upright));
+  return { items: items.slice(0, 24), more: page * 60 < (data.totalHits || 0) };
+}
+
 async function stockRoutes(request, env, parts) {
-  if (!env.PEXELS_API_KEY) return fail(503, "Free footage isn't connected yet: the Pexels key is missing.");
+  const provider = stockProvider(env);
+  if (!provider) return fail(503, "Free footage isn't connected yet: its key is missing on the server.");
+  const info = PROVIDERS[provider];
   const url = new URL(request.url);
   if (parts.length === 1) {
     const kind = url.searchParams.get("kind") === "photo" ? "photo" : "video";
     const q = oneLine(url.searchParams.get("q"), 80) || "ocean";
     const page = Math.min(20, Math.max(1, Number(url.searchParams.get("page")) || 1));
-    const base = env.PEXELS_API || "https://api.pexels.com";
-    const path = kind === "video" ? "/v1/videos/search" : "/v1/search";
-    const res = await fetch(`${base}${path}?query=${encodeURIComponent(q)}&orientation=portrait&per_page=18&page=${page}`, {
-      headers: { Authorization: env.PEXELS_API_KEY },
-    });
-    if (res.status === 401 || res.status === 403) return fail(502, "The Pexels key was rejected. Check it in Cloudflare.");
-    if (res.status === 429) return fail(502, "Pexels' hourly limit was reached. Try again later.");
-    if (!res.ok) return fail(502, `Pexels couldn't be searched (status ${res.status}).`);
-    const data = await res.json();
-    let items;
-    if (kind === "video") {
-      items = (data.videos || []).map((v) => {
-        // The MP4 closest to 1080x1920: big enough to look sharp, small enough to download quickly.
-        const files = (v.video_files || []).filter((f) => f.file_type === "video/mp4" && f.width && f.height && f.link);
-        files.sort((a, b2) => Math.abs(a.height - 1920) - Math.abs(b2.height - 1920));
-        return files.length ? { id: String(v.id), kind, thumb: v.image, seconds: v.duration, credit: v.user && v.user.name,
-          page: v.url, file: files[0].link } : null;
-      }).filter(Boolean);
-    } else {
-      items = (data.photos || []).filter((p) => p.src && p.src.original).map((p) => ({
-        id: String(p.id), kind, thumb: p.src.medium, credit: p.photographer, page: p.url,
-        file: `${p.src.original}?auto=compress&cs=tinysrgb&fit=crop&w=1080&h=1920`,
-      }));
+    // Searches are kept for a day, which Pixabay's terms ask for and which saves requests.
+    const cacheName = `stockcache/${await hmacHex("stock", `${provider}|${kind}|${norm(q)}|${page}`)}`;
+    if (env.MEDIA) {
+      const hit = await loadDoc(env, cacheName, null);
+      if (hit && Date.now() - hit.at < 24 * 60 * 60 * 1000) return json(hit.data);
     }
-    return json({ items, more: !!data.next_page });
+    const found = provider === "pixabay" ? await searchPixabay(env, kind, q, page) : await searchPexels(env, kind, q, page);
+    const data = { ...found, provider: { name: info.name, url: info.url } };
+    if (env.MEDIA && found.items.length) await saveDoc(env, cacheName, { at: Date.now(), data });
+    return json(data);
   }
   if (parts[1] === "file") {
     let target;
     try { target = new URL(url.searchParams.get("url")); } catch (e) { return fail(400, "Bad file address."); }
     const local = !!env.STOCK_HOSTS && target.protocol === "http:";
-    if ((target.protocol !== "https:" && !local) || !stockHostAllowed(env, target.hostname)) return fail(400, "Only Pexels files can be fetched.");
+    if ((target.protocol !== "https:" && !local) || !stockHostAllowed(env, target.hostname)) return fail(400, "Only stock-library files can be fetched.");
     const res = await fetch(target, { headers: { "User-Agent": "entangledd-studio" } });
-    if (!res.ok) return fail(502, "That file couldn't be downloaded from Pexels.");
+    if (!res.ok) return fail(502, `That file couldn't be downloaded from ${info.name}.`);
     const size = Number(res.headers.get("Content-Length") || 0);
     if (size > 250 * 1024 * 1024) return fail(413, "That file is too large. Pick a different one.");
     const headers = { "Content-Type": res.headers.get("Content-Type") || "application/octet-stream", "Cache-Control": "no-store" };
@@ -508,7 +562,7 @@ export default {
     try {
       if (parts[0] === "status" && request.method === "GET") {
         return json({ configured: !!env.APP_PASSCODE, signedIn: await signedIn(request, env), reels: reelsReady(env),
-          ai: !!(env.ANTHROPIC_API_KEY && env.MEDIA), stock: !!env.PEXELS_API_KEY });
+          ai: !!(env.ANTHROPIC_API_KEY && env.MEDIA), stock: !!stockProvider(env) });
       }
       if (parts[0] === "login" && request.method === "POST") return login(request, env);
       if (parts[0] === "render") {

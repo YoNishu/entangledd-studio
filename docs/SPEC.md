@@ -42,7 +42,7 @@ weekly report, comment reply drafts.
 | 1 | Reel renderer and GitHub workflows | Done |
 | 2 | Composer: photo/video background, styles, drag and pinch, image export | Done |
 | 3 | Server: passcode, reels made from the phone | Done, working on the live app |
-| 4 | Quotes: Today's suggestions, Library (own quotes, books, accounts), page scan, rewording with Nishiii, free footage search | Built; needs `ANTHROPIC_API_KEY` and `PEXELS_API_KEY` |
+| 4 | Quotes: Today's suggestions, Library (own quotes, books, accounts), page scan, rewording with Nishiii, free footage search | Built; needs `ANTHROPIC_API_KEY` and `PIXABAY_API_KEY` |
 | 5 | Instagram: connect the account, caption and hashtags, tap to post reels and carousels, music from Instagram's library | Next |
 | 6 | Insights: nightly stats pull, what-works view, results feeding the suggestions | After 5 |
 | 7 | Reference accounts: their top posts and numbers, read into suggestions | After 5 |
