@@ -258,12 +258,17 @@ async function libraryRoutes(request, env, parts) {
 }
 
 // ---------- Claude ----------
-async function claude(env, { system, messages, maxTokens = 2000 }) {
+async function claude(env, opts) {
+  const data = await claudeRaw(env, opts);
+  return (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+}
+// The full reply, including any tools Claude wants run. Used directly by the chat assistant.
+async function claudeRaw(env, { system, messages, maxTokens = 2000, tools }) {
   if (!env.ANTHROPIC_API_KEY) throw new UserError(503, "Nishiii isn't connected yet: the Anthropic key is missing.");
   const res = await fetch((env.ANTHROPIC_API || "https://api.anthropic.com") + "/v1/messages", {
     method: "POST",
     headers: { "x-api-key": env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: maxTokens, output_config: { effort: "medium" }, system, messages }),
+    body: JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: maxTokens, output_config: { effort: "medium" }, system, messages, tools }),
   });
   if (res.status === 401 || res.status === 403) throw new UserError(502, "The Anthropic key was rejected. Check it in Cloudflare.");
   if (res.status === 429) throw new UserError(502, "Claude is busy right now. Try again in a minute.");
@@ -275,8 +280,7 @@ async function claude(env, { system, messages, maxTokens = 2000 }) {
       ? "The Anthropic account is out of credit. Add credit in the Anthropic console."
       : `Claude couldn't answer (status ${res.status}). Try again.`);
   }
-  const data = await res.json();
-  return (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  return res.json();
 }
 // Claude is asked for JSON only; this copes with stray text or code fences around it.
 function parseJson(text) {
@@ -1273,6 +1277,151 @@ async function passkeyRoutes(request, env, parts, authed) {
   return fail(404, "Not found.");
 }
 
+// ---------- Nishiii as a chat assistant that can do things in the app ----------
+const CHAT_SYSTEM = `You are Nishiii, the chat assistant inside Entangledd Studio, an app Dhruuu uses to run her Instagram quotes page. You are warm, brief and practical.
+You can act in the app with your tools: look at today's quotes, fetch quotes from books, films, series or a subject, add things to her Library, put a quote on the canvas in Create, open a section, read how her posts did, read what you have learned about her taste, save a note she wants you to follow, and write a caption.
+Rules:
+- Use tools for anything about her data. Never make up numbers, posts or quotes.
+- When she asks for quotes, fetch them with ask_for_quotes, then list them briefly, numbered.
+- When she picks a quote, call use_quote with its exact text and author. Tell her it is in Create, where she chooses the background and taps Finish. You cannot create the reel or post to Instagram yourself: both need her own tap.
+- If she tells you a lasting preference ("no hustle quotes"), save it with save_note.
+- Keep replies short: a sentence or two, plus any list. Plain text, no markdown symbols.`;
+
+const CHAT_TOOLS = [
+  { name: "get_today", description: "Today's five suggested quotes with their state.", input_schema: { type: "object", properties: {} } },
+  { name: "ask_for_quotes", description: "Fetch quotes right now from specific books, films or series (by title), and/or about a subject. Titles not yet in her Library are added to it. Results are saved in the Nishiii section.",
+    input_schema: { type: "object", properties: {
+      books: { type: "array", items: { type: "string" } }, films: { type: "array", items: { type: "string" } }, series: { type: "array", items: { type: "string" } },
+      about: { type: "string", description: "Optional subject or mood." }, count: { type: "integer", minimum: 1, maximum: 8 } } } },
+  { name: "add_to_library", description: "Add a book, film, series, or one of her own quotes to her Library.",
+    input_schema: { type: "object", required: ["kind", "text"], properties: { kind: { type: "string", enum: ["book", "film", "series", "quote"] },
+      text: { type: "string", description: "The title, or the quote itself." }, author: { type: "string" } } } },
+  { name: "get_library", description: "What is in her Library: books, films, series, and how many of her own quotes.", input_schema: { type: "object", properties: {} } },
+  { name: "use_quote", description: "Put a quote on the canvas in Create, ready for her to style and finish.",
+    input_schema: { type: "object", required: ["text"], properties: { text: { type: "string" }, author: { type: "string" } } } },
+  { name: "open_section", description: "Open a section of the app for her.",
+    input_schema: { type: "object", required: ["section"], properties: { section: { type: "string", enum: ["today", "create", "library", "posts", "nishiii"] } } } },
+  { name: "get_posts", description: "Her recent posts made from the app, with reach, views, likes, comments, saves and shares where known.", input_schema: { type: "object", properties: {} } },
+  { name: "get_taste", description: "What you have learned about her taste so far, and the notes she has given you.", input_schema: { type: "object", properties: {} } },
+  { name: "save_note", description: "Save a lasting instruction from her that all future suggestions must follow.",
+    input_schema: { type: "object", required: ["text"], properties: { text: { type: "string" } } } },
+  { name: "write_caption", description: "Write an Instagram caption and hashtags for a quote.",
+    input_schema: { type: "object", required: ["quote"], properties: { quote: { type: "string" }, author: { type: "string" } } } },
+];
+
+// Finds a Library entry by title, adding it if it isn't there yet. Returns its id.
+async function ensureInLibrary(lib, list, title, extra) {
+  const t = oneLine(title, 120);
+  if (!t) return null;
+  let hit = lib[list].find((x) => norm(x.title) === norm(t) && (!extra.kind || x.kind === extra.kind));
+  if (!hit && lib[list].length < LIMITS[list]) { hit = { id: crypto.randomUUID(), added: Date.now(), title: t, ...extra }; lib[list].push(hit); lib.changed = true; }
+  return hit ? hit.id : null;
+}
+
+async function runChatTool(env, name, input, actions) {
+  const arr = (v) => (Array.isArray(v) ? v : []).slice(0, 6);
+  if (name === "get_today") {
+    const day = await loadDoc(env, `suggestions/${todayIST()}`, []);
+    return daily(day).filter((i) => i.state !== "rejected").map((i) => ({ text: i.text, author: i.author, from: i.source.title || i.source.type, state: i.state }));
+  }
+  if (name === "ask_for_quotes") {
+    const lib = { ...emptyLibrary(), ...(await loadDoc(env, "library", emptyLibrary())) };
+    const ids = [];
+    for (const t of arr(input.books)) ids.push(await ensureInLibrary(lib, "books", t, { author: "" }));
+    for (const t of arr(input.films)) ids.push(await ensureInLibrary(lib, "screen", t, { kind: "film" }));
+    for (const t of arr(input.series)) ids.push(await ensureInLibrary(lib, "screen", t, { kind: "series" }));
+    if (lib.changed) { delete lib.changed; await saveDoc(env, "library", lib); }
+    const list = await loadDoc(env, "asked", []);
+    const fresh = await suggestFrom(env, { sources: ids.filter(Boolean), about: input.about, count: input.count || 5 }, list);
+    await saveDoc(env, "asked", [...list, ...fresh].slice(-ASKED_KEEP));
+    actions.push({ type: "refresh", what: "asked" });
+    return fresh.map((q) => ({ text: q.text, author: q.author, from: q.source.title || q.source.type, checkWording: q.verify }));
+  }
+  if (name === "add_to_library") {
+    const lib = { ...emptyLibrary(), ...(await loadDoc(env, "library", emptyLibrary())) };
+    const text = lines(input.text, 500);
+    if (!text) return { error: "Nothing to add." };
+    if (input.kind === "quote") {
+      if (lib.quotes.some((q) => norm(q.text) === norm(text))) return { already: true };
+      lib.quotes.push({ id: crypto.randomUUID(), added: Date.now(), text, author: oneLine(input.author, 80), from: "" });
+    } else if (input.kind === "book") {
+      if (!(await ensureInLibrary(lib, "books", text, { author: oneLine(input.author, 80) }))) return { error: "The list is full." };
+    } else if (!(await ensureInLibrary(lib, "screen", text, { kind: input.kind === "series" ? "series" : "film" }))) return { error: "The list is full." };
+    delete lib.changed;
+    await saveDoc(env, "library", lib);
+    actions.push({ type: "refresh", what: "library" });
+    return { added: true };
+  }
+  if (name === "get_library") {
+    const lib = { ...emptyLibrary(), ...(await loadDoc(env, "library", emptyLibrary())) };
+    return { books: lib.books.map((b) => b.title), films: lib.screen.filter((x) => x.kind === "film").map((x) => x.title),
+      series: lib.screen.filter((x) => x.kind === "series").map((x) => x.title), ownQuotes: lib.quotes.length };
+  }
+  if (name === "use_quote") {
+    const text = lines(input.text, 600);
+    if (!text) return { error: "No quote given." };
+    actions.push({ type: "use", text, author: oneLine(input.author, 80) });
+    return { placed: true, note: "It is on the canvas in Create. She picks the background and taps Finish." };
+  }
+  if (name === "open_section") {
+    if (!["today", "create", "library", "posts", "nishiii"].includes(input.section)) return { error: "No such section." };
+    actions.push({ type: "open", section: input.section });
+    return { opened: input.section };
+  }
+  if (name === "get_posts") {
+    const posts = await loadDoc(env, "posts", []);
+    return posts.filter((p) => p.state === "published").slice(-12).reverse().map((p) => ({ quote: p.quote, posted: new Date(p.published || p.created).toISOString().slice(0, 10), music: p.music || "", ...(p.metrics || { numbers: "not available yet" }) }));
+  }
+  if (name === "get_taste") {
+    const t = await loadDoc(env, "taste", emptyTaste());
+    return { profile: t.profile || "nothing learned yet", herNotes: (t.notes || []).map((n) => n.text) };
+  }
+  if (name === "save_note") {
+    const text = lines(input.text, 300);
+    const taste = { ...emptyTaste(), ...(await loadDoc(env, "taste", emptyTaste())) };
+    if (!text || taste.notes.length >= 30) return { error: "The note couldn't be saved." };
+    taste.notes.push({ id: crypto.randomUUID(), text, at: Date.now() });
+    await saveDoc(env, "taste", taste);
+    actions.push({ type: "refresh", what: "taste" });
+    return { saved: true };
+  }
+  if (name === "write_caption") {
+    const taste = await tasteBrief(env);
+    const a = parseJson(await claude(env, { system: CAPTION_SYSTEM, maxTokens: 700, messages: [{ role: "user",
+      content: `Quote:\n${lines(input.quote, 600)}\nAuthor: ${oneLine(input.author, 80) || "none"}${taste ? `\n\nHer taste:\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : ""}` }] }));
+    return { caption: a.caption, hashtags: a.hashtags };
+  }
+  return { error: "Unknown tool." };
+}
+
+async function chat(request, env) {
+  const b = await body(request);
+  const turns = (Array.isArray(b.messages) ? b.messages : []).slice(-24)
+    .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: lines(m.content, 2000) })).filter((m) => m.content);
+  while (turns.length && turns[0].role !== "user") turns.shift();
+  if (!turns.length || turns[turns.length - 1].role !== "user") return fail(400, "Say something to Nishiii first.");
+  const messages = turns.map((m) => ({ role: m.role, content: m.content }));
+  const actions = [];
+  let reply = "";
+  for (let step = 0; step < 6; step++) {
+    const data = await claudeRaw(env, { system: CHAT_SYSTEM, messages, tools: CHAT_TOOLS, maxTokens: 1500 });
+    const blocks = data.content || [];
+    reply = blocks.filter((c) => c.type === "text").map((c) => c.text).join("").trim() || reply;
+    const calls = blocks.filter((c) => c.type === "tool_use");
+    if (data.stop_reason !== "tool_use" || !calls.length) break;
+    messages.push({ role: "assistant", content: blocks });
+    const results = [];
+    for (const call of calls) {
+      let out;
+      try { out = await runChatTool(env, call.name, call.input || {}, actions); }
+      catch (e) { if (!(e instanceof UserError)) throw e; out = { error: e.message }; }
+      results.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(out).slice(0, 6000) });
+    }
+    messages.push({ role: "user", content: results });
+  }
+  return json({ reply: reply || "Done.", actions });
+}
+
 // ---------- called by the renderer on GitHub ----------
 async function renderRoutes(request, env, parts) {
   const id = parts[1], what = parts[2], method = request.method;
@@ -1321,7 +1470,7 @@ async function route(request, env, parts) {
     if (!isRenderer(request, env)) return fail(401, "Not allowed.");
     return renderRoutes(request, env, parts);
   }
-  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste"].includes(parts[0])) {
+  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat"].includes(parts[0])) {
     if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
     if (parts[0] === "jobs") return appRoutes(request, env, parts);
     if (parts[0] === "stock") return stockRoutes(request, env, parts);
@@ -1334,6 +1483,7 @@ async function route(request, env, parts) {
     if (parts[0] === "caption" && request.method === "POST") return writeCaption(request, env);
     if (parts[0] === "suggestions") return suggestionRoutes(request, env, parts);
     if (parts[0] === "asked") return askedRoutes(request, env, parts);
+    if (parts[0] === "chat" && request.method === "POST") return chat(request, env);
     if (parts[0] === "edit" && request.method === "POST") return editQuote(request, env);
     if (parts[0] === "scan" && request.method === "POST") return scanPage(request, env);
   }

@@ -749,11 +749,64 @@
     finally { posting = false; $("post-go").disabled = false; }
   });
 
+  // ---------- Chat with Nishiii: she can fetch quotes, fill Create, and report on posts ----------
+  const talk = [];        // the conversation so far, as plain {role, content}
+  let chatBusy = false;
+  function chatLine(cls, text) {
+    const p = el("p", { className: cls, textContent: text });
+    $("chat-log").append(p);
+    p.scrollIntoView({ block: "nearest" });
+    return p;
+  }
+  // Things Nishiii did in the app while answering.
+  function applyChatActions(actions) {
+    for (const a of actions) {
+      if (a.type === "use") {
+        onCanvas = { author: a.author || "", theme: "", tone: "", source: "chat", suggestionId: "" };
+        S.setQuote(a.text, a.author || "");
+        const go = el("button", { className: "btn act", type: "button", textContent: "Open Create" });
+        go.addEventListener("click", () => { $("chat").hidden = true; show("create"); });
+        $("chat-log").append(go);
+      } else if (a.type === "open" && VIEWS.includes(a.section)) {
+        $("chat").hidden = true; show(a.section);
+      } else if (a.type === "refresh") {
+        if (a.what === "asked" && current === "nishiii") loadAsked();
+        if (a.what === "taste" && current === "nishiii") loadTaste();
+        if (a.what === "library" && current === "library") loadLibrary();
+      }
+    }
+  }
+  async function sayToNishiii(text) {
+    const mine = text.trim();
+    if (!mine || chatBusy) return;
+    chatBusy = true; $("chat-send").disabled = true;
+    $("chat-input").value = "";
+    $("chat-intro").hidden = true; $("chat-chips").hidden = true;
+    talk.push({ role: "user", content: mine });
+    chatLine("me", mine);
+    const waiting = chatLine("her", "Thinking…");
+    try {
+      const r = await send("chat", "POST", { messages: talk });
+      talk.push({ role: "assistant", content: r.reply });
+      waiting.textContent = r.reply;
+      applyChatActions(r.actions || []);
+    } catch (e) {
+      talk.pop();
+      waiting.className = "err"; waiting.textContent = friendly(e);
+    } finally { chatBusy = false; $("chat-send").disabled = false; }
+  }
+  $("chat-open").addEventListener("click", () => { $("chat").hidden = false; $("chat-input").focus(); });
+  $("chat-close").addEventListener("click", () => { $("chat").hidden = true; });
+  $("chat").addEventListener("click", (e) => { if (e.target === $("chat")) $("chat").hidden = true; });
+  $("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sayToNishiii($("chat-input").value); });
+  $("chat-chips").addEventListener("click", (e) => { if (e.target.tagName === "BUTTON") sayToNishiii(e.target.textContent); });
+
   // ---------- start: once the composer knows what the server offers ----------
   let started = false;
   document.addEventListener("studio:ready", () => {
     if (started) { if (current === "today") loadToday(true); return; }
     started = true;
+    $("chat-open").hidden = !S.server.ai;
     show(S.server.ai ? "today" : "create");
   });
 })();

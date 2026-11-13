@@ -17,7 +17,10 @@
 <header class="bar">
   <div class="top">
     <h1 class="wordmark" id="wordmark">Entangledd Studio</h1>
-    <button class="settings" id="settings-open">Settings</button>
+    <div class="top-actions">
+      <button class="settings" id="chat-open" hidden>Chat</button>
+      <button class="settings" id="settings-open">Settings</button>
+    </div>
   </div>
   <p class="hello" id="hello">Hi Dhruuu, what are we posting today? <span class="sig">Nishiii</span></p>
   <nav class="views" aria-label="Sections">
@@ -301,6 +304,26 @@
 
     <h3>This device</h3>
     <button class="btn" id="sign-out">Sign out on this device</button>
+  </div>
+</div>
+
+<div class="sheet" id="chat" role="dialog" aria-modal="true" aria-labelledby="chat-title" hidden>
+  <div class="sheet-body">
+    <header class="sheet-head">
+      <h2 id="chat-title">Chat with Nishiii</h2>
+      <button class="btn quiet close" id="chat-close">Close</button>
+    </header>
+    <p class="note" id="chat-intro">Ask for quotes, have one put in Create, or ask how your posts did. Creating the reel and posting stay your tap.</p>
+    <div class="log" id="chat-log" aria-live="polite"></div>
+    <div class="chips" id="chat-chips">
+      <button type="button">What should I post today?</button>
+      <button type="button">Find me quotes about letting go</button>
+      <button type="button">How did my last posts do?</button>
+    </div>
+    <form class="ask" id="chat-form">
+      <label class="stack"><span>Message</span><input id="chat-input" type="text" autocomplete="off" required></label>
+      <button class="btn primary" type="submit" id="chat-send">Send</button>
+    </form>
   </div>
 </div>
 

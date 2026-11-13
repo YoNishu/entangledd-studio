@@ -190,6 +190,26 @@ function pretendClaude(req) {
   const system = req.system || "";
   if (req.model !== "claude-sonnet-5-5" || req.output_config?.effort !== "medium") return { status: 400, body: { error: { message: "wrong model or effort" } } };
   let text;
+  if (system.startsWith("You are Nishiii, the chat assistant")) {
+    if (!Array.isArray(req.tools) || req.tools.length < 8) return { status: 400, body: { error: { message: "tools missing" } } };
+    const last = req.messages[req.messages.length - 1];
+    const use = (name, input) => ({ status: 200, body: { stop_reason: "tool_use", content: [{ type: "text", text: "One moment." }, { type: "tool_use", id: "tu_" + (++cannedAt), name, input }] } });
+    const say = (t) => ({ status: 200, body: { stop_reason: "end_turn", content: [{ type: "text", text: t }] } });
+    if (Array.isArray(last.content)) {            // a tool has just been run: describe what came back
+      const out = JSON.parse(last.content[0].content);
+      if (Array.isArray(out) && out[0] && out[0].text) return say("Here they are:\n" + out.map((q, i) => `${i + 1}. ${q.text}`).join("\n"));
+      if (out.placed) return say("It's in Create now. Pick a background and tap Finish.");
+      if (out.saved) return say("Noted. I'll keep to that.");
+      return say("Here's what I found: " + JSON.stringify(out).slice(0, 160));
+    }
+    const t = last.content.toLowerCase();
+    if (t.includes("interstellar")) return use("ask_for_quotes", { films: ["Interstellar"], count: 3 });
+    if (t.includes("use the first")) return use("use_quote", { text: "A line from Interstellar, number 1.", author: "A character" });
+    if (t.includes("how did")) return use("get_posts", {});
+    if (t.includes("never")) return use("save_note", { text: last.content });
+    if (t.includes("today")) return use("get_today", {});
+    return say("I can fetch quotes, put one in Create, or tell you how your posts did.");
+  }
   if (system.startsWith("You choose quotes")) {
     const want = Number((req.messages[0].content.match(/Suggest (\d+)/) || [])[1] || 6);
     let brief = {};
