@@ -6,6 +6,12 @@ The in-app assistant is called Nishiii.
 
 ## What works today
 
+**Composer (the app).** `web/` is the phone app: choose a photo or video, write the words, pick a
+style (Sea, Horizon, Whisper), drag the text to move it and pinch to resize it. Photo posts save
+straight from the phone as a 1080x1920 image. It is a plain static site with no build step:
+serve the `web/` folder (for example `python3 -m http.server --directory web`) or host it on
+Cloudflare Pages with `web` as the output directory.
+
 **Reel maker.** `render/render.py` turns a quote into a 1080x1920 MP4 (H.264 + AAC) with a slow
 background zoom, a text fade-in, an optional background photo and optional music.
 
@@ -22,12 +28,20 @@ python3 render/render.py --quote "Your quote" --author "Who said it" --out out/r
 python3 render/render.py --quote "Your quote" --bg backgrounds/sea.jpg --music music/calm.mp3
 ```
 
+With a text layer saved from the app, the reel matches the app's preview exactly, over a photo
+or a video:
+
+```
+python3 render/render.py --overlay entangledd-text.png --bg clip.mov --keep-audio
+```
+
 `python3 render/render.py --help` lists every option.
 
 ## Folders
 
 | Folder | What goes in it |
 |---|---|
+| `web/` | The phone app (composer) |
 | `render/` | The reel renderer and its fonts |
 | `backgrounds/` | Background images you own or have rights to use |
 | `music/` | Audio you own or that is royalty-free |

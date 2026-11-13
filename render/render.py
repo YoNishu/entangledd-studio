@@ -5,6 +5,10 @@ Turns a quote into a 1080x1920 Instagram reel (MP4, H.264 + AAC).
 
     python3 render/render.py --quote "..." --author "..." --out out/reel.mp4
     python3 render/render.py --quote "..." --bg backgrounds/sea.jpg --music music/calm.mp3
+    python3 render/render.py --overlay text.png --bg clip.mov --keep-audio
+
+With --overlay the text layer comes from the app (a transparent PNG), so the reel matches the
+app's preview exactly. Without it, the quote is laid out here in a simple centred style.
 
 Needs: Python 3.9+, Pillow, ffmpeg on PATH.
 """
@@ -81,16 +85,30 @@ def fit_quote(draw, quote, max_width, max_height):
     )
 
 
-def make_background(bg_path, palette):
-    """Returns a 1080x1920 RGB image: the photo cover-cropped and dimmed, or a gradient."""
+VIDEO_EXT = (".mp4", ".mov", ".m4v", ".webm", ".mkv")
+
+
+def is_video(path):
+    return bool(path) and path.lower().endswith(VIDEO_EXT)
+
+
+def has_audio(path):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
+         "-of", "csv=p=0", path], capture_output=True, text=True)
+    return bool(out.stdout.strip())
+
+
+def make_background(bg_path, palette, dim):
+    """Returns a 1080x1920 RGB image: the photo cover-cropped, or a gradient."""
     if bg_path:
         img = Image.open(bg_path).convert("RGB")
         scale = max(W / img.width, H / img.height)
         img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
         left, top = (img.width - W) // 2, (img.height - H) // 2
         img = img.crop((left, top, left + W, top + H))
-        # Dim so white text is readable on any photo.
-        img = Image.blend(img, Image.new("RGB", (W, H), (0, 0, 0)), 0.45)
+        if dim > 0:
+            img = Image.blend(img, Image.new("RGB", (W, H), (0, 0, 0)), dim)
         return img
     top_c, bottom_c = PALETTES[palette]
     grad = Image.new("RGB", (1, H))
@@ -145,40 +163,67 @@ def make_text_layer(quote, author, handle):
 
 
 def render(args):
-    frames = int(args.duration * FPS)
+    dur = args.duration
+    frames = int(dur * FPS)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+    video_bg = is_video(args.bg)
 
     with tempfile.TemporaryDirectory() as tmp:
-        bg_png = os.path.join(tmp, "bg.png")
         text_png = os.path.join(tmp, "text.png")
-        make_background(args.bg, args.palette).save(bg_png)
-        make_text_layer(args.quote, args.author, args.handle).save(text_png)
+        if args.overlay:
+            # Text layer made in the app: already laid out, so it is used exactly as drawn.
+            layer = Image.open(args.overlay).convert("RGBA")
+            if layer.size != (W, H):
+                layer = layer.resize((W, H), Image.LANCZOS)
+        else:
+            layer = make_text_layer(args.quote, args.author, args.handle)
+        layer.save(text_png)
 
-        fade_out = max(args.duration - 0.8, 0)
-        # Background: slow zoom. It is upscaled first so the zoom is smooth, not jittery.
-        video = (
-            f"[0:v]scale={W * 2}:{H * 2},"
-            f"zoompan=z='1+0.07*on/{frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            f":d={frames}:s={W}x{H}:fps={FPS}[bg];"
-            f"[1:v]format=rgba,fade=t=in:st=0.3:d=1.2:alpha=1[txt];"
-            f"[bg][txt]overlay=0:0:shortest=0,"
-            f"fade=t=in:st=0:d=0.5,fade=t=out:st={fade_out}:d=0.8,format=yuv420p[v]"
-        )
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", bg_png, "-loop", "1", "-i", text_png]
+        cmd = ["ffmpeg", "-y", "-loglevel", "error"]
+        if video_bg:
+            cmd += ["-stream_loop", "-1", "-i", args.bg]
+            dim = f",eq=brightness={-args.dim / 2:.3f}" if args.dim > 0 else ""
+            bg = (f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+                  f"fps={FPS},setsar=1{dim}[bg]")
+        else:
+            bg_png = os.path.join(tmp, "bg.png")
+            make_background(args.bg, args.palette, args.dim).save(bg_png)
+            cmd += ["-i", bg_png]
+            if args.zoom:
+                # Upscaled first so the slow zoom is smooth, not jittery.
+                bg = (f"[0:v]scale={W * 2}:{H * 2},"
+                      f"zoompan=z='1+0.07*on/{frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                      f":d={frames}:s={W}x{H}:fps={FPS}[bg]")
+            else:
+                bg = f"[0:v]loop=loop={frames}:size=1:start=0,fps={FPS},setsar=1[bg]"
+        cmd += ["-loop", "1", "-i", text_png]
+        fade = ",fade=t=in:st=0.3:d=1.2:alpha=1" if args.fade else ""
+        video = f"{bg};[1:v]format=rgba{fade}[txt];[bg][txt]overlay=0:0,format=yuv420p[v]"
+
+        # Audio: the clip's own sound, the music, both mixed, or silence.
+        sources = []
+        if video_bg and args.keep_audio and has_audio(args.bg):
+            sources.append("[0:a]")
+        idx = 2
         if args.music:
             cmd += ["-stream_loop", "-1", "-i", args.music]
-            audio = (
-                f"[2:a]atrim=0:{args.duration},afade=t=in:st=0:d=1,"
-                f"afade=t=out:st={max(args.duration - 1.5, 0)}:d=1.5,volume={args.volume}[a]"
-            )
-        else:
+            sources.append(f"[{idx}:a]volume={args.volume}[m];[m]")
+            idx += 1
+        if not sources:
             # Silent track: some players and Instagram's processing expect an audio stream.
             cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
-            audio = f"[2:a]atrim=0:{args.duration}[a]"
+            audio = f"[{idx}:a]atrim=0:{dur}[a]"
+        else:
+            shape = (f"atrim=0:{dur},afade=t=in:st=0:d=0.6,"
+                     f"afade=t=out:st={max(dur - 1.2, 0)}:d=1.2[a]")
+            if len(sources) == 2:
+                audio = f"{sources[1]}[0:a]amix=inputs=2:duration=first:normalize=0,{shape}"
+            else:
+                audio = f"{sources[0]}{shape}"
         cmd += [
             "-filter_complex", video + ";" + audio,
             "-map", "[v]", "-map", "[a]",
-            "-t", str(args.duration), "-r", str(FPS),
+            "-t", str(dur), "-r", str(FPS),
             "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
             "-movflags", "+faststart",
@@ -187,17 +232,27 @@ def render(args):
         subprocess.run(cmd, check=True)
 
         if args.cover:
-            cover = Image.alpha_composite(Image.open(bg_png).convert("RGBA"), Image.open(text_png))
-            cover.convert("RGB").save(args.cover, quality=92)
+            # Cover = first frame of the finished reel, so it always matches.
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "0.5", "-i", args.out,
+                            "-frames:v", "1", "-q:v", "3", args.cover], check=True)
     print(args.out)
 
 
 def main():
     p = argparse.ArgumentParser(description="Render a quote reel for Instagram.")
-    p.add_argument("--quote", required=True, help="Quote text. Use \\n for a manual line break.")
+    p.add_argument("--quote", default="", help="Quote text. Use \\n for a manual line break.")
+    p.add_argument("--overlay", default="",
+                   help="Transparent 1080x1920 PNG text layer saved from the app. Replaces --quote.")
     p.add_argument("--author", default="", help="Who said it. Shown under the quote.")
     p.add_argument("--handle", default="", help="Optional watermark text, e.g. @theentangledd. Off by default.")
-    p.add_argument("--bg", default="", help="Background image path. Omit for a gradient.")
+    p.add_argument("--bg", default="", help="Background photo or video. Omit for a gradient.")
+    p.add_argument("--dim", type=float, default=0.0,
+                   help="Darken the background, 0 (off) to 0.8. Helps light text on bright photos.")
+    p.add_argument("--no-zoom", dest="zoom", action="store_false",
+                   help="Keep a photo background still instead of slowly zooming.")
+    p.add_argument("--fade", action="store_true", help="Fade the text in. Off by default.")
+    p.add_argument("--keep-audio", action="store_true",
+                   help="Keep a video background's own sound (mixed with --music if both).")
     p.add_argument("--palette", default="midnight", choices=sorted(PALETTES),
                    help="Gradient colours when no --bg is given.")
     p.add_argument("--music", default="", help="Audio file to mix in. Omit for silence.")
@@ -208,11 +263,13 @@ def main():
     args = p.parse_args()
 
     args.quote = args.quote.replace("\\n", "\n").strip()
-    if not args.quote:
-        sys.exit("The quote is empty.")
+    if not args.quote and not args.overlay:
+        sys.exit("Give either --quote or --overlay.")
+    if not 0 <= args.dim <= 0.8:
+        sys.exit("--dim must be between 0 and 0.8.")
     if not 5 <= args.duration <= 90:
         sys.exit("Duration must be between 5 and 90 seconds.")
-    for label, path in (("Background", args.bg), ("Music", args.music)):
+    for label, path in (("Background", args.bg), ("Music", args.music), ("Overlay", args.overlay)):
         if path and not os.path.isfile(path):
             sys.exit(f"{label} file not found: {path}")
     render(args)

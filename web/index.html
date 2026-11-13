@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Entangledd Studio</title>
+<meta name="theme-color" content="#0E1B24">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Entangledd">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="bar">
+  <h1 class="wordmark">Entangledd Studio</h1>
+  <p class="hello" id="hello">Hi Dhruuu, what are we posting today? <span class="sig">Nishiii</span></p>
+</header>
+
+<main class="work">
+  <section class="stage" id="stage" aria-label="Preview">
+    <canvas id="canvas" width="1080" height="1920" aria-label="Post preview. Drag text to move it, pinch to resize."></canvas>
+    <p class="warn" id="warn" role="status" hidden></p>
+  </section>
+
+  <section class="panel" id="panel">
+    <nav class="tabs" role="tablist" aria-label="Editor">
+      <button role="tab" id="tab-bg" aria-controls="pane-bg" aria-selected="false">Background</button>
+      <button role="tab" id="tab-text" aria-controls="pane-text" aria-selected="false">Text</button>
+      <button role="tab" id="tab-style" aria-controls="pane-style" aria-selected="false">Style</button>
+      <button role="tab" id="tab-save" aria-controls="pane-save" aria-selected="false">Save</button>
+    </nav>
+
+    <div class="pane" id="pane-bg" role="tabpanel" aria-labelledby="tab-bg" hidden>
+      <label class="btn primary file">
+        Choose photo or video
+        <input type="file" id="file" accept="image/*,video/*">
+      </label>
+      <button class="btn" id="stock" disabled>Find free footage</button>
+      <p class="note">Free footage search turns on once the app is connected to its server.</p>
+      <button class="btn quiet" id="clear-bg" hidden>Remove background</button>
+      <div id="video-opts" hidden>
+        <label class="row">
+          <span>Reel length <output id="len-out">8 s</output></span>
+          <input type="range" id="len" min="5" max="30" step="1" value="8">
+        </label>
+        <label class="check"><input type="checkbox" id="mute" checked> Mute the video's own sound</label>
+        <label class="check"><input type="checkbox" id="fade"> Fade the text in</label>
+      </div>
+    </div>
+
+    <div class="pane" id="pane-text" role="tabpanel" aria-labelledby="tab-text" hidden>
+      <label class="stack">
+        <span>Words</span>
+        <textarea id="words" rows="3" placeholder="Write the line here"></textarea>
+      </label>
+      <div class="pair">
+        <button class="btn" id="add">Add a separate line</button>
+        <button class="btn quiet" id="remove">Remove this line</button>
+      </div>
+      <label class="row"><span>Size <output id="size-out"></output></span>
+        <input type="range" id="size" min="16" max="120" step="1"></label>
+      <label class="row"><span>Line width <output id="width-out"></output></span>
+        <input type="range" id="width" min="20" max="92" step="1"></label>
+      <label class="stack"><span>Font</span><select id="font"></select></label>
+      <div class="stack"><span id="colour-label">Colour</span>
+        <div class="swatches" id="swatches" role="group" aria-labelledby="colour-label"></div>
+      </div>
+      <div class="stack"><span id="align-label">Alignment</span>
+        <div class="seg" id="align" role="group" aria-labelledby="align-label">
+          <button data-align="left">Left</button>
+          <button data-align="center">Centre</button>
+          <button data-align="right">Right</button>
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" id="lower"> Show in lowercase</label>
+      <label class="check"><input type="checkbox" id="shadow"> Soft shadow behind text</label>
+    </div>
+
+    <div class="pane" id="pane-style" role="tabpanel" aria-labelledby="tab-style" hidden>
+      <p class="note">A style sets the font, size, colour and position in one tap. You can adjust anything afterwards.</p>
+      <div class="styles" id="styles"></div>
+    </div>
+
+    <div class="pane" id="pane-save" role="tabpanel" aria-labelledby="tab-save" hidden>
+      <div id="save-image">
+        <button class="btn primary" id="save-img">Save image</button>
+        <p class="note">Saves a 1080 × 1920 picture you can post or add to a carousel.</p>
+      </div>
+      <div id="save-video" hidden>
+        <p class="note">Video reels are put together by the app's server, which isn't connected yet. Until then you can save the text layer and settings.</p>
+        <button class="btn" id="save-layer">Save text layer</button>
+      </div>
+      <p class="done" id="done" role="status" hidden></p>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

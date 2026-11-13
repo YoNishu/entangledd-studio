@@ -40,14 +40,29 @@ weekly report, comment reply drafts.
 | Stage | What | Status |
 |---|---|---|
 | 1 | Reel maker (renderer + GitHub workflow) | Done |
-| 2 | App shell on iPhone (home-screen web app) with the reel composer | Next |
-| 3 | Publishing to Instagram | Needs the Meta developer app and a Cloudflare account |
+| 2 | Composer app: photo/video background, styles, drag and pinch, image export | Done |
+| 3 | Server (Cloudflare Worker + storage): video reel rendering from the phone, free footage search, carousel posts | Next |
+| 3b | Publishing to Instagram | Needs the Meta developer app settings |
 | 4 | Daily suggestions, reference books/accounts, her own quotes, scan | Needs the Anthropic API key |
 | 5 | Edit with Claude and Nishiii | Needs the Anthropic API key |
 | 6 | Analytics and learning loop | After the first posts exist |
 | 7 | Extras | |
 
+## Reel look (from the three reference posts)
+
+- Full-bleed nature photo or video, not darkened.
+- Small, still text: it takes up a small patch of the frame and does not animate.
+- Styles: Sea (cream serif, centred), Horizon (small lowercase serif), Whisper (italic sans,
+  staggered lines, free placement).
+- Backgrounds: her own photos and videos from the iPhone, or free stock footage found in-app.
+- The app draws the text layer; the renderer only lays it over the background, so the preview
+  and the finished reel always match.
+
 ## Limits to remember
+
+- Fonts bundled so far: Lora and Poppins. More can be added by putting the .ttf in `web/fonts`
+  and listing it in `web/app.js`.
+- iPhone clips recorded in HDR may look washed out after rendering until tone-mapping is added.
 
 - Reels carry no watermark by default.
 - Reel text must fit a safe box; the renderer rejects quotes over roughly 800 characters.
