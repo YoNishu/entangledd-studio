@@ -1,0 +1,77 @@
+name: Render reel
+
+# Run it from GitHub: Actions tab -> Render reel -> Run workflow.
+# The finished MP4 appears under "Artifacts" on the run page.
+
+on:
+  workflow_dispatch:
+    inputs:
+      quote:
+        description: "Quote text"
+        required: true
+        type: string
+      author:
+        description: "Author (optional)"
+        required: false
+        type: string
+      background:
+        description: "Image file name inside backgrounds/ (leave empty for a gradient)"
+        required: false
+        type: string
+      palette:
+        description: "Gradient colours when there is no background image"
+        required: false
+        default: midnight
+        type: choice
+        options: [midnight, dusk, forest, ink, sand]
+      music:
+        description: "Audio file name inside music/ (leave empty for silence)"
+        required: false
+        type: string
+      duration:
+        description: "Length in seconds (5 to 90)"
+        required: false
+        default: "8"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg and Pillow
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet pillow
+
+      - name: Render
+        # Inputs go through env vars so quote text can never be run as shell code.
+        env:
+          QUOTE: ${{ inputs.quote }}
+          AUTHOR: ${{ inputs.author }}
+          BACKGROUND: ${{ inputs.background }}
+          PALETTE: ${{ inputs.palette }}
+          MUSIC: ${{ inputs.music }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          args=(--quote "$QUOTE" --author "$AUTHOR" --palette "$PALETTE" --duration "$DURATION"
+                --out out/reel.mp4 --cover out/cover.jpg)
+          if [ -n "$BACKGROUND" ]; then args+=(--bg "backgrounds/$(basename "$BACKGROUND")"); fi
+          if [ -n "$MUSIC" ]; then args+=(--music "music/$(basename "$MUSIC")"); fi
+          python3 render/render.py "${args[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reel
+          path: out/
+          retention-days: 7
