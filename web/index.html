@@ -237,7 +237,7 @@
 
     <div class="pane" id="pane-bg" role="tabpanel" aria-labelledby="tab-bg" hidden>
       <div class="tiles2">
-        <label class="btn tall primary file ic ic-photo">
+        <label class="btn tall file ic ic-photo">
           From your phone
           <input type="file" id="file" accept="image/*,video/*">
         </label>
@@ -260,7 +260,7 @@
         <label class="stack"><span>Music volume <output id="tune-vol-out">80%</output></span><input type="range" id="tune-vol" min="5" max="100" step="5" value="80"></label>
       </div>
       <div class="tiles2">
-        <label class="btn tall primary file ic ic-music">
+        <label class="btn tall file ic ic-music">
           <span id="tune-file-label">Your own music</span>
           <input type="file" id="tune-file" accept="audio/*,video/*,.mp3,.m4a,.aac,.wav">
         </label>
@@ -374,8 +374,8 @@
   <button class="btn primary ic ic-faceid" type="button" id="faceid-unlock" hidden>Unlock with Face ID</button>
   <p class="note" id="lock-or" hidden>Or use the passcode:</p>
   <label class="stack">
-    <span>Passcode</span>
-    <input type="password" id="passcode" autocomplete="current-password" required>
+    <span class="vh">Passcode</span>
+    <input type="password" id="passcode" placeholder="Passcode" autocomplete="current-password" required>
   </label>
   <button class="btn primary" type="submit" id="passcode-go">Open the studio</button>
   <p class="oops" id="lock-error" role="alert" hidden></p>
@@ -437,8 +437,8 @@
       <h2 id="handoff-title">Finish in Instagram</h2>
       <button class="iconbtn close ic ic-close" id="handoff-close" aria-label="Close">Close</button>
     </header>
-    <p class="note">For a song from Instagram's own library. You add the song and post there; the app then finds the post by itself and tracks it like any other.</p>
-    <label class="stack"><span>Caption, copied for you to paste in Instagram</span><textarea id="handoff-caption" rows="4"></textarea></label>
+    <p class="note">Add a song from Instagram's own library and post it there. It shows up in Posts by itself.</p>
+    <label class="stack"><span>Caption, copied for you to paste</span><textarea id="handoff-caption" rows="4"></textarea></label>
     <button class="btn small ic ic-sparkle" id="handoff-write" hidden>Write a caption with Nishiii</button>
     <ol class="steps">
       <li>Tap "Share to Instagram". Your caption is copied.</li>
@@ -553,7 +553,7 @@
       <p class="note" id="post-own-music" hidden></p>
       <div id="post-music">
       <h3 class="ic ic-music">Music</h3>
-      <p class="note" id="music-note">Instagram adds the music as it posts, so you can't hear it here. Search with nothing typed to see what's trending.</p>
+      <p class="note" id="music-note">Instagram adds the song as it posts. Search with nothing typed to see what's trending.</p>
       <form class="ask" id="music-form">
         <label class="stack"><span class="vh">Search Instagram's music</span><input id="music-q" type="search" placeholder="Song or artist"></label>
         <button class="btn ic ic-search" type="submit">Search</button>

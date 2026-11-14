@@ -287,7 +287,7 @@
         wrong.addEventListener("click", async () => {
           try { renderLibrary(await send(`library/books/${b.id}/text`, "POST", { forget: true })); } catch (e) { note(friendly(e)); }
         });
-        return row("books", b, b.title, b.author, chip("ok", "Quotes are copied from the book's own text"),
+        return row("books", b, b.title, b.author, chip("ok", "Quoted word for word"),
           el("p", { className: "sub", textContent: `Matched to "${b.textTitle}"${b.textAuthor ? ` by ${b.textAuthor}` : ""}.` }), wrong);
       }
       if (b.textChecked) return row("books", b, b.title, b.author, el("p", { className: "sub", textContent: (b.textNote || "").startsWith("Set aside") ? "Quotes come from Nishiii's memory." : "Not free to read online, so quotes come from Nishiii's memory." }));
@@ -769,7 +769,7 @@
     const label = { processing: ["info", "Being processed by Instagram"], published: ["ok", "Posted"], failed: ["bad", "Didn't post"] };
     const [kind, words] = label[p.state] || ["gone", p.state];
     const kids = [el("p", { className: "q", textContent: p.quote || p.caption || "Reel" }), chip(kind, words)];
-    kids.push(el("p", { className: "src", textContent: `${p.kind === "carousel" ? `Carousel of ${p.slides}` : "Reel"}, ${day(p.published || p.created)}${p.via === "instagram" ? ", finished in Instagram" : p.music ? `, music: ${p.music}` : ""}` }));
+    kids.push(el("p", { className: "src", textContent: `${p.kind === "carousel" ? `Carousel of ${p.slides}` : "Reel"}, ${day(p.published || p.created)}${p.via === "instagram" ? ", finished in Instagram" : p.music ? `, music: ${p.music.title || p.music}` : ""}` }));
     if (p.error) kids.push(el("p", { className: "flag", textContent: p.error }));
     const m = p.metrics;
     if (m && Object.keys(m).length) {
@@ -953,7 +953,7 @@
     const box = el("textarea", { rows: 2, placeholder: "Your reply" });
     box.setAttribute("aria-label", `Reply to ${c.username}`);
     const draft = el("button", { className: "btn", type: "button", textContent: "Draft with Nishiii" });
-    const sendIt = el("button", { className: "btn primary", type: "button", textContent: "Send reply" });
+    const sendIt = el("button", { className: "btn soft", type: "button", textContent: "Send reply" });
     const state = el("p", { className: "who" });
     state.setAttribute("role", "status");
     draft.hidden = !S.server.ai;
@@ -1010,7 +1010,7 @@
       getJson("queue").then((r) => renderQueue(r.queue)).catch(() => {});
       getJson("handoffs").then((r) => renderHandoffs(r.handoffs)).catch(() => {});
       $("posts-note").textContent = !(ig && ig.connected) ? "Instagram isn't connected. Connect it in Settings, at the top right."
-        : posts.length ? "If you delete a post on Instagram, it disappears from here the next time you open Posts." : "Nothing posted from the app yet.";
+        : posts.length ? "Posts you delete on Instagram leave this list too." : "Nothing posted from the app yet.";
     } catch (e) { $("posts-note").textContent = friendly(e); }
   }
 
