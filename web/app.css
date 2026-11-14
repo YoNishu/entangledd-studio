@@ -394,3 +394,9 @@ a.btn { text-decoration: none; }
 .explain dl { margin: 6px 0 0; display: grid; gap: 8px; }
 .explain dt { color: var(--foam); font-weight: 500; }
 .explain dd { margin: 0; }
+
+/* ---------- music ---------- */
+.tabs button { flex: 1 1 auto; padding-inline: 6px; font-size: clamp(12px, 3.4vw, 13.5px); white-space: nowrap; }
+.tunes li { align-items: start; }
+.pair-col { display: grid; gap: 8px; justify-items: end; }
+#tune-ideas button { font-size: 13px; padding: 6px 11px; }

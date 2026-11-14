@@ -24,7 +24,10 @@ after a tap. It reads how posts did, studies reels and accounts she loves, and k
 profile that steers every suggestion. It runs Nishiii's chat, posts carousels, copies quotes out of
 free book texts (Project Gutenberg), imports highlights, checks who said a quote, sums up the
 week, keeps reels to post later and saved looks, and reads and answers comments. The Insights
-section (`web/insights.js`, `/api/insights`) turns the stored numbers into totals, charts and comparisons. The local stand-in fakes Claude, the stock libraries and Instagram (paste any token
+section (`web/insights.js`, `/api/insights`) turns the stored numbers into totals, charts and comparisons.
+Reels can carry music of their own: an uploaded audio file or a free track found through Openverse
+(`/api/music`), mixed in by the renderer. Optional secrets `OPENVERSE_CLIENT_ID` and
+`OPENVERSE_CLIENT_SECRET` raise Openverse's search limit. The local stand-in fakes Claude, the stock libraries and Instagram (paste any token
 starting with SHORT to connect), so trying it costs nothing and posts nothing.
 
 Secrets it needs, set in the Cloudflare dashboard: `APP_PASSCODE`, `RENDER_SECRET`,

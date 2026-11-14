@@ -86,7 +86,7 @@ async function login(request, env) {
 // ---------- jobs, called by the app ----------
 async function purgeOld(env) {
   const cutoff = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
-  const lists = await Promise.all(["jobs/", "slides/", "data/stockcache/"].map((prefix) => env.MEDIA.list({ prefix, limit: 500 })));
+  const lists = await Promise.all(["jobs/", "slides/", "data/stockcache/", "data/musiccache/"].map((prefix) => env.MEDIA.list({ prefix, limit: 500 })));
   const old = lists.flatMap((l) => l.objects).filter((o) => new Date(o.uploaded).getTime() < cutoff).map((o) => o.key);
   if (old.length) await env.MEDIA.delete(old);
 }
@@ -131,6 +131,23 @@ async function putOverlay(request, env, id) {
   const size = Number(request.headers.get("Content-Length") || 0);
   if (!(size > 0 && size <= MAX_OVERLAY_BYTES)) return fail(400, "The text layer is missing or too large.");
   await env.MEDIA.put(jobKey(id, "overlay.png"), await request.arrayBuffer(), { httpMetadata: { contentType: "image/png" } });
+  return json({ ok: true });
+}
+
+// Music to be mixed into the reel: her own file or a track from the free library. The app sends it before starting.
+const MAX_MUSIC_BYTES = 40 * 1024 * 1024;
+async function putMusic(request, env, id, job) {
+  const url = new URL(request.url);
+  const size = Number(request.headers.get("Content-Length") || 0);
+  if (!(size > 0 && size <= MAX_MUSIC_BYTES)) return fail(413, "The music file must be under 40 MB. Try a shorter or smaller one.");
+  const ext = (url.searchParams.get("ext") || "").toLowerCase();
+  if (!/^(mp3|m4a|aac|wav|ogg|oga|flac|mp4|mov|m4v|webm)$/.test(ext)) return fail(400, "That music file type isn't supported. Use an MP3, M4A or WAV file, or a video that has sound.");
+  const num = (name, lo, hi, d) => { const v = Number(url.searchParams.get(name)); return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d; };
+  await env.MEDIA.put(jobKey(id, "music"), await request.arrayBuffer());
+  // Where it came from and, for tracks whose licence asks for it, the credit that must go with the post.
+  job.music = { ext, start: num("start", 0, 3600, 0), volume: num("volume", 0.05, 1, 0.8), from: url.searchParams.get("from") === "library" ? "library" : "own",
+    title: oneLine(url.searchParams.get("title"), 120), credit: oneLine(url.searchParams.get("credit"), 240) };
+  await writeJob(env, job);
   return json({ ok: true });
 }
 
@@ -182,7 +199,7 @@ async function appRoutes(request, env, parts) {
 
   if (rest === "" && method === "GET") return json(publicState(job));
   if (rest === "" && method === "DELETE") {
-    await env.MEDIA.delete(["job.json", "bg", "overlay.png", "reel.mp4"].map((n) => jobKey(id, n)));
+    await env.MEDIA.delete(["job.json", "bg", "overlay.png", "music", "reel.mp4"].map((n) => jobKey(id, n)));
     return json({ ok: true });
   }
   if (rest === "reel" && method === "GET") {
@@ -195,6 +212,7 @@ async function appRoutes(request, env, parts) {
   }
   if (rest === "bg/complete" && method === "POST") return completeUpload(request, env, id);
   if (rest === "overlay" && method === "PUT") return putOverlay(request, env, id);
+  if (rest === "music" && method === "PUT") return putMusic(request, env, id, job);
   if (rest === "start" && method === "POST") return startJob(request, env, id, job);
   return fail(404, "Not found.");
 }
@@ -821,6 +839,101 @@ async function stockRoutes(request, env, parts) {
   return fail(404, "Not found.");
 }
 
+// ---------- free music for reels (Openverse: openly licensed tracks, mostly from Jamendo) ----------
+// Only licences that allow use in a video are asked for: no rights reserved (CC0, public domain) and "credit the
+// artist" (CC BY). Tracks that forbid changes or commercial use, or demand the same licence on the result, are left out.
+const MUSIC_HOSTS = ["jamendo.com", "freesound.org", "wikimedia.org", "ccmixter.org"];
+const musicHostAllowed = (env, host) => MUSIC_HOSTS.some((h) => host === h || host.endsWith("." + h)) ||
+  (!!env.STOCK_HOSTS && env.STOCK_HOSTS.split(",").includes(host));
+const SOURCE_SITES = { jamendo: "Jamendo", freesound: "Freesound", wikimedia_audio: "Wikimedia Commons", ccmixter: "ccMixter" };
+
+// With a registered application the library allows far more searches. Optional: without it, searches are anonymous.
+async function openverseToken(env, base) {
+  if (!env.OPENVERSE_CLIENT_ID || !env.OPENVERSE_CLIENT_SECRET) return "";
+  const saved = await loadDoc(env, "openverse", {});
+  if (saved.token && saved.until > Date.now() + 60000) return saved.token;
+  try {
+    const res = await fetch(`${base}/v1/auth_tokens/token/`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "client_credentials", client_id: env.OPENVERSE_CLIENT_ID, client_secret: env.OPENVERSE_CLIENT_SECRET }) });
+    if (!res.ok) return "";
+    const t = await res.json();
+    if (!t.access_token) return "";
+    await saveDoc(env, "openverse", { token: t.access_token, until: Date.now() + (Number(t.expires_in) || 3600) * 1000 });
+    return t.access_token;
+  } catch (e) { return ""; }
+}
+
+async function searchMusic(env, q, page) {
+  const base = env.OPENVERSE_API || "https://api.openverse.org";
+  let token = await openverseToken(env, base);
+  const ask = (extra) => {
+    const u = new URL(`${base}/v1/audio/`);
+    for (const [k, v] of Object.entries({ q, license: "cc0,pdm,by", page_size: "20", page: String(page), ...extra })) u.searchParams.set(k, v);
+    return fetch(u, { headers: { "User-Agent": "EntangleddStudio/1.0 (personal reel maker)", Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+  };
+  let res = await ask({ category: "music" });
+  if ((res.status === 401 || res.status === 403) && token) { token = ""; res = await ask({ category: "music" }); }    // a stale token: go on without it
+  if (res.status === 400) res = await ask({});                                                                         // the category filter wasn't accepted
+  if (res.status === 429) throw new UserError(429, "The free music library only allows a few new searches an hour. Tap one of the searches you've already made, or try again a little later.");
+  if (!res.ok) throw new UserError(502, `The free music library couldn't be searched just now. Try again. (Status ${res.status}.)`);
+  const data = await res.json();
+  const items = [];
+  for (const r of data.results || []) {
+    let target;
+    try { target = new URL(r.url); } catch (e) { continue; }
+    const local = !!env.STOCK_HOSTS && target.protocol === "http:";
+    if ((target.protocol !== "https:" && !local) || !musicHostAllowed(env, target.hostname)) continue;
+    const licence = String(r.license || "").toLowerCase();
+    if (!["cc0", "pdm", "by"].includes(licence)) continue;
+    // iPhones can't play Ogg files, so only formats that play everywhere are offered.
+    const type = String(r.filetype || (target.pathname.match(/\.([a-z0-9]{2,4})$/i) || [])[1] || "mp3").toLowerCase();
+    if (!["mp3", "mp32", "m4a", "aac", "wav"].includes(type)) continue;
+    const raw = Number(r.duration) || 0, seconds = Math.round(raw > 5000 ? raw / 1000 : raw);     // the library reports milliseconds
+    if (seconds && (seconds < 8 || seconds > 900)) continue;
+    if (Number(r.filesize) > MAX_MUSIC_BYTES) continue;
+    const title = oneLine(r.title, 90) || "Untitled", artist = oneLine(r.creator, 60), site = SOURCE_SITES[r.source] || oneLine(r.source, 30);
+    const version = oneLine(r.license_version, 6);
+    const needsCredit = licence === "by";
+    items.push({ id: String(r.id), title, artist, seconds, file: r.url, ext: type === "mp32" ? "mp3" : type, page: r.foreign_landing_url || "", site,
+      licence: licence === "cc0" ? "CC0" : licence === "pdm" ? "Public domain" : `CC BY${version ? " " + version : ""}`, needsCredit,
+      credit: needsCredit ? `Music: "${title}"${artist ? ` by ${artist}` : ""} (CC BY${version ? " " + version : ""}${site ? `, from ${site}` : ""})` : "" });
+  }
+  return { items, more: Number(data.page_count) > page };
+}
+
+async function musicRoutes(request, env, parts, url) {
+  if (request.method !== "GET") return fail(404, "Not found.");
+  if (parts.length === 1) {
+    const q = oneLine(url.searchParams.get("q"), 80) || "calm piano";
+    const page = Math.min(12, Math.max(1, Number(url.searchParams.get("page")) || 1));
+    // The same search is answered from the app's own copy for a week, which also keeps within the library's limits.
+    const cacheName = `musiccache/${await hmacHex("music", `v1|${norm(q)}|${page}`)}`;
+    const cached = await loadDoc(env, cacheName, null);
+    if (cached && Date.now() - cached.at < 7 * 24 * 3600 * 1000) return json(cached.result);
+    const result = { ...(await searchMusic(env, q, page)), q };
+    if (result.items.length) await saveDoc(env, cacheName, { at: Date.now(), result });
+    return json(result);
+  }
+  if (parts[1] === "file") {
+    let target;
+    try { target = new URL(url.searchParams.get("url")); } catch (e) { return fail(400, "That track can't be fetched."); }
+    const local = !!env.STOCK_HOSTS && target.protocol === "http:";
+    if ((target.protocol !== "https:" && !local) || !musicHostAllowed(env, target.hostname)) return fail(400, "That track can't be used: it isn't from the free music library.");
+    let res;
+    try { res = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0 (compatible; EntangleddStudio/1.0)", Accept: "audio/*,*/*;q=0.5" } }); }
+    catch (e) { return fail(502, "That track couldn't be fetched. Pick a different one."); }
+    const type = res.headers.get("Content-Type") || "";
+    if (!res.ok) return fail(502, `That track couldn't be fetched (status ${res.status}). Pick a different one.`);
+    if (!/^audio\/|octet-stream|^video\/mp4/i.test(type)) return fail(502, "That track isn't a sound file the app can use. Pick a different one.");
+    const size = Number(res.headers.get("Content-Length") || 0);
+    if (size > MAX_MUSIC_BYTES) return fail(413, "That track is too large. Pick a different one.");
+    const headers = { "Content-Type": /^audio\//i.test(type) ? type : "audio/mpeg", "Cache-Control": "no-store" };
+    if (size) headers["Content-Length"] = String(size);
+    return new Response(res.body, { headers });
+  }
+  return fail(404, "Not found.");
+}
+
 // ---------- Instagram: connect, music, post ----------
 const GRAPH_VERSION = "v25.0";
 async function graph(env, method, path, params) {
@@ -1017,10 +1130,14 @@ async function postRoutes(request, env, parts) {
     const job = await readJob(env, b.jobId);
     if (!job || job.state !== "done" || !(await env.MEDIA.head(jobKey(b.jobId, "reel.mp4")))) return fail(409, "That reel is no longer saved. Create it again, then post.");
     if (posts.some((p) => p.jobId === b.jobId && (p.state === "processing" || p.state === "published"))) return fail(409, "This reel has already been posted.");
-    const caption = String(b.caption || "").trim().slice(0, 2200);
+    let caption = String(b.caption || "").trim().slice(0, 2200);
+    // A track whose licence asks for credit always carries it in the caption, even if the line was edited out.
+    const credit = job.music && job.music.credit;
+    if (credit && !caption.includes(credit)) caption = `${caption.slice(0, 2200 - credit.length - 2).trim()}\n\n${credit}`.trim();
     const params = { media_type: "REELS", video_url: await publicReelUrl(request, env, b.jobId), caption, share_to_feed: "true" };
     let music = null;
-    if (b.audio && /^\d{5,25}$/.test(String(b.audio.id || ""))) {
+    // Instagram's own music is only added when the reel has no music of its own, so the two never play over each other.
+    if (!job.music && b.audio && /^\d{5,25}$/.test(String(b.audio.id || ""))) {
       const vol = (v, d) => Math.min(100, Math.max(0, Math.round(Number.isFinite(Number(v)) ? Number(v) : d)));
       params.audio_configuration = JSON.stringify({ audio_id: String(b.audio.id), audio_volume: vol(b.audio.musicVolume, 100), video_volume: vol(b.audio.videoVolume, 0) });
       music = oneLine(b.audio.title, 120);
@@ -1030,6 +1147,7 @@ async function postRoutes(request, env, parts) {
       quote: lines(b.quote, 600), author: oneLine(b.author, 80), theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20),
       source: oneLine(b.source, 20), suggestionId: UUID.test(b.suggestionId || "") ? b.suggestionId : "",
       made: cleanMade(b.made), created: Date.now(), published: null, permalink: "" };
+    if (job.music) post.made = { ...(post.made || cleanMade({})), music: job.music.from, musicTitle: job.music.title };
     posts.push(post);
     await saveDoc(env, "posts", posts.slice(-500));
     const queue = await loadDoc(env, "queue", []);
@@ -1274,7 +1392,8 @@ function cleanMade(m) {
   const one = (v, list) => (list.includes(v) ? v : "");
   const seconds = Number(m.seconds);
   return { bg: one(m.bg, ["video", "photo", "plain"]), bgFrom: one(m.bgFrom, ["own", "search"]), bgWords: oneLine(m.bgWords, 60).toLowerCase(),
-    seconds: Number.isFinite(seconds) && seconds > 0 ? Math.min(90, Math.round(seconds)) : 0, font: oneLine(m.font, 30), shape: one(m.shape, ["reel", "post"]), lower: !!m.lower };
+    seconds: Number.isFinite(seconds) && seconds > 0 ? Math.min(90, Math.round(seconds)) : 0, font: oneLine(m.font, 30), shape: one(m.shape, ["reel", "post"]), lower: !!m.lower,
+    music: one(m.music, ["own", "library"]), musicTitle: oneLine(m.musicTitle, 120), musicCredit: oneLine(m.musicCredit, 240) };
 }
 
 function totalsOf(list) {
@@ -1306,7 +1425,7 @@ const DIMENSIONS = [
   ["format", "Reel or carousel", (p) => (p.kind === "carousel" ? "Carousel" : "Reel")],
   ["length", "Quote length", (p) => { const n = wordsIn(p.quote); return !n ? "" : n <= 10 ? "Short (up to 10 words)" : n <= 25 ? "Medium (11 to 25 words)" : "Long (over 25 words)"; }],
   ["author", "Author's name", (p) => (p.quote ? (p.author ? "With an author's name" : "Without a name") : "")],
-  ["music", "Music", (p) => (p.kind === "carousel" ? "" : p.music ? "With music" : "Without music")],
+  ["music", "Music", (p) => (p.kind === "carousel" ? "" : p.music ? "Instagram's music" : p.made && p.made.music === "library" ? "Free library music" : p.made && p.made.music === "own" ? "Your own music" : "No music")],
   ["font", "Font", (p) => (p.made && p.made.font ? FONT_NAMES[p.made.font] || p.made.font : "")],
   ["seconds", "Reel length", (p) => { const s = p.made && p.made.seconds; return !s || p.kind === "carousel" ? "" : s <= 8 ? "Up to 8 seconds" : s <= 15 ? "9 to 15 seconds" : "Over 15 seconds"; }],
   ["hashtags", "Hashtags", (p) => [...new Set((String(p.caption || "").toLowerCase().match(/#[\p{L}\p{N}_]+/gu) || []))].slice(0, 30)],
@@ -1343,7 +1462,8 @@ function buildInsights(allPosts, range, now) {
     return { id: p.id, quote: oneLine(p.quote, 140), author: p.author || "", published: p.published, kind: p.kind || "reel", permalink: p.permalink || "",
       theme: p.theme || "", tone: p.tone || "", reach: reachOf(p), views: m.views || 0, likes: m.likes || 0, comments: m.comments || 0, saved: m.saved || 0, shares: m.shares || 0,
       interactions: interactionsOf(m), rate: share(interactionsOf(m), reachOf(p)), watch: m.watch || null, skip: m.skip != null ? m.skip : null,
-      background: made.bg ? (made.bg === "plain" ? "plain" : `${made.bgFrom === "search" ? "searched" : "own"} ${made.bg}`) : "", music: p.music ? p.music.title || "yes" : "" };
+      background: made.bg ? (made.bg === "plain" ? "plain" : `${made.bgFrom === "search" ? "searched" : "own"} ${made.bg}`) : "",
+      music: p.music ? `Instagram: ${p.music}` : made.music ? `${made.music === "library" ? "Free library" : "Own"}${made.musicTitle ? `: ${made.musicTitle}` : ""}` : "" };
   });
 
   // Reach over time: a bar per post while there are few, a bar per week once there are many.
@@ -2143,6 +2263,10 @@ async function renderRoutes(request, env, parts) {
     const obj = await env.MEDIA.get(jobKey(id, "overlay.png"));
     return obj ? stream(obj, "image/png") : fail(404, "No text layer.");
   }
+  if (what === "music" && method === "GET") {
+    const obj = await env.MEDIA.get(jobKey(id, "music"));
+    return obj ? stream(obj, "application/octet-stream") : fail(404, "No music.");
+  }
   if (what === "reel" && method === "PUT") {
     const size = Number(request.headers.get("Content-Length") || 0);
     if (!(size > 0 && size <= MAX_REEL_BYTES)) return fail(413, "The finished reel is missing or over 95 MB.");
@@ -2176,10 +2300,11 @@ async function route(request, env, parts) {
     if (!isRenderer(request, env)) return fail(401, "Not allowed.");
     return renderRoutes(request, env, parts);
   }
-  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat", "slides", "check", "report", "looks", "queue", "insights"].includes(parts[0])) {
+  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat", "slides", "check", "report", "looks", "queue", "insights", "music"].includes(parts[0])) {
     if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
     if (parts[0] === "jobs") return appRoutes(request, env, parts);
     if (parts[0] === "stock") return stockRoutes(request, env, parts);
+    if (parts[0] === "music") return musicRoutes(request, env, parts, new URL(request.url));
     if (!env.MEDIA) return fail(503, "The app's storage isn't set up yet.");
     if (parts[0] === "library") return libraryRoutes(request, env, parts);
     if (parts[0] === "instagram") return igRoutes(request, env, parts);

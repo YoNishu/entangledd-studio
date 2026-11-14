@@ -193,6 +193,7 @@
       <button role="tab" id="tab-bg" aria-controls="pane-bg" aria-selected="false">Background</button>
       <button role="tab" id="tab-text" aria-controls="pane-text" aria-selected="false">Text</button>
       <button role="tab" id="tab-style" aria-controls="pane-style" aria-selected="false">Style</button>
+      <button role="tab" id="tab-music" aria-controls="pane-music" aria-selected="false">Music</button>
       <button role="tab" id="tab-save" aria-controls="pane-save" aria-selected="false">Finish</button>
     </nav>
 
@@ -207,6 +208,25 @@
       <div id="video-opts" hidden>
         <label class="check"><input type="checkbox" id="mute" checked> Mute the video's own sound</label>
       </div>
+    </div>
+
+    <div class="pane" id="pane-music" role="tabpanel" aria-labelledby="tab-music" hidden>
+      <p class="note" id="tune-state">No music yet. Add your own, pick a free track, or leave this empty and choose Instagram's music when you post.</p>
+      <div id="tune-opts" hidden>
+        <p class="main" id="tune-name"></p>
+        <p class="note" id="tune-licence"></p>
+        <button class="btn" id="tune-play">Play from the start point</button>
+        <label class="stack"><span>Start the music at <output id="tune-start-out">0:00</output></span><input type="range" id="tune-start" min="0" max="0" step="1" value="0"></label>
+        <label class="stack"><span>Music volume <output id="tune-vol-out">80%</output></span><input type="range" id="tune-vol" min="5" max="100" step="5" value="80"></label>
+      </div>
+      <label class="btn primary file">
+        <span id="tune-file-label">Choose your own music</span>
+        <input type="file" id="tune-file" accept="audio/*,video/*,.mp3,.m4a,.aac,.wav">
+      </label>
+      <button class="btn" id="tune-search" disabled>Search free music</button>
+      <button class="btn quiet" id="tune-clear" hidden>Remove music</button>
+      <p class="note" id="tune-say" role="status"></p>
+      <p class="note">Music is added to reels, not to pictures. A song you don't own the rights to can be muted by Instagram when it's part of the video, so for a popular song leave this empty and add it from Instagram when you post.</p>
     </div>
 
     <div class="pane" id="pane-text" role="tabpanel" aria-labelledby="tab-text" hidden>
@@ -357,6 +377,24 @@
   </div>
 </div>
 
+<div class="sheet" id="tune-sheet" role="dialog" aria-modal="true" aria-labelledby="tune-title" hidden>
+  <div class="sheet-body">
+    <header class="sheet-head">
+      <h2 id="tune-title">Find free music</h2>
+      <button class="btn quiet close" id="tune-close">Close</button>
+    </header>
+    <form class="ask" id="tune-form">
+      <label class="stack"><span>What kind of music</span><input id="tune-q" type="search" value="calm piano" maxlength="80"></label>
+      <button class="btn" type="submit">Search</button>
+    </form>
+    <div class="chips" id="tune-ideas"></div>
+    <p class="status" id="tune-status" role="status"></p>
+    <ul class="list tunes" id="tune-list"></ul>
+    <button class="btn" id="tune-more" hidden>Show more</button>
+    <p class="note">Tracks come from <a href="https://openverse.org" target="_blank" rel="noopener">Openverse</a>, a catalogue of music its makers have shared for free use. If a track asks for credit, a short credit line is added to your caption for you.</p>
+  </div>
+</div>
+
 <div class="sheet" id="comments-sheet" role="dialog" aria-modal="true" aria-labelledby="comments-title" hidden>
   <div class="sheet-body">
     <header class="sheet-head">
@@ -434,6 +472,8 @@
       <label class="stack"><span>Caption</span><textarea id="post-caption" rows="5"></textarea></label>
       <button class="btn" id="post-write" hidden>Write a caption with Nishiii</button>
 
+      <p class="note" id="post-credit-note" hidden>The last line credits the musician, which the track's licence asks for. Please keep it.</p>
+      <p class="note" id="post-own-music" hidden></p>
       <div id="post-music">
       <h3>Music</h3>
       <p class="note" id="music-note">Instagram adds the music when the reel is posted, so you can't hear it on the reel here.</p>

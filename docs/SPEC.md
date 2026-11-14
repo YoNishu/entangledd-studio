@@ -53,6 +53,7 @@ weekly report, comment reply drafts.
 | 10 | Quotes copied from the full text of free (Project Gutenberg) books and checked against it; highlights import (Kindle files or plain text) | Built against a stand-in; first real run pending |
 | 11 | Extras: "Check who said this", the week's numbers with best time and themes, reels kept to post later, saved looks, eight more fonts, comment replies drafted by Nishiii, HDR clips tone-mapped | Built against a stand-in; first real run pending |
 | 11b | Insights section: totals for 7, 30, 90 days or all time; reach over time; followers; best posts; best days and times; what works by theme, tone, source, background, format, length, author, music, font, reel length and hashtags; the page's own totals and follower split; audience; rhythm; Nishiii's advice; a downloadable file | Built against a stand-in; first real run pending |
+| 11c | Music inside the reel: her own audio file (or a video's sound), or a free track from Openverse; start point, volume, preview; credit added to the caption where the licence asks for it | Built against a stand-in; first real run pending |
 | 12 | A small scoring model trained on her picks and skips | Only worth it after about 200 picks; not started |
 
 ## How the app is laid out
@@ -60,7 +61,7 @@ weekly report, comment reply drafts.
 | Section | What it holds |
 |---|---|
 | Today | The day and date, exactly five suggestions (Use this, Reword, Skip), and the previous seven days folded one row per day, still usable |
-| Create | The composer. Tabs: Background, Text (with "Check who said this"), Style (shape, styles, her saved looks), Finish (reel, picture or carousel; post now or keep for later) |
+| Create | The composer. Tabs: Background, Text (with "Check who said this"), Style (shape, styles, her saved looks), Music (her own file or a free track, start point, volume, preview), Finish (reel, picture or carousel; post now or keep for later) |
 | Library | What she feeds Nishiii: her own quotes (typed, scanned, or imported highlights), books (each marked if its full text is free to read), films and series, and reels and pages she loves |
 | Posts | The last 7 days against the week before, with Nishiii's note, the best time of day and themes so far; reels waiting to be posted; everything posted with its numbers and comments |
 | Insights | A period picker, then: people reached, the key numbers, reach of each post, best posts, a day-by-time grid, "What works" comparisons, the clearest differences with Nishiii's advice, followers over time, Instagram's totals for the whole page, who follows the page, posting rhythm, and a file of every post's numbers |
@@ -111,6 +112,19 @@ only to understand her taste and are never suggested back.
   cities, ages) need 100 followers. Watch time and "left in the first 3 seconds" exist for reels only.
 - Not included: when followers are online (Instagram's format for it isn't documented clearly
   enough to trust), story numbers, and comparisons against other accounts.
+- Music has three routes. Her own file or a free track becomes part of the reel (mixed in when
+  the reel is rendered, with a short fade in and out, looping if the track is shorter than the
+  reel). Instagram's own music is still chosen at posting, and only for reels with no music of
+  their own, so the two never overlap.
+- Free tracks come from Openverse and only under licences that allow use in a video: CC0, public
+  domain, and CC BY. A CC BY track's credit line is added to the caption by the server even if it
+  was edited out. Tracks that forbid changes or commercial use are never offered. This is not
+  legal advice; the licence shown on each track's own page is what counts.
+- Openverse lets anonymous apps make only a few new searches an hour. Each search is kept for a
+  week, so repeats are free. To raise the limit, register an application with Openverse and add
+  `OPENVERSE_CLIENT_ID` and `OPENVERSE_CLIENT_SECRET` as secrets in Cloudflare (optional).
+- A song she doesn't own, baked into the video, can be muted or blocked by Instagram. For
+  popular songs the Instagram music picker at posting is the right route.
 - Comments need the `instagram_manage_comments` permission on the token used to connect.
   A reply is sent only when she taps Send reply.
 

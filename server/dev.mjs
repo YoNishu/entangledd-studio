@@ -89,6 +89,8 @@ const env = {
     : { PIXABAY_API_KEY: "dev-key", PIXABAY_API: `http://localhost:${PORT}/__pixabay` }),
   STOCK_HOSTS: "localhost",
   GUTENDEX_API: `http://localhost:${PORT}/__gutendex`,
+  OPENVERSE_API: `http://localhost:${PORT}/__openverse`,
+  ...(process.env.OV_KEYS ? { OPENVERSE_CLIENT_ID: "ov-id", OPENVERSE_CLIENT_SECRET: "ov-secret" } : {}),
   META_APP_ID: "dev-app",
   META_APP_SECRET: "dev-secret",
   GRAPH_API: `http://localhost:${PORT}/__graph`,
@@ -225,6 +227,7 @@ async function pretendGraph(method, url, form) {
   }
   return err("Unsupported request.");
 }
+const openverseLog = [];
 const MEDIA_DIR = process.env.DEV_MEDIA || "";   // folder holding sea.mp4 and sky.jpg for the pretend Pexels
 
 const CANNED = [
@@ -483,6 +486,34 @@ http.createServer(async (req, res) => {
       res.writeHead(out.status, { "Content-Type": "application/json" }).end(JSON.stringify(out.body));
       return;
     }
+    if (url.pathname === "/__openverse/v1/auth_tokens/token/" && req.method === "POST") {
+      openverseLog.push("token");
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ access_token: "ov-token-1", token_type: "Bearer", expires_in: 36000, scope: "read write" }));
+      return;
+    }
+    if (url.pathname === "/__openverse_log") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(openverseLog)); return; }
+    if (url.pathname === "/__openverse/v1/audio/") {
+      // A pretend free-music library. It answers like Openverse: mixed licences and file types, of which the app keeps only some.
+      const q = url.searchParams.get("q") || "", media = `http://localhost:${PORT}/__media`;
+      openverseLog.push(`search:${q}:${url.searchParams.get("category") || "-"}:${req.headers.authorization ? "token" : "anon"}`);
+      const reply = (status, body) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(body));
+      if (process.env.MUSIC_LIMIT) return reply(429, { detail: "Request was throttled. Expected available in 3000 seconds." });
+      if (process.env.NO_CATEGORY && url.searchParams.get("category")) return reply(400, { detail: "Invalid category" });
+      if (url.searchParams.get("license") !== "cc0,pdm,by") return reply(400, { detail: "unexpected licence filter" });
+      if (/nothing/i.test(q)) return reply(200, { result_count: 0, page_count: 0, page_size: 20, page: 1, results: [] });
+      const row = (n, title, creator, license, file, extra = {}) => ({ id: `0000000${n}-aaaa-4bbb-8ccc-00000000000${n}`, title, creator, license, license_version: license === "by" ? "4.0" : "1.0",
+        url: `${media}/${file}`, filetype: file.split(".").pop(), duration: 30000, filesize: 480000, source: "jamendo", provider: "jamendo", category: "music",
+        foreign_landing_url: `https://www.jamendo.com/track/${n}`, attribution: `"${title}" by ${creator} is licensed under CC ${license.toUpperCase()}.`, ...extra });
+      return reply(200, { result_count: 6, page_count: 2, page_size: 20, page: Number(url.searchParams.get("page") || 1), results: [
+        row(1, `Quiet Shore (${q})`, "Mira Lane", "by", "steps.mp3"),
+        row(2, "Paper Boats", "Odd Harbour", "cc0", "tone.m4a", { filetype: "m4a", duration: 20000 }),
+        row(3, "Not For Videos", "Strict Artist", "by-nc-nd", "steps.mp3"),
+        row(4, "An Ogg File", "Vorbis Fan", "cc0", "steps.ogg", { filetype: "ogg" }),
+        row(5, "Somewhere Else", "Other Host", "cc0", "steps.mp3", { url: "https://evil.example/steps.mp3" }),
+        row(6, "Short Bell", "Tiny Sounds", "pdm", "short.mp3", { duration: 4000 }),
+        row(7, "Morning Field", "Mira Lane", "pdm", "short.mp3", { duration: 12 }),
+      ] });
+    }
     if (url.pathname.startsWith("/__gutendex/")) {
       // One free book in the pretend catalogue: "Walden". Anything else is "not found".
       if (/alchemist/i.test(url.searchParams.get("search") || "")) {
@@ -524,7 +555,8 @@ http.createServer(async (req, res) => {
     }
     if (url.pathname.startsWith("/__media/") && MEDIA_DIR) {
       const data = await readFile(path.join(MEDIA_DIR, path.basename(url.pathname)));
-      const type = url.pathname.endsWith(".mp4") ? "video/mp4" : url.pathname.endsWith(".txt") ? "text/plain; charset=utf-8" : "image/jpeg";
+      const type = url.pathname.endsWith(".mp4") ? "video/mp4" : url.pathname.endsWith(".txt") ? "text/plain; charset=utf-8"
+        : url.pathname.endsWith(".mp3") ? "audio/mpeg" : url.pathname.endsWith(".m4a") ? "audio/mp4" : "image/jpeg";
       res.writeHead(200, { "Content-Type": type, "Content-Length": data.length }).end(data);
       return;
     }

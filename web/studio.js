@@ -590,6 +590,82 @@
     } catch (err) { $("look-note").textContent = friendly(err); }
   });
 
+  // ---------- Free music search ----------
+  const TUNE_IDEAS = ["calm piano", "ambient", "acoustic guitar", "soft strings", "lo-fi", "cinematic", "rain", "hopeful"];
+  const tune = { q: "calm piano", page: 1 };
+  const tunePlayer = new Audio();          // one tunePlayer for listening to tracks in the list
+  let listening = null, tuneNo = 0;
+  const tuneStatus = (msg) => { $("tune-status").textContent = msg; };
+  const mmss = (s) => (s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "");
+  function stopListening() {
+    tunePlayer.pause();
+    if (listening) listening.textContent = "Listen";
+    listening = null;
+  }
+  tunePlayer.addEventListener("ended", stopListening);
+  function tuneRow(item) {
+    const hear = el("button", { type: "button", textContent: "Listen" });
+    hear.setAttribute("aria-label", `Listen to ${item.title}`);
+    hear.addEventListener("click", async () => {
+      if (listening === hear) { stopListening(); return; }
+      stopListening();
+      tunePlayer.src = item.file;
+      try { await tunePlayer.play(); listening = hear; hear.textContent = "Stop"; }
+      catch (e) { tuneStatus("That one couldn't be played here. Try another."); }
+    });
+    const use = el("button", { type: "button", textContent: "Use this" });
+    use.setAttribute("aria-label", `Use ${item.title}`);
+    use.addEventListener("click", async () => {
+      stopListening();
+      use.disabled = true; tuneStatus("Fetching the track…");
+      try {
+        const blob = await (await S.api("music/file?url=" + encodeURIComponent(item.file))).blob();
+        await S.loadMusic(new File([blob], `track-${item.id}.${item.ext}`, { type: blob.type || "audio/mpeg" }),
+          { from: "library", title: item.title, artist: item.artist, licence: item.licence, credit: item.credit });
+        $("tune-sheet").hidden = true;
+        tuneStatus("");
+      } catch (e) { tuneStatus(friendly(e)); }
+      finally { use.disabled = false; }
+    });
+    return el("li", {}, el("div", {}, el("p", { className: "main", textContent: item.title }),
+      el("p", { className: "sub", textContent: [item.artist ? `by ${item.artist}` : "", mmss(item.seconds)].filter(Boolean).join(", ") }),
+      chip(item.needsCredit ? "info" : "ok", item.needsCredit ? "Credit added to your caption" : "No credit needed")),
+      el("div", { className: "pair-col" }, hear, use));
+  }
+  async function searchTunes(append) {
+    const mine = ++tuneNo;
+    tuneStatus("Searching…");
+    try {
+      const data = await getJson(`music?page=${tune.page}&q=${encodeURIComponent(tune.q)}`);
+      if (mine !== tuneNo) return;
+      const rows = data.items.map(tuneRow);
+      if (append) $("tune-list").append(...rows); else $("tune-list").replaceChildren(...rows);
+      $("tune-more").hidden = !data.more;
+      tuneStatus(data.items.length || append ? "" : "Nothing found for that. Try other words, like a mood or an instrument.");
+    } catch (e) { if (mine === tuneNo) tuneStatus(friendly(e)); }
+  }
+  function newTuneSearch(q) {
+    stopListening();
+    tune.q = (q || $("tune-q").value).trim() || "calm piano"; tune.page = 1;
+    $("tune-q").value = tune.q;
+    $("tune-list").replaceChildren();
+    searchTunes(false);
+  }
+  $("tune-ideas").replaceChildren(...TUNE_IDEAS.map((idea) => {
+    const b = el("button", { type: "button", textContent: idea });
+    b.addEventListener("click", () => newTuneSearch(idea));
+    return b;
+  }));
+  $("tune-search").addEventListener("click", () => {
+    $("tune-sheet").hidden = false;
+    if (!$("tune-list").children.length) newTuneSearch();
+  });
+  const closeTunes = () => { stopListening(); $("tune-sheet").hidden = true; };
+  $("tune-close").addEventListener("click", closeTunes);
+  $("tune-sheet").addEventListener("click", (e) => { if (e.target === $("tune-sheet")) closeTunes(); });
+  $("tune-form").addEventListener("submit", (e) => { e.preventDefault(); newTuneSearch(); });
+  $("tune-more").addEventListener("click", () => { tune.page += 1; searchTunes(true); });
+
   // ---------- Background search: free photos and videos ----------
   const stock = { kind: "video", q: "", page: 1 };
   const status = (msg) => { $("stock-status").textContent = msg; };
@@ -969,6 +1045,16 @@
   let music = null, posting = false, player = null, postMode = "reel";
   let waiting = null;      // set when posting a reel from the waiting list instead of the one just made
   let carouselMade = null; // what the carousel's first picture was made with
+  let postCredit = "";     // the credit line a library track asks for, if the reel being posted has one
+  let shownCredit = "";    // the credit line currently sitting in the caption box
+  function keepCredit() {
+    $("post-credit-note").hidden = !postCredit;
+    const box = $("post-caption");
+    // A credit left over from a different track is taken out before this reel's own is added.
+    if (shownCredit && shownCredit !== postCredit) box.value = box.value.replace(shownCredit, "").trim();
+    if (postCredit && !box.value.includes(postCredit)) box.value = [box.value.trim(), postCredit].filter(Boolean).join("\n\n");
+    shownCredit = postCredit;
+  }
   const postStatus = (msg) => { $("post-status").textContent = msg; };
   function chooseMusic(item) {
     music = item;
@@ -1020,12 +1106,21 @@
     chooseMusic(null);
     $("music-list").replaceChildren();
     $("post-title").textContent = mode === "carousel" ? `Post a carousel of ${slides.length}` : "Post to Instagram";
-    $("post-music").hidden = mode === "carousel";      // Instagram's music can only be attached to reels here
+    // A reel that already has music in it doesn't get Instagram's music as well, and a track that asks for
+    // credit gets its credit line at the end of the caption.
+    const made = mode === "carousel" ? null : waiting ? waiting.made : S.currentReel() && S.currentReel().made;
+    const own = !!(made && made.music);
+    postCredit = (own && made.musicCredit) || "";
+    $("post-own-music").hidden = !own;
+    if (own) $("post-own-music").textContent = `This reel already has music in it${made.musicTitle ? `: ${made.musicTitle}` : ""}. Instagram's music is left off so the two don't play over each other.`;
+    $("post-music").hidden = mode === "carousel" || own;      // Instagram's music can only be attached to reels here
+    keepCredit();
     $("post-form").hidden = false; $("post-link").hidden = true; postStatus("");
     $("post-write").hidden = !S.server.ai;
     $("post-sheet").hidden = false;
   }
   $("post-open").addEventListener("click", () => openPost("reel"));
+  $("post-caption").addEventListener("change", keepCredit);      // if the credit line gets edited out, it comes back
 
   $("post-write").addEventListener("click", async () => {
     const btn = $("post-write");
@@ -1033,6 +1128,7 @@
     try {
       const r = await send("caption", "POST", waiting ? { quote: waiting.quote, author: waiting.author } : { quote: S.quoteText(), author: onCanvas.author });
       $("post-caption").value = [r.caption, r.hashtags.join(" ")].filter(Boolean).join("\n\n");
+      keepCredit();
     } catch (e) { postStatus(friendly(e)); }
     finally { btn.disabled = false; btn.textContent = "Write a caption with Nishiii"; }
   });
@@ -1067,6 +1163,7 @@
       }
       if (post.state === "failed") throw new Error(post.error || "Instagram didn't accept it.");
       postStatus("Posted to Instagram.");
+      $("post-caption").value = ""; shownCredit = "";       // the next post starts with an empty caption
       const from = [...(todayData ? todayData.items : []), ...(askedData ? askedData.items : [])].find((i) => i.id === sent.suggestionId);
       if (waiting) { waiting = null; if (!$("view-posts").hidden) loadPosts(); }
       if (from) from.posted = "posted";

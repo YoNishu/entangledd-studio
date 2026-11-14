@@ -60,6 +60,7 @@
     shadow: true,
     fade: false,
     mute: true,
+    music: null,         // { file, url, el, ext, duration, start, volume, from: "own" | "library", title, artist, licence, credit }
     length: 8,
     style: "sea",
     author: "",          // the author of the quote on the canvas, if it came with one
@@ -283,12 +284,13 @@
   canvas.addEventListener("pointercancel", release);
 
   // ---------- panel ----------
-  const tabs = ["bg", "text", "style", "save"];
+  const tabs = ["bg", "text", "style", "music", "save"];
   let openTab = null;
   const panelOpen = () => openTab !== null;
   function showTab(name) {
     const wide = window.matchMedia("(min-width: 900px)").matches;
     openTab = openTab === name && !wide ? null : name;   // on a phone, tapping the open tab closes it
+    if (openTab !== "music") stopTune();
     for (const t of tabs) {
       $("tab-" + t).setAttribute("aria-selected", String(t === openTab));
       $("pane-" + t).hidden = t !== openTab;
@@ -527,7 +529,87 @@
     if (file) loadBackground(file).catch((e) => say(e.message));
   });
   $("clear-bg").addEventListener("click", clearBackground);
-  $("len").addEventListener("input", () => { state.length = +$("len").value; $("len-out").textContent = state.length + " s"; saveDraft(); });
+
+  // ---------- music that becomes part of the reel: your own file, or a track from the free library ----------
+  const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const TUNE_TYPES = { "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac", "audio/wav": "wav", "audio/x-wav": "wav",
+    "video/mp4": "mp4", "video/quicktime": "mov" };
+  let tuneTimer = null;
+  function stopTune() {
+    clearTimeout(tuneTimer);
+    if (state.music && state.music.el) state.music.el.pause();
+    if ($("tune-play")) $("tune-play").textContent = "Play from the start point";
+  }
+  function clearMusic() {
+    stopTune();
+    if (state.music) URL.revokeObjectURL(state.music.url);
+    state.music = null;
+    syncMusicPane();
+  }
+  function syncMusicPane() {
+    const m = state.music;
+    $("tune-opts").hidden = !m;
+    $("tune-clear").hidden = !m;
+    $("tune-file-label").textContent = !m ? "Choose your own music" : m.from === "own" ? "Choose a different file" : "Use your own music instead";
+    $("tab-music").textContent = m ? "Music ♪" : "Music";
+    $("tune-state").hidden = !!m;
+    if (!m) return;
+    $("tune-name").textContent = m.artist ? `${m.title} by ${m.artist}` : m.title;
+    $("tune-licence").textContent = m.from === "library"
+      ? (m.credit ? `Free to use with credit (${m.licence}). The credit is added to your caption when you post.` : `Free to use, no credit needed (${m.licence}).`)
+      : "Your own file.";
+    // The start point can't be so late that the music runs out before the reel does (unless the track is shorter than the reel).
+    const latest = Math.max(0, Math.floor(m.duration - state.length));
+    m.start = Math.min(m.start, latest);
+    $("tune-start").max = latest; $("tune-start").value = m.start; $("tune-start").disabled = latest === 0;
+    $("tune-start-out").textContent = latest === 0 ? "0:00 (the track is no longer than the reel)" : `${clock(m.start)} of ${clock(m.duration)}`;
+    $("tune-vol").value = Math.round(m.volume * 100); $("tune-vol-out").textContent = Math.round(m.volume * 100) + "%";
+  }
+  // "info" describes a library track: { from: "library", title, artist, licence, credit }. Without it, the file is her own.
+  function loadMusic(file, info) {
+    return new Promise((resolve, reject) => {
+      if (file.size > 40 * 1024 * 1024) { reject(new Error("That file is over 40 MB. Pick a shorter or smaller one.")); return; }
+      const ext = ((file.name.match(/\.([a-z0-9]{2,5})$/i) || [])[1] || TUNE_TYPES[file.type] || "").toLowerCase();
+      if (!/^(mp3|m4a|aac|wav|ogg|oga|flac|mp4|mov|m4v|webm)$/.test(ext)) { reject(new Error("That file type can't be used for music. Use an MP3, M4A or WAV file, or a video that has sound.")); return; }
+      const url = URL.createObjectURL(file), el = new Audio();
+      el.preload = "auto";
+      const fail = () => { URL.revokeObjectURL(url); reject(new Error("That file couldn't be opened as music. Try an MP3 or M4A file, or a video that has sound.")); };
+      el.onerror = fail;
+      el.onloadedmetadata = () => {
+        if (!Number.isFinite(el.duration) || el.duration < 1) { fail(); return; }
+        clearMusic();
+        el.volume = 0.8;
+        state.music = { file, url, el, ext, duration: el.duration, start: 0, volume: 0.8, from: (info && info.from) || "own",
+          title: (info && info.title) || file.name.replace(/\.[a-z0-9]{2,5}$/i, ""), artist: (info && info.artist) || "", licence: (info && info.licence) || "", credit: (info && info.credit) || "" };
+        syncMusicPane();
+        resolve();
+      };
+      el.src = url;
+    });
+  }
+  $("tune-file").addEventListener("change", () => {
+    const file = $("tune-file").files[0];
+    $("tune-file").value = "";
+    $("tune-say").textContent = "";
+    if (file) loadMusic(file).catch((e) => { $("tune-say").textContent = e.message; });
+  });
+  $("tune-clear").addEventListener("click", clearMusic);
+  $("tune-start").addEventListener("input", () => { state.music.start = +$("tune-start").value; stopTune(); syncMusicPane(); });
+  $("tune-vol").addEventListener("input", () => { state.music.volume = +$("tune-vol").value / 100; state.music.el.volume = state.music.volume; syncMusicPane(); });
+  // Plays the part of the track the reel will use, at the chosen volume, and stops where the reel would end.
+  $("tune-play").addEventListener("click", async () => {
+    const m = state.music;
+    if (!m) return;
+    if (!m.el.paused) { stopTune(); return; }
+    m.el.currentTime = m.start; m.el.volume = m.volume;
+    try {
+      await m.el.play();
+      $("tune-play").textContent = "Stop";
+      tuneTimer = setTimeout(stopTune, state.length * 1000);
+      m.el.onended = stopTune;
+    } catch (e) { $("tune-say").textContent = "The music couldn't be played here, but it will still be added to the reel."; }
+  });
+  $("len").addEventListener("input", () => { state.length = +$("len").value; $("len-out").textContent = state.length + " s"; if (state.music) syncMusicPane(); saveDraft(); });
   $("mute").addEventListener("change", () => { state.mute = $("mute").checked; saveDraft(); });
   $("fade").addEventListener("change", () => { state.fade = $("fade").checked; saveDraft(); });
 
@@ -691,6 +773,7 @@
       $("stock").disabled = !server.stock;
       $("stock-note").hidden = server.stock;
       $("reword-open").hidden = !server.ai;
+      $("tune-search").disabled = false;
       $("check-open").hidden = !server.ai;
       $("queue-add").hidden = !server.instagram;
       $("post-open").hidden = !server.instagram;
@@ -721,10 +804,12 @@
   function madeWith() {
     const main = state.blocks.find((b) => b.role !== "author") || state.blocks[0] || {};
     return { bg: state.bg ? (state.bg.kind === "video" ? "video" : "photo") : "plain", bgFrom: state.bg ? state.bg.from || "own" : "", bgWords: state.bg ? state.bg.words || "" : "",
-      seconds: state.shape === "reel" ? state.length : 0, font: main.font || "", shape: state.shape, lower: !!main.lower };
+      seconds: state.shape === "reel" ? state.length : 0, font: main.font || "", shape: state.shape, lower: !!main.lower,
+      music: state.music && state.shape === "reel" ? state.music.from : "", musicTitle: state.music ? state.music.title : "", musicCredit: state.music ? state.music.credit : "" };
   }
   async function makeReel() {
-    const made = madeWith();
+    const made = madeWith(), music = state.music;
+    stopTune();
     $("done").hidden = true;
     syncReelPane("progress");
     try {
@@ -752,6 +837,11 @@
       await api(`jobs/${job.id}/bg/complete`, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ uploadId: job.uploadId, parts }) });
       await api(`jobs/${job.id}/overlay`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: overlay });
+      if (music) {
+        progress("Sending the music…", null);
+        const about = new URLSearchParams({ ext: music.ext, start: String(music.start), volume: String(music.volume), from: music.from, title: music.title, credit: music.credit });
+        await api(`jobs/${job.id}/music?${about}`, { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: music.file });
+      }
       await api(`jobs/${job.id}/start`, { method: "POST" });
 
       progress("Creating your reel. This usually takes a minute or two. Keep the app open until it's ready.", null);
@@ -813,7 +903,8 @@
     api, server, loadBackground, setQuote, showTab, signOut,
     faceId: { on: faceIdOn, supported: () => !!window.PublicKeyCredential, name: faceIdName, enable: faceIdEnable, disable: faceIdDisable },
     selectedText: () => (selectedBlock() ? selectedBlock().text : ""),
-    currentReel: () => reel, madeWith,
+    currentReel: () => reel, madeWith, loadMusic,
+    musicState: () => (state.music ? { title: state.music.title, start: state.music.start, volume: state.music.el.volume, time: state.music.el.currentTime, playing: !state.music.el.paused } : null),
     shape: () => state.shape,
     pictureBlob: () => toBlob(compose(false), "image/jpeg", 0.92),
     quoteText: () => state.blocks.map((b) => b.text.trim()).filter(Boolean).join("\n"),

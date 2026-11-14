@@ -99,6 +99,17 @@ def has_audio(path):
     return bool(out.stdout.strip())
 
 
+def media_seconds(path):
+    """Length of an audio or video file in seconds (0 if it can't be read)."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+        capture_output=True, text=True)
+    try:
+        return float(out.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
 def make_background(bg_path, palette, dim):
     """Returns a 1080x1920 RGB image: the photo cover-cropped, or a gradient."""
     if bg_path:
@@ -224,8 +235,12 @@ def render(args):
             sources.append("[0:a]")
         idx = 2
         if args.music:
-            cmd += ["-stream_loop", "-1", "-i", args.music]
-            sources.append(f"[{idx}:a]volume={args.volume}[m];[m]")
+            if not has_audio(args.music):
+                sys.exit("That music file has no sound in it.")
+            # Start partway into the track if asked, as long as that point exists; loop if the track is shorter than the reel.
+            start = args.music_start if 0 < args.music_start < media_seconds(args.music) - 1 else 0
+            cmd += ["-stream_loop", "-1"] + (["-ss", f"{start:.2f}"] if start else []) + ["-i", args.music]
+            sources.append(f"[{idx}:a]aresample=44100,aformat=channel_layouts=stereo,volume={args.volume}[m];[m]")
             idx += 1
         if not sources:
             # Silent track: some players and Instagram's processing expect an audio stream.
@@ -276,6 +291,7 @@ def main():
                    help="Gradient colours when no --bg is given.")
     p.add_argument("--music", default="", help="Audio file to mix in. Omit for silence.")
     p.add_argument("--volume", type=float, default=0.8, help="Music volume, 0 to 1.")
+    p.add_argument("--music-start", type=float, default=0.0, help="Seconds into the music to start from.")
     p.add_argument("--duration", type=float, default=8.0, help="Length in seconds (5 to 90).")
     p.add_argument("--out", default="out/reel.mp4")
     p.add_argument("--cover", default="", help="Also save a cover image (JPEG) here.")
