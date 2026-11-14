@@ -23,7 +23,9 @@
 import * as health from "./health.js";
 import * as scorer from "./scorer.js";
 import * as lovenotes from "./lovenotes.js";
-const SECTIONS = [health, scorer, lovenotes];
+import * as upkeep from "./upkeep.js";
+import * as claudeuse from "./claudeuse.js";
+const SECTIONS = [health, scorer, lovenotes, upkeep];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PART_SIZE = 8 * 1024 * 1024;        // R2 needs equal parts of at least 5 MB
@@ -35,7 +37,7 @@ const RENDER_TIMEOUT_MS = 15 * 60 * 1000;
 const LOGIN_TRIES = 10, LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
-  status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
 });
 const fail = (status, message) => json({ error: message }, status);
 
@@ -325,11 +327,25 @@ async function claude(env, opts) {
 // The full reply, including any tools Claude wants run. Used directly by the chat assistant.
 async function claudeRaw(env, { system, messages, maxTokens = 2000, tools }) {
   if (!env.ANTHROPIC_API_KEY) throw new UserError(503, "Nishiii isn't switched on yet. (Setup: the Anthropic key is missing.)");
-  const res = await fetch((env.ANTHROPIC_API || "https://api.anthropic.com") + "/v1/messages", {
+  // Every question is counted against the day's limit first; the same small record says which model answers.
+  const use = await claudeuse.ticket(env, kit, CLAUDE_MODEL);
+  const ask = (model, plain) => fetch((env.ANTHROPIC_API || "https://api.anthropic.com") + "/v1/messages", {
     method: "POST",
     headers: { "x-api-key": env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: maxTokens, output_config: { effort: "medium" }, system, messages, tools }),
+    body: JSON.stringify({ model, max_tokens: maxTokens, ...(plain ? {} : { output_config: { effort: "medium" } }), system, messages, tools }),
   });
+  let res = await ask(use.model, use.plain);
+  if (res.status === 404) {
+    // Anthropic no longer offers this model. Move to the newest Sonnet on its list, remember that, and ask again.
+    const next = await claudeuse.moveOn(env, kit, use.model).catch(() => null);
+    if (next) { Object.assign(use, next); res = await ask(use.model, use.plain); }
+  }
+  if (res.status === 400 && use.model !== CLAUDE_MODEL && !use.plain) {
+    // A model the app moved to by itself may not know the one optional setting the app sends: ask without it.
+    let why = "";
+    try { why = (await res.clone().json()).error?.message || ""; } catch (e) { /* no detail */ }
+    if (/output_config|effort/i.test(why) && (await claudeuse.goPlain(env, kit).catch(() => false))) res = await ask(use.model, true);
+  }
   if (res.status === 401 || res.status === 403) {
     await health.saw(env, kit, "claude-fail", { kind: "key" });
     throw new UserError(502, "Nishiii can't answer right now: Anthropic no longer accepts the key. Ask Nishith to renew it (Settings, Check everything, shows how).");
@@ -836,33 +852,44 @@ async function stockRoutes(request, env, parts) {
     return json(data);
   }
   if (parts[1] === "file") {
-    // The first address, then any alternates, each checked against the list of allowed hosts.
-    const targets = [];
-    for (const raw of [url.searchParams.get("url"), ...url.searchParams.getAll("alt")].slice(0, 5)) {
-      let target;
-      try { target = new URL(raw); } catch (e) { continue; }
-      const local = !!env.STOCK_HOSTS && target.protocol === "http:";
-      if ((target.protocol === "https:" || local) && stockHostAllowed(env, target.hostname)) targets.push(target);
-    }
+    const targets = stockTargets(env, [url.searchParams.get("url"), ...url.searchParams.getAll("alt")]);
     if (!targets.length) return fail(400, "That one can't be used: it isn't from the photo and video library.");
-    let last = 0;
-    for (const target of targets) {
-      let res;
-      try {
-        res = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0 (compatible; EntangleddStudio/1.0)", Accept: "image/*,video/*;q=0.9,*/*;q=0.5", Referer: info.url + "/" } });
-      } catch (e) { continue; }
-      const type = res.headers.get("Content-Type") || "";
-      // A refusal can arrive as a web page with a "success" status, so the kind of file is checked too.
-      if (!res.ok || !/^(image|video)\/|octet-stream/i.test(type)) { last = res.status; console.error("Library file refused", target.hostname, res.status, type); continue; }
-      const size = Number(res.headers.get("Content-Length") || 0);
-      if (size > 250 * 1024 * 1024) return fail(413, "That file is too large. Pick a different one.");
-      const headers = { "Content-Type": type || "application/octet-stream", "Cache-Control": "no-store" };
-      if (size) headers["Content-Length"] = String(size);
-      return new Response(res.body, { headers });
-    }
-    return fail(502, `That one couldn't be fetched from ${info.name}${last ? ` (status ${last})` : ""}. Pick a different one.`);
+    const { res, type, last } = await fetchStockFile(env, info, targets);
+    if (!res) return fail(502, `That one couldn't be fetched from ${info.name}${last ? ` (status ${last})` : ""}. Pick a different one.`);
+    const size = Number(res.headers.get("Content-Length") || 0);
+    if (size > 250 * 1024 * 1024) return fail(413, "That file is too large. Pick a different one.");
+    const headers = { "Content-Type": type || "application/octet-stream", "Cache-Control": "no-store" };
+    if (size) headers["Content-Length"] = String(size);
+    return new Response(res.body, { headers });
   }
   return fail(404, "Not found.");
+}
+// The first address, then any alternates, each checked against the list of allowed hosts.
+function stockTargets(env, raws) {
+  const targets = [];
+  for (const raw of raws.slice(0, 5)) {
+    let target;
+    try { target = new URL(raw); } catch (e) { continue; }
+    const local = !!env.STOCK_HOSTS && target.protocol === "http:";
+    if ((target.protocol === "https:" || local) && stockHostAllowed(env, target.hostname)) targets.push(target);
+  }
+  return targets;
+}
+// Asks each address in turn until one really gives a picture or a video. (Also used by the health record,
+// which reads only the headers, to see that this still works.)
+async function fetchStockFile(env, info, targets) {
+  let last = 0;
+  for (const target of targets) {
+    let res;
+    try {
+      res = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0 (compatible; EntangleddStudio/1.0)", Accept: "image/*,video/*;q=0.9,*/*;q=0.5", Referer: info.url + "/" } });
+    } catch (e) { continue; }
+    const type = res.headers.get("Content-Type") || "";
+    // A refusal can arrive as a web page with a "success" status, so the kind of file is checked too.
+    if (!res.ok || !/^(image|video)\/|octet-stream/i.test(type)) { last = res.status; console.error("Library file refused", target.hostname, res.status, type); continue; }
+    return { res, type, last };
+  }
+  return { res: null, type: "", last };
 }
 
 // ---------- free music for reels (Openverse: openly licensed tracks, mostly from Jamendo) ----------
@@ -927,18 +954,23 @@ async function searchMusic(env, q, page) {
   return { items, more: Number(data.page_count) > page };
 }
 
+// The same search is answered from the app's own copy for a week, which also keeps within the library's limits.
+// ("fresh" asks the library anyway: the health record does that once a day, for the search the Music tab opens with.)
+async function musicSearchCached(env, q, page, fresh) {
+  const cacheName = `musiccache/${await hmacHex("music", `v1|${norm(q)}|${page}`)}`;
+  const cached = fresh ? null : await loadDoc(env, cacheName, null);
+  if (cached && Date.now() - cached.at < 7 * 24 * 3600 * 1000) return cached.result;
+  const result = { ...(await searchMusic(env, q, page)), q };
+  if (result.items.length) await saveDoc(env, cacheName, { at: Date.now(), result });
+  return result;
+}
+
 async function musicRoutes(request, env, parts, url) {
   if (request.method !== "GET") return fail(404, "Not found.");
   if (parts.length === 1) {
     const q = oneLine(url.searchParams.get("q"), 80) || "calm piano";
     const page = Math.min(12, Math.max(1, Number(url.searchParams.get("page")) || 1));
-    // The same search is answered from the app's own copy for a week, which also keeps within the library's limits.
-    const cacheName = `musiccache/${await hmacHex("music", `v1|${norm(q)}|${page}`)}`;
-    const cached = await loadDoc(env, cacheName, null);
-    if (cached && Date.now() - cached.at < 7 * 24 * 3600 * 1000) return json(cached.result);
-    const result = { ...(await searchMusic(env, q, page)), q };
-    if (result.items.length) await saveDoc(env, cacheName, { at: Date.now(), result });
-    return json(result);
+    return json(await musicSearchCached(env, q, page, false));
   }
   if (parts[1] === "file") {
     let target;
@@ -962,12 +994,14 @@ async function musicRoutes(request, env, parts, url) {
 
 // ---------- Instagram: connect, music, post ----------
 const GRAPH_VERSION = "v25.0";
+let graphAnswered = "";               // the version named in Meta's latest answer; differs once v25.0 has been withdrawn
 async function graph(env, method, path, params) {
   const url = new URL((env.GRAPH_API || "https://graph.facebook.com") + "/" + GRAPH_VERSION + path);
   const init = { method };
   if (method === "GET") for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   else init.body = new URLSearchParams(params);
   const res = await fetch(url, init);
+  graphAnswered = res.headers.get("facebook-api-version") || graphAnswered;   // Meta names the version it really used
   let data = {};
   try { data = await res.json(); } catch (e) { /* not JSON: handled below */ }
   if (!res.ok || data.error) {
@@ -2469,7 +2503,11 @@ async function route(request, env, parts) {
 // Shared helpers handed to the add-on sections (see SECTIONS at the top).
 const kit = { json, fail, UserError, body, loadDoc, saveDoc, signedIn, claude, claudeRaw, graph, graphAny, loadIg, igReady,
   reelsReady, stockProvider, todayIST, oneLine, lines, GRAPH_VERSION,
-  CLAUDE_MODEL };
+  CLAUDE_MODEL,
+  findBookText, textHostAllowed,
+  musicSearchCached,
+  searchPixabay, searchPexels, stockTargets, fetchStockFile, PROVIDERS,
+  graphAnswered: () => graphAnswered };
 
 // The sections' timed jobs. At most one runs per five-minute tick, so no single run does too much:
 // the free plan allows 50 outside calls (storage reads and writes count) and very little computing per run.
@@ -2486,6 +2524,7 @@ async function runOneDueJob(env) {
   try { await due.run(env, kit); }
   catch (e) {
     console.error(`job ${due.name} failed`, e);
+    await upkeep.noteError(env, kit, `timed job ${due.name}`, e);
     const again = await loadDoc(env, "jobstamps", {});
     again[due.name] = now - (due.everyHours || 24) * HOUR_MS + HOUR_MS;   // try once more in about an hour
     await saveDoc(env, "jobstamps", again);
@@ -2493,7 +2532,7 @@ async function runOneDueJob(env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/")) return new Response("Not found", { status: 404 });
     const parts = url.pathname.slice(5).split("/").filter(Boolean);
@@ -2501,6 +2540,12 @@ export default {
       // "await" matters here: without it, an error inside a handler would skip the catch below.
       return await route(request, env, parts);
     } catch (e) {
+      // What went wrong on the server, or at an outside service, goes into the short record of problems
+      // that the health record counts. (Kept after the answer is sent, where Cloudflare allows it.)
+      if (!(e instanceof UserError) || e.status === 502) {
+        const noted = upkeep.noteError(env, kit, upkeep.plainPath(request.method, parts), e);
+        if (ctx && ctx.waitUntil) ctx.waitUntil(noted); else await noted;
+      }
       if (e instanceof UserError) return fail(e.status, e.message);
       console.error(e);
       return fail(500, "Something went wrong on our side. Try again.");
@@ -2514,7 +2559,7 @@ export default {
       // Once a day, in order: fetch how her posts did, update what Nishiii knows about her taste,
       // then choose the day's quotes with that fresh in mind.
       ctx.waitUntil((async () => {
-        const step = async (name, fn) => { try { await fn(); } catch (e) { console.error(`daily ${name} failed`, e); } };
+        const step = async (name, fn) => { try { await fn(); } catch (e) { console.error(`daily ${name} failed`, e); await upkeep.noteError(env, kit, `the morning's ${name}`, e); } };
         await step("insights", async () => {
           const ig = igReady(env) ? await loadIg(env) : null;
           if (!ig) return;
@@ -2531,7 +2576,7 @@ export default {
       })());
       return;
     }
-    ctx.waitUntil(runOneDueJob(env).catch((e) => console.error("timed job failed", e)));
+    ctx.waitUntil(runOneDueJob(env).catch((e) => { console.error("timed job failed", e); return upkeep.noteError(env, kit, "the timed jobs", e); }));
     // Every few minutes: finish any post still waiting on Instagram, in case she closed the app.
     ctx.waitUntil((async () => {
       const posts = await loadDoc(env, "posts", []);
@@ -2545,6 +2590,6 @@ export default {
       // A reel she took into Instagram to finish there: has it been posted yet?
       if (handed.length) changed = (await adoptFromInstagram(env, ig, posts)) > 0 || changed;
       if (changed) await saveDoc(env, "posts", posts.slice(-500));
-    })().catch((e) => console.error("finishing posts failed", e)));
+    })().catch((e) => { console.error("finishing posts failed", e); return upkeep.noteError(env, kit, "finishing posts", e); }));
   },
 };

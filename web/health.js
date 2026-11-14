@@ -107,10 +107,37 @@
     busy = true;
     const btn = $("health-check");
     btn.disabled = true; btn.textContent = "Checking…";
-    try { record = await K.send("checkup", "POST"); render(); }
+    try {
+      record = await K.send("checkup", "POST"); render();
+      // Then the two groups of probes (the outside services, and her page with the app's own housekeeping),
+      // one request each so that no single one does too much. One asked a moment ago is simply skipped.
+      for (const part of ["services", "page"]) {
+        try { record = await K.send(`checkup?part=${part}`, "POST"); render(); } catch (e) { /* checked a moment ago, or briefly unreachable */ }
+      }
+    }
     catch (e) { $("health-summary").textContent = K.friendly(e); }
     finally { busy = false; btn.disabled = false; btn.textContent = "Check now"; }
   }
 
   document.addEventListener("studio:settings", () => { build(); load(); });
+
+  // When a script in the app fails on her phone, nobody would ever know. So the first few failures of a
+  // visit are sent to the server's short record of problems (file and line only, no content), where the
+  // health record counts them.
+  let told = 0;
+  function tell(what, where) {
+    if (told >= 3 || !window.Studio || !K || !K.send) return;
+    told += 1;
+    K.send("oops", "POST", { what: String(what || "").slice(0, 200), where: String(where || "").slice(0, 120) }).catch(() => {});
+  }
+  // Being offline, or the server answering with a message for her, is not a fault in the app.
+  const ordinary = (text) => /Failed to fetch|Load failed|NetworkError|network connection|cancelled|aborted/i.test(text);
+  window.addEventListener("error", (e) => {
+    if (e && e.message && !ordinary(e.message)) tell(e.message, e.filename ? `${e.filename}:${e.lineno || 0}` : "");
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = e && e.reason;
+    if (!(r instanceof Error) || r.name === "Error" || r.name === "AbortError" || ordinary(r.message)) return;
+    tell(`${r.name}: ${r.message}`, "a promise");
+  });
 })();
