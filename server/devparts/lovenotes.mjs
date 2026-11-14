@@ -29,9 +29,13 @@ function watchStorage(bucket) {
   ops = [];
   for (const name of ["get", "put", "delete", "head", "list"]) {
     const real = bucket[name].bind(bucket);
-    bucket[name] = (key, ...rest) => {
+    bucket[name] = async (key, ...rest) => {
       ops.push(`${name} ${typeof key === "string" ? key : JSON.stringify(key)}`);
       if (ops.length > 5000) ops.splice(0, 1000);
+      // What Cloudflare's storage does with "keep this only if nothing is there yet"
+      // (onlyIf: If-None-Match: *): when something is there, nothing is written and null comes back.
+      const onlyIf = name === "put" && rest[1] && rest[1].onlyIf;
+      if (onlyIf instanceof Headers && onlyIf.get("If-None-Match") === "*" && bucket.objects.has(key)) return null;
       return real(key, ...rest);
     };
   }

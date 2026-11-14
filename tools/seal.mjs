@@ -72,8 +72,11 @@ async function main() {
   const opt = options(process.argv.slice(2));
   let key;
   try { key = tidyKey(opt.key); } catch (e) { stop(e.message); }
-  if ((await keyCheck(key)) !== opt.check.trim().toLowerCase()) {
-    stop("the key and its check don't match, so the key was probably damaged while being copied. Fetch /api/seal-key again.");
+  // Nothing is sealed with a key that can't prove it arrived whole: a delivery sealed with a damaged key could never be opened.
+  const check = opt.check.replace(/\s+/g, "").toLowerCase();
+  if (!/^[0-9a-f]{16}$/.test(check)) stop("the check should be 16 letters and digits (0-9 and a-f), as /api/seal-key gives it. Fetch it again.");
+  if ((await keyCheck(key)) !== check) {
+    stop("the key and its check don't match, so one of them was damaged while being copied. Fetch /api/seal-key again.");
   }
   const from = path.resolve(opt.in);
   if (from === repo || from.startsWith(repo + path.sep)) {
@@ -93,7 +96,7 @@ async function main() {
   const all = [...have, box];
   await writeFile(to, `${FILE_HEAD}export const SEALED = [\n${all.map((b) => `  ${JSON.stringify(b)},\n`).join("")}];\n`);
   const n = delivery.notes.length;
-  console.log(`Sealed ${n} ${n === 1 ? "note" : "notes"} (${delivery.mode}). ${path.relative(process.cwd(), to) || to} now holds ${all.length} ${all.length === 1 ? "delivery" : "deliveries"}.`);
+  console.log(`Sealed ${n} ${n === 1 ? "note" : "notes"} (${delivery.mode}) for the key with check ${check}. ${path.relative(process.cwd(), to) || to} now holds ${all.length} ${all.length === 1 ? "delivery" : "deliveries"}.`);
   console.log(`The plain notes are still at ${from}. Delete that file once the delivery is committed.`);
 }
 

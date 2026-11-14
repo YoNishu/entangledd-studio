@@ -12,7 +12,7 @@
    Handlers are called as handler(request, env, parts, kit); jobs as run(env, kit). */
 
 import { SEALED } from "./sealed.js";
-import { makeKeys, unseal, keyCheck, sha256Hex } from "./sealbox.js";
+import { makeKeys, seal, unseal, tidyKey, keyCheck, sha256Hex } from "./sealbox.js";
 
 const MAX_NOTES = 60, MAX_CHARS = 280;
 const DOC = "lovenotes";     // the notes, and whose turn it is
@@ -47,10 +47,15 @@ function markerFor(note, today) {
 }
 
 const blank = () => ({ notes: [], bag: [], upNext: null, last: null, turn: null, sealed: [] });
+const listOf = (v) => (Array.isArray(v) ? v : []);
+// The stored document. Anything in it that isn't in the expected shape is left out, so one
+// damaged entry can't stop the notes.
 async function load(env, kit) {
   const doc = await kit.loadDoc(env, DOC, null);
-  const state = { ...blank(), ...(doc || {}) };
-  for (const k of ["notes", "bag", "sealed"]) if (!Array.isArray(state[k])) state[k] = [];
+  const state = { ...blank(), ...(doc && typeof doc === "object" && !Array.isArray(doc) ? doc : {}) };
+  state.notes = listOf(state.notes).filter((n) => n && typeof n.id === "string" && typeof n.text === "string");
+  state.bag = listOf(state.bag);
+  state.sealed = listOf(state.sealed).filter((d) => d && typeof d.hash === "string");
   return state;
 }
 const save = (env, kit, state) => kit.saveDoc(env, DOC, state);
@@ -116,102 +121,180 @@ function choose(state, today, dayText) {
 
 // ---------- sealed deliveries ----------
 // The deliveries this version of the app was deployed with. (The local stand-in server swaps the
-// list through setDeliveries to act out a new deploy.)
-const deliveries = { list: SEALED.map(String) };
-const seen = new Map();      // delivery hash → opened fine (true) or not (false), as far as this running copy knows
+// list through setDeliveries to act out a new deploy.) Anything in the file that isn't text is ignored.
+const boxesIn = (list) => listOf(list).filter((box) => typeof box === "string");
+const deliveries = { list: boxesIn(SEALED) };
+const seen = new Map();      // delivery hash → opened fine (true) or not (false), as storage had it when this running copy last looked
 const hashes = new Map();    // delivery text → its hash
 async function hashOf(box) {
   if (!hashes.has(box)) hashes.set(box, await sha256Hex(box));
   return hashes.get(box);
 }
 
+const PER_PASS = 8;          // deliveries opened in one request or one job run, so no run does much; any others wait their turn
+const MAX_BOX = 200000;      // characters. A full set of the longest notes, sealed, is well under this.
+const RETRY_MS = 60 * 1000;  // after something went wrong, the timed job and the open key address leave it alone this long
+let retryAt = 0;
+
 const NOT_OPENED = "This delivery couldn't be opened: it was sealed for a different key, or it was changed on the way.";
 const NOT_NOTES = "This delivery opened, but what was inside isn't a usable list of notes.";
 
-// Opens one delivery and puts its notes in. Never throws: a delivery that can't be used is described instead.
-async function openAndMerge(state, keys, box) {
+// What a delivery must hold: { mode: "add" | "replace", notes: [{ text, date? }, ...] }, every note
+// within the limits. Returns the notes, checked, or null if anything at all is off.
+function checkedDelivery(inside) {
+  if (!inside || typeof inside !== "object" || !["add", "replace"].includes(inside.mode)) return null;
+  if (!Array.isArray(inside.notes) || !inside.notes.length || inside.notes.length > MAX_NOTES) return null;
+  const notes = [];
+  for (const item of inside.notes) {
+    const date = item && item.date != null ? item.date : "";
+    if (!item || typeof item.text !== "string" || typeof date !== "string") return null;
+    const text = tidy(item.text);
+    if (!text || count(text) > MAX_CHARS || (date && !realDate(date))) return null;
+    notes.push({ text, date });
+  }
+  return { mode: inside.mode, notes };
+}
+
+// Opens one delivery and checks all of it. Nothing inside is looked at until the seal has proved
+// it is whole, and nothing is used unless every note is right. Never throws: a delivery that
+// can't be used is described instead.
+async function readDelivery(keys, box) {
   let inside;
   try {
-    if (!keys) throw new Error("no key yet");
+    if (!keys || box.length > MAX_BOX) throw new Error("not one this app could have been sent");
     inside = JSON.parse(await unseal(keys, box));
   } catch (e) { return { ok: false, why: NOT_OPENED }; }
-  const mode = inside && inside.mode, list = inside && inside.notes;
-  if (!["add", "replace"].includes(mode) || !Array.isArray(list) || !list.length || list.length > MAX_NOTES) return { ok: false, why: NOT_NOTES };
-  const fresh = [];
-  for (const item of list) {
-    const text = tidy(item && item.text), date = item && item.date ? String(item.date) : "";
-    if (!text || count(text) > MAX_CHARS || (date && !realDate(date))) return { ok: false, why: NOT_NOTES };
-    fresh.push({ text, date });
-  }
+  try {
+    const checked = checkedDelivery(inside);
+    return checked ? { ok: true, ...checked } : { ok: false, why: NOT_NOTES };
+  } catch (e) { return { ok: false, why: NOT_NOTES }; }
+}
+
+// Puts checked notes in. "replace" starts again with only these; "add" leaves out a note whose words are already there.
+function merge(state, { mode, notes }) {
   if (mode === "replace") Object.assign(state, { notes: [], bag: [], upNext: null, last: null, turn: null });
   let added = 0, skipped = 0;
-  for (const n of fresh) {
-    if (state.notes.some((have) => have.text === n.text) || state.notes.length >= MAX_NOTES) { skipped++; continue; }
+  for (const n of notes) {
+    if (state.notes.length >= MAX_NOTES || state.notes.some((have) => have.text === n.text)) { skipped++; continue; }
     const note = { id: newId(state), text: n.text, ...(n.date ? { date: n.date } : {}), added: Date.now() };
     state.notes.push(note);
     state.bag.push(note.id);
     added++;
   }
-  return { ok: true, mode, added, skipped };
+  return { mode, added, skipped };
 }
 
-// Brings in every delivery not dealt with yet. Each is dealt with once, whatever the outcome,
-// and remembered by its hash. Returns true if the stored document needs saving.
-async function applyDeliveries(env, kit, state) {
-  let changed = false, keys;
+// Brings in the deliveries the stored notes have not met: in order, each one once whatever the
+// outcome, remembered by its hash, at most PER_PASS in one go. Works on a copy and saves it, so
+// the notes are never left half changed. Returns the notes to carry on with, and for every
+// delivery now on record whether it opened fine.
+async function bringIn(env, kit, state) {
+  const met = [], fresh = [];
   for (const box of deliveries.list) {
-    const hash = await hashOf(box);
-    const done = state.sealed.find((s) => s.hash === hash);
-    if (done) { seen.set(hash, !!done.ok); continue; }
-    if (keys === undefined) keys = await kit.loadDoc(env, KEY_DOC, null);
-    const result = await openAndMerge(state, keys, box);
-    state.sealed.push({ hash, at: Date.now(), ...result });
-    seen.set(hash, result.ok);
-    changed = true;
+    const hash = await hashOf(box), done = state.sealed.find((d) => d.hash === hash);
+    if (done) met.push([hash, !!done.ok]);
+    else if (fresh.length < PER_PASS && !fresh.some((f) => f.hash === hash)) fresh.push({ hash, box });
   }
-  return changed;
+  if (!fresh.length) return { state, met };
+  const keys = await kit.loadDoc(env, KEY_DOC, null);
+  const next = structuredClone(state);
+  for (const { hash, box } of fresh) {
+    const read = await readDelivery(keys, box);
+    const result = read.ok ? { ok: true, ...merge(next, read) } : read;
+    next.sealed.push({ hash, at: Date.now(), ...result });
+    met.push([hash, result.ok]);
+  }
+  await save(env, kit, next);
+  return { state: next, met };
 }
-// The same, but a problem with a delivery (storage being briefly unreachable, say) never gets in the way of the notes.
-async function deliver(env, kit, state) {
-  if (!deliveries.list.length) return false;
-  try { return await applyDeliveries(env, kit, state); }
-  catch (e) { console.error("little notes: a delivery could not be checked just now"); return false; }
+
+// The stored notes, with any new delivery brought in first. A delivery counts as dealt with only
+// once storage holds the outcome. If something goes wrong on the way (storage briefly unreachable,
+// say) the notes come back as they were, and the delivery is tried again later.
+async function loadAll(env, kit) {
+  const state = await load(env, kit);
+  if (!deliveries.list.length) return state;
+  try {
+    const out = await bringIn(env, kit, state);
+    for (const [hash, ok] of out.met) seen.set(hash, ok);
+    return out.state;
+  } catch (e) {
+    retryAt = Date.now() + RETRY_MS;
+    console.error("little notes: a delivery could not be brought in just now");
+    return state;
+  }
 }
 async function allSeen() {
   for (const box of deliveries.list) if (!seen.has(await hashOf(box))) return false;
   return true;
 }
-// Makes sure every delivery has been dealt with, touching storage only if this running copy hasn't seen one of them.
+// For the timed job and the open key address: makes sure every delivery has been dealt with.
+// Touches storage only if this running copy hasn't seen one of them. Never throws.
 async function catchUp(env, kit) {
-  if (!deliveries.list.length || (await allSeen())) return;
-  const state = await load(env, kit);
-  if (await deliver(env, kit, state)) await save(env, kit, state);
+  if (!deliveries.list.length || Date.now() < retryAt || (await allSeen())) return;
+  try { await loadAll(env, kit); }
+  catch (e) {
+    retryAt = Date.now() + RETRY_MS;
+    console.error("little notes: the notes could not be read just now");
+  }
 }
 
 // ---------- the app's own key pair ----------
-let publicKey = { hex: "", at: 0 };
-async function ownPublicKey(env, kit) {
-  if (publicKey.hex && Date.now() - publicKey.at < 5 * 60 * 1000) return publicKey.hex;
+const KEY_FRESH_MS = 5 * 60 * 1000;
+let known = { answer: null, at: 0 };     // the public half as last read from storage: { key, groups, check }
+let keyRetryAt = 0;
+
+// Makes the key pair, on the very first call only. The pair is tried out before it is kept, so a
+// key this server could not open a delivery with is never handed out. Storage is asked to keep it
+// only if no key is there yet, and what storage holds is then read back: when two first calls
+// come at once, both hand out the pair that was stored first.
+async function makeAndKeepKeys(env, kit) {
+  const made = { v: 1, created: Date.now(), ...(await makeKeys()) };
+  if ((await unseal(made, await seal(made.publicHex, "a first try"))) !== "a first try") throw new Error("the new key pair failed its own test");
+  try {
+    await env.MEDIA.put(`data/${KEY_DOC}.json`, JSON.stringify(made),     // the same place kit.saveDoc would use
+      { httpMetadata: { contentType: "application/json" }, onlyIf: new Headers({ "If-None-Match": "*" }) });
+  } catch (e) { /* storage that can't take a condition: dealt with just below */ }
   let doc = await kit.loadDoc(env, KEY_DOC, null);
-  if (!doc) {
-    await kit.saveDoc(env, KEY_DOC, { v: 1, created: Date.now(), ...(await makeKeys()) });
-    doc = await kit.loadDoc(env, KEY_DOC, null);      // read back, so two first requests at once end up agreeing on the stored one
+  if (!doc) {                               // the write with a condition was refused outright: keep the pair the plain way
+    await kit.saveDoc(env, KEY_DOC, made);
+    doc = await kit.loadDoc(env, KEY_DOC, null);
   }
-  publicKey = { hex: doc.publicHex, at: Date.now() };
-  return doc.publicHex;
+  return doc;
+}
+
+// The public half, ready to hand out. Only ever what storage holds; the private half stays there.
+async function publicKey(env, kit) {
+  if (known.answer && Date.now() - known.at < KEY_FRESH_MS) return known.answer;
+  const stored = await kit.loadDoc(env, KEY_DOC, null);
+  const doc = stored || (await makeAndKeepKeys(env, kit));
+  const key = tidyKey(doc && doc.publicHex);            // throws if the stored document is damaged
+  const answer = { key, groups: key.match(/.{1,10}/g).join(" "), check: await keyCheck(key) };
+  if (stored) known = { answer, at: Date.now() };       // a pair made just now is read from storage once more before it is remembered
+  return answer;
 }
 
 // GET /api/seal-key (open): the public key to seal a delivery with, and how past deliveries went (numbers only).
+// Anyone may call this, so it does next to nothing: the key is read from storage once every few
+// minutes, a delivery is opened once ever, and after a failure it waits before trying again.
 async function sealKey(request, env, parts, kit) {
   if (request.method !== "GET" || parts.length > 1) return kit.fail(404, "Not found.");
   if (!env.MEDIA) return kit.fail(503, "The app's storage isn't set up yet.");
-  const key = await ownPublicKey(env, kit);
+  const notReady = () => kit.fail(503, "The app's key isn't ready just now. Try again in a minute.");
+  if (Date.now() < keyRetryAt) return notReady();
+  let answer;
+  try { answer = await publicKey(env, kit); }
+  catch (e) {
+    keyRetryAt = Date.now() + RETRY_MS;
+    console.error("little notes: the app's key could not be read or made");
+    return notReady();
+  }
   await catchUp(env, kit);
   const counts = { applied: 0, failed: 0, waiting: 0 };
   for (const hash of new Set(await Promise.all(deliveries.list.map(hashOf)))) {
     counts[!seen.has(hash) ? "waiting" : seen.get(hash) ? "applied" : "failed"]++;
   }
-  return kit.json({ key, groups: key.match(/.{1,10}/g).join(" "), check: await keyCheck(key), deliveries: counts });
+  return kit.json({ ...answer, deliveries: counts });
 }
 
 // ---------- the notes themselves (signed in) ----------
@@ -223,10 +306,11 @@ const forEditor = (state) => ({
 
 // What she typed, checked. Throws a plain message when it can't be used.
 function checked(kit, input, state, selfId) {
-  const text = tidy(input && input.text), date = input && input.date ? String(input.date) : "";
+  const given = input && typeof input === "object" ? input : {};
+  const text = typeof given.text === "string" ? tidy(given.text) : "", date = given.date == null ? "" : given.date;
   if (!text) throw new kit.UserError(400, "Write the note first.");
   if (count(text) > MAX_CHARS) throw new kit.UserError(400, `Keep a note to ${MAX_CHARS} characters. This one has ${count(text)}.`);
-  if (date && !realDate(date)) throw new kit.UserError(400, "That date doesn't look right. Pick it again, or leave it empty.");
+  if (date !== "" && (typeof date !== "string" || !realDate(date))) throw new kit.UserError(400, "That date doesn't look right. Pick it again, or leave it empty.");
   if (state.notes.some((n) => n.text === text && n.id !== selfId)) throw new kit.UserError(400, "That note is already there.");
   return { text, date };
 }
@@ -239,13 +323,9 @@ async function nextNote(request, env, kit) {
   const serverDay = kit.todayIST();
   const day = asked && Math.abs(Date.parse(asked) - Date.parse(serverDay)) <= 2 * DAY_MS ? asked : serverDay;
   const today = realDate(day);
-  const state = await load(env, kit);
-  const delivered = await deliver(env, kit, state);
+  const state = await loadAll(env, kit);
   const note = choose(state, today, day);
-  if (!note) {
-    if (delivered) await save(env, kit, state);
-    return kit.json({});
-  }
+  if (!note) return kit.json({});
   await save(env, kit, state);
   // What the next opening will show, so the phone can keep exactly the right space for it:
   // "then" on an ordinary day, and "soon" for each of the next few days that is some note's own day.
@@ -266,13 +346,9 @@ async function notes(request, env, parts, kit) {
   const id = parts[1] || "", method = request.method;
   if (parts.length > 2) return kit.fail(404, "Not found.");
   if (id === "next") return method === "GET" ? nextNote(request, env, kit) : kit.fail(404, "Not found.");
-  const state = await load(env, kit);
-  const delivered = await deliver(env, kit, state);
+  const state = await loadAll(env, kit);
 
-  if (!id && method === "GET") {
-    if (delivered) await save(env, kit, state);
-    return kit.json(forEditor(state));
-  }
+  if (!id && method === "GET") return kit.json(forEditor(state));
   if (!id && method === "POST") {
     if (state.notes.length >= MAX_NOTES) return kit.fail(400, `There's room for ${MAX_NOTES} notes. Remove one to add another.`);
     const { text, date } = checked(kit, await kit.body(request), state, "");
@@ -313,7 +389,8 @@ export let jobs = deliveries.list.length ? [DELIVERY_JOB] : [];   // { name, eve
 
 // For the local stand-in server only: act out "a new version was deployed with these deliveries".
 export function setDeliveries(list) {
-  deliveries.list = list.map(String);
+  deliveries.list = boxesIn(list);
   seen.clear();
-  jobs = list.length ? [DELIVERY_JOB] : [];
+  retryAt = 0;
+  jobs = deliveries.list.length ? [DELIVERY_JOB] : [];
 }
