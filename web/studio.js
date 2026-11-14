@@ -6,6 +6,8 @@
   "use strict";
   const S = window.Studio;
   const $ = (id) => document.getElementById(id);
+  // On an iPhone a button only shows its pressed look while some touch listener exists, so here is one.
+  document.addEventListener("touchstart", () => {}, { passive: true });
   const el = (tag, props = {}, ...kids) => {
     const n = Object.assign(document.createElement(tag), props);
     n.append(...kids.filter((k) => k != null));
@@ -109,8 +111,8 @@
   // base is "suggestions" (Today's five) or "asked" (quotes she asked Nishiii for).
   // date is set for a quote from an earlier day, so the server knows which day's list it belongs to.
   function card(item, base = "suggestions", date = "") {
-    const use = el("button", { className: "btn primary", textContent: "Use this" });
-    const reword = el("button", { className: "btn", textContent: "Reword" });
+    const use = el("button", { className: "btn soft ic ic-create", textContent: "Use this" });
+    const reword = el("button", { className: "btn ic ic-sparkle", textContent: "Reword" });
     const skip = el("button", { className: "btn quiet", textContent: "Skip" });
     const node = el("article", { className: "card" },
       el("p", { className: "q", textContent: item.text }),
@@ -429,7 +431,7 @@
     if (item.status) kids.push(el("p", { className: "src", textContent: item.status }));
 
     const links = el("div", { className: "links" });
-    if (item.url) links.append(el("a", { href: item.url, target: "_blank", rel: "noopener", textContent: "Open" }));
+    if (item.url) links.append(el("a", { href: item.url, target: "_blank", rel: "noopener", className: "ic ic-open", textContent: "Open" }));
     if (item.kind !== "screenshot") {
       const again = el("button", { type: "button", textContent: "Read again" });
       again.addEventListener("click", async () => {
@@ -445,7 +447,7 @@
       pick.addEventListener("change", () => { if (pick.files[0]) addScreenshot(pick.files[0], item.id); });
       links.append(add, pick);
     }
-    const remove = el("button", { type: "button", textContent: "Remove" });
+    const remove = el("button", { type: "button", className: "last", textContent: "Remove" });
     remove.addEventListener("click", async () => {
       try { renderInspirations(await send(`inspirations/${item.id}`, "DELETE")); } catch (e) { inspNote(friendly(e)); }
     });
@@ -560,7 +562,7 @@
       kids.push(el("p", { className: "note", textContent: "This is from Nishiii's memory, not a lookup. Treat it as a strong hint, and look the quote up before posting if it matters." }));
       box.replaceChildren(...kids);
     } catch (e) { box.replaceChildren(el("p", { className: "flag", textContent: friendly(e) })); }
-    finally { btn.disabled = false; btn.textContent = "Check who said this"; }
+    finally { btn.disabled = false; btn.textContent = "Who said this?"; }
   });
 
   // ---------- Saved looks ----------
@@ -775,13 +777,13 @@
       kids.push(el("dl", { className: "nums" }, ...names.filter(([k]) => m[k] != null).map(([k, name]) => el("div", {}, el("dt", { textContent: name }), el("dd", { textContent: compact(m[k]) })))));
     } else if (p.state === "published") kids.push(el("p", { className: "src", textContent: "Numbers appear a little while after posting." }));
     const links = el("div", { className: "links" });
-    if (p.permalink) links.append(el("a", { href: p.permalink, target: "_blank", rel: "noopener", textContent: "Open on Instagram" }));
+    if (p.permalink) links.append(el("a", { href: p.permalink, target: "_blank", rel: "noopener", className: "ic ic-insta", textContent: "Open" }));
     if (p.state === "published") {
-      const talk = el("button", { type: "button", textContent: "Comments" });
+      const talk = el("button", { type: "button", className: "ic ic-chat", textContent: "Comments" });
       talk.addEventListener("click", () => openComments(p));
       links.append(talk);
     }
-    const remove = el("button", { type: "button", textContent: "Remove from this list" });
+    const remove = el("button", { type: "button", className: "last", textContent: "Remove" });
     remove.addEventListener("click", async () => {
       try { await send("posts/" + p.id, "DELETE"); loadPosts(); } catch (e) { $("posts-note").textContent = friendly(e); }
     });
@@ -796,15 +798,17 @@
     card.hidden = !(w.thisWeek.posts || w.lastWeek.posts);
     if (card.hidden) return;
     const cell = (name, key) => el("div", {}, el("dt", { textContent: name }), el("dd", { textContent: compact(w.thisWeek[key]) }),
-      el("small", { textContent: w.lastWeek.posts ? `${compact(w.lastWeek[key])} the week before` : "" }));
+      el("small", { textContent: w.lastWeek.posts ? `was ${compact(w.lastWeek[key])}` : "" }));
     const kids = [el("h2", { textContent: "Your last 7 days" }),
       el("dl", { className: "nums" }, cell("Posts", "posts"), cell("Reach", "reach"), cell("Likes", "likes"), cell("Saves", "saved"), cell("Shares", "shares"), cell("Comments", "comments"))];
     if (w.note) kids.push(el("p", { className: "q", textContent: w.note }));
-    if (w.best) kids.push(el("p", { className: "src", textContent: `Went furthest: "${(w.best.quote || "a post").replace(/\s+/g, " ").slice(0, 70)}", reaching ${compact((w.best.metrics || {}).reach || (w.best.metrics || {}).views)}.` }));
-    if (w.times.length) kids.push(el("p", { className: "src", textContent: `Best time so far: ${w.times[0].name.toLowerCase()}, about ${compact(w.times[0].reach)} reach a post across ${w.times[0].posts} posts. Next is ${w.times[1].name.toLowerCase()} at ${compact(w.times[1].reach)}.` }));
-    else if (w.measured < 6) kids.push(el("p", { className: "src", textContent: `Best times to post show up here after six posts have numbers. So far: ${w.measured}.` }));
-    if (w.themes.length) kids.push(el("p", { className: "src", textContent: `Themes that travel furthest: ${w.themes.map((t) => `${t.name} (${compact(t.reach)})`).join(", ")}.` }));
-    const more = el("button", { className: "btn quiet", type: "button", textContent: "See everything in Insights" });
+    const extra = [];
+    if (w.best) extra.push(el("p", { className: "src", textContent: `Went furthest: "${(w.best.quote || "a post").replace(/\s+/g, " ").slice(0, 70)}", reaching ${compact((w.best.metrics || {}).reach || (w.best.metrics || {}).views)}.` }));
+    if (w.times.length) extra.push(el("p", { className: "src", textContent: `Best time so far: ${w.times[0].name.toLowerCase()}, about ${compact(w.times[0].reach)} reach a post across ${w.times[0].posts} posts. Next is ${w.times[1].name.toLowerCase()} at ${compact(w.times[1].reach)}.` }));
+    else if (w.measured < 6) extra.push(el("p", { className: "src", textContent: `Best times to post show up here after six posts have numbers. So far: ${w.measured}.` }));
+    if (w.themes.length) extra.push(el("p", { className: "src", textContent: `Themes that travel furthest: ${w.themes.map((t) => `${t.name} (${compact(t.reach)})`).join(", ")}.` }));
+    if (extra.length) kids.push(el("details", { className: "more" }, el("summary", { textContent: "More about this week" }), el("div", { className: "more-body" }, ...extra)));
+    const more = el("button", { className: "btn quiet ic ic-insights", type: "button", textContent: "See everything in Insights" });
     more.addEventListener("click", () => show("insights"));
     kids.push(more);
     card.replaceChildren(...kids);
@@ -813,13 +817,13 @@
 
   // Reels made earlier and kept to post later.
   function queueCard(q) {
-    const go = el("button", { className: "btn primary", type: "button", textContent: "Post this now" });
+    const go = el("button", { className: "btn primary ic ic-send", type: "button", textContent: "Post this now" });
     go.addEventListener("click", () => openPost("reel", q));
     const drop = el("button", { className: "btn quiet", type: "button", textContent: "Remove" });
     drop.addEventListener("click", async () => {
       try { renderQueue((await send("queue/" + q.id, "DELETE")).queue); } catch (e) { $("posts-note").textContent = friendly(e); }
     });
-    const song = el("button", { className: "btn", type: "button", textContent: "Add a song in Instagram" });
+    const song = el("button", { className: "btn ic ic-music", type: "button", textContent: "Add a song in Instagram" });
     song.addEventListener("click", () => openHandoff(q));
     return el("article", { className: "card" }, el("p", { className: "q", textContent: q.quote || "A reel" }), chip("wait", "Made, not posted"),
       el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that you'd need to create it again.` }), el("div", { className: "acts tall" }, go, song, drop));
@@ -837,7 +841,7 @@
   let handing = null;      // { jobId, blob (or null while it is being fetched), about: {...} }
   const handStatus = (msg) => { $("handoff-status").textContent = msg; };
   function handoffCard(h) {
-    const look = el("button", { className: "btn", type: "button", textContent: "Look for it now" });
+    const look = el("button", { className: "btn ic ic-search", type: "button", textContent: "Look for it now" });
     look.addEventListener("click", async () => {
       look.disabled = true; look.textContent = "Looking…";
       try {
@@ -906,7 +910,7 @@
   $("handoff-go").addEventListener("click", async () => {
     if (!handing || !handing.blob) return;
     const mine = handing, caption = $("handoff-caption").value.trim();
-    const file = new File([mine.blob], "entangledd-reel.mp4", { type: "video/mp4" });
+    const file = new File([mine.blob], "ds-studio-reel.mp4", { type: "video/mp4" });
     const copying = copyCaption();          // started first, and not waited for, so the share menu still opens on this tap
     let shared = false;
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -928,7 +932,7 @@
       if (!$("view-posts").hidden) loadPosts();
     } catch (e) { handStatus(friendly(e)); }
   });
-  function resetQueueButton() { $("queue-add").disabled = false; $("queue-add").textContent = "Keep it to post later"; }
+  function resetQueueButton() { $("queue-add").disabled = false; $("queue-add").textContent = "Post later"; }
   $("queue-add").addEventListener("click", async () => {
     const reel = S.currentReel();
     if (!reel) return;
@@ -936,7 +940,7 @@
     btn.disabled = true;
     try {
       await send("queue", "POST", { jobId: reel.id, quote: S.quoteText(), ...onCanvas, made: reel.made });
-      btn.textContent = "Kept. Find it in Posts, under Waiting to be posted.";
+      btn.textContent = "Kept in Posts";
     } catch (e) { btn.disabled = false; btn.textContent = friendly(e); }
   });
   $("make-reel").addEventListener("click", resetQueueButton);
@@ -948,7 +952,7 @@
   function commentCard(post, c) {
     const box = el("textarea", { rows: 2, placeholder: "Your reply" });
     box.setAttribute("aria-label", `Reply to ${c.username}`);
-    const draft = el("button", { className: "btn", type: "button", textContent: "Draft a reply with Nishiii" });
+    const draft = el("button", { className: "btn", type: "button", textContent: "Draft with Nishiii" });
     const sendIt = el("button", { className: "btn primary", type: "button", textContent: "Send reply" });
     const state = el("p", { className: "who" });
     state.setAttribute("role", "status");
@@ -960,7 +964,7 @@
         if (reply) { box.value = reply; state.textContent = "A draft. Change anything, then send."; }
         else state.textContent = "Nishiii thinks this one doesn't need a reply.";
       } catch (e) { state.textContent = friendly(e); }
-      finally { draft.disabled = false; draft.textContent = "Draft a reply with Nishiii"; }
+      finally { draft.disabled = false; draft.textContent = "Draft with Nishiii"; }
     });
     sendIt.addEventListener("click", async () => {
       if (!box.value.trim()) { state.textContent = "Write the reply first."; return; }
@@ -1293,7 +1297,7 @@
       if (a.type === "use") {
         onCanvas = { author: a.author || "", theme: "", tone: "", source: "chat", suggestionId: "" };
         S.setQuote(a.text, a.author || "");
-        const go = el("button", { className: "btn act", type: "button", textContent: "Open Create" });
+        const go = el("button", { className: "btn act ic ic-create", type: "button", textContent: "Open Create" });
         go.addEventListener("click", () => { $("chat").hidden = true; show("create"); });
         $("chat-log").append(go);
       } else if (a.type === "open" && VIEWS.includes(a.section)) {
