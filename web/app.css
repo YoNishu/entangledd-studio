@@ -408,7 +408,16 @@ a.btn { text-decoration: none; }
 /* ==== Add-on sections: each keeps its styles under its own heading below ==== */
 
 /* ---- health: the check in Settings ---- */
-/* (health styles go here) */
+#settings-health { display: grid; gap: 10px; }
+#settings-health:empty { display: none; }
+#settings-health .btn { justify-self: start; }
+.health li { align-items: start; }
+.health .chip { white-space: nowrap; margin-top: 1px; }
+.health .explain { margin-top: 4px; }
+.health .steps { margin-top: 4px; font-size: 13.5px; }
+.health li .btn { margin-top: 10px; }
+.health-rest > summary { padding: 2px 0; }
+.health-rest > .list { margin-top: 8px; }
 
 
 
