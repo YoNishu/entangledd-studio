@@ -1,0 +1,229 @@
+name: Render check
+
+# Makes sample reels with the real renderer (render/render.py) and checks that they are exactly what the app
+# expects, and proves that the quick way of getting ffmpeg and Pillow ready (.github/actions/render-tools)
+# gives the very same reels as the long way. Nothing here touches the app, Instagram or any secret.
+#
+# Runs by hand, when the renderer or anything under .github changes, and twice a week. The twice-weekly run
+# also keeps the kept copy of the tools from being dropped (GitHub drops one nobody used for seven days) and
+# makes a new one soon after GitHub brings out a new machine image, so her reels rarely take the long way.
+#
+# The steps up to "Make the sample reels" in the two "quick" jobs must stay the same as in render-job.yml.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "render/**"
+      - ".github/**"
+  schedule:
+    - cron: "23 2 * * 1,4"
+
+permissions:
+  contents: read
+
+jobs:
+  long:
+    name: Long way (as it was always done)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg and Pillow
+        run: |
+          started=$(date +%s)
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet pillow
+          echo "Long way: tools ready in $(( $(date +%s) - started )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Make the sample reels and check them
+        env:
+          TOOLS_SOURCE: install
+          TOOLS_RESTORED: "no"
+        run: bash render/selfcheck.sh out
+
+      - name: Hand the reels to the comparison
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: long
+          path: out
+          retention-days: 3
+
+  quick1:
+    name: Quick way, first run
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Note the time
+        run: echo "TOOLS_T0=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Get ffmpeg and Pillow ready
+        id: tools
+        uses: ./.github/actions/render-tools
+        continue-on-error: true
+
+      - name: Install ffmpeg and Pillow
+        if: ${{ steps.tools.outcome != 'success' }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet pillow
+
+      - name: Make the sample reels and check them
+        env:
+          TOOLS_SOURCE: ${{ steps.tools.outputs.source }}
+          TOOLS_RESTORED: ${{ steps.tools.outputs.restored }}
+          TOOLS_KEY: ${{ steps.tools.outputs.key }}
+        run: |
+          echo "Quick way, first run: tools ready in $(( $(date +%s) - TOOLS_T0 )) s (from: ${TOOLS_SOURCE:-the long way, after the quick step failed})" | tee -a "$GITHUB_STEP_SUMMARY"
+          bash render/selfcheck.sh out
+
+      - name: Keep the tools for next time
+        if: ${{ !cancelled() && steps.tools.outputs.save == 'yes' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/render-tools
+          key: ${{ steps.tools.outputs.key }}
+
+      - name: Hand the reels to the comparison
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: quick1
+          path: out
+          retention-days: 3
+
+      - name: Say so if the quick step itself failed
+        if: ${{ !cancelled() && steps.tools.outcome != 'success' }}
+        run: |
+          echo "::error::The step that gets ffmpeg and Pillow ready failed. Reels are still made (the long way ran instead), but it needs a look."
+          exit 1
+
+  quick2:
+    name: Quick way, second run
+    needs: quick1
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Note the time
+        run: echo "TOOLS_T0=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Get ffmpeg and Pillow ready
+        id: tools
+        uses: ./.github/actions/render-tools
+        continue-on-error: true
+
+      - name: Install ffmpeg and Pillow
+        if: ${{ steps.tools.outcome != 'success' }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet pillow
+
+      - name: Make the sample reels and check them
+        env:
+          TOOLS_SOURCE: ${{ steps.tools.outputs.source }}
+          TOOLS_RESTORED: ${{ steps.tools.outputs.restored }}
+          TOOLS_KEY: ${{ steps.tools.outputs.key }}
+        run: |
+          echo "Quick way, second run: tools ready in $(( $(date +%s) - TOOLS_T0 )) s (from: ${TOOLS_SOURCE:-the long way, after the quick step failed})" | tee -a "$GITHUB_STEP_SUMMARY"
+          bash render/selfcheck.sh out
+
+      - name: Keep the tools for next time
+        if: ${{ !cancelled() && steps.tools.outputs.save == 'yes' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/render-tools
+          key: ${{ steps.tools.outputs.key }}
+
+      - name: Hand the reels to the comparison
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: quick2
+          path: out
+          retention-days: 3
+
+      - name: Say so if the quick step itself failed
+        if: ${{ !cancelled() && steps.tools.outcome != 'success' }}
+        run: |
+          echo "::error::The step that gets ffmpeg and Pillow ready failed. Reels are still made (the long way ran instead), but it needs a look."
+          exit 1
+
+  compare:
+    name: Same reels both ways
+    needs: [long, quick1, quick2]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Get ffmpeg and Pillow ready
+        id: tools
+        uses: ./.github/actions/render-tools
+        continue-on-error: true
+
+      - name: Install ffmpeg and Pillow
+        if: ${{ steps.tools.outcome != 'success' }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet pillow
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: long
+          path: got/long
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: quick1
+          path: got/quick1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: quick2
+          path: got/quick2
+
+      # Same settings, same pictures (SSIM), same sound; and whether the quick way was really taken.
+      - name: Compare the reels made the long way and the quick way
+        run: |
+          rc=0
+          bash render/selfcheck.sh --compare got/long got/quick1 got/quick2 > compare.txt 2>&1 || rc=$?
+          cat compare.txt
+          { echo '```'; cat compare.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+      - name: Keep the tools for next time
+        if: ${{ !cancelled() && steps.tools.outputs.save == 'yes' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/render-tools
+          key: ${{ steps.tools.outputs.key }}

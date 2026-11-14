@@ -21,7 +21,17 @@ if [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; f
 started=$(date +%s)
 say() { echo "render-tools: $*"; }
 
-# True when ffmpeg can make the kind of file the renderer makes, ffprobe can read it back, and Pillow loads.
+# Every filter render.py asks ffmpeg for (zscale and tonemap are the two that keep iPhone HDR clips from
+# looking washed-out).
+NEED_FILTERS="scale crop fps setsar format eq zoompan loop fade overlay zscale tonemap aresample aformat volume atrim afade amix anullsrc"
+has_filters() {
+  local names f
+  names="$(ffmpeg -hide_banner -filters 2>/dev/null | sed -n 's/^ [^ ]* \([^ ]*\) .*/\1/p')" || return 1   # the name column only
+  for f in $NEED_FILTERS; do grep -qx "$f" <<< "$names" || return 1; done
+}
+
+# True when ffmpeg can make the kind of file the renderer makes, has every filter the renderer uses, ffprobe
+# can read the file back, and Pillow loads.
 works() {
   local tmp ok=1
   tmp="$(mktemp -d)"
@@ -29,6 +39,7 @@ works() {
         -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100" -t 0.4 -vf "scale=180:320,format=yuv420p" \
         -c:v libx264 -preset medium -crf 20 -c:a aac -b:a 160k -y "$tmp/t.mp4" >/dev/null 2>&1 \
      && [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$tmp/t.mp4" 2>/dev/null)" = "h264" ] \
+     && has_filters \
      && PYTHONPATH="$PY${PYTHONPATH:+:$PYTHONPATH}" python3 -c "from PIL import Image, ImageDraw, ImageFilter, ImageFont" >/dev/null 2>&1; then
     ok=0
   fi
