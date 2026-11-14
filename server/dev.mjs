@@ -6,10 +6,10 @@
    GitHub to start a render it runs render/run_job.sh right here instead.
    Needs Node 20+, Python 3 with Pillow, and ffmpeg. */
 import http from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import worker from "./worker.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -95,6 +95,21 @@ const env = {
   META_APP_SECRET: "dev-secret",
   GRAPH_API: `http://localhost:${PORT}/__graph`,
 };
+
+// ---- add-on stand-ins: every server/devparts/*.mjs file may export
+//        env(PORT)                      extra settings for this pretend server
+//        handle(req, res, url, tools)   answer a request itself and return true; these are asked before anything below
+const devparts = [];
+for (const f of (await readdir(path.join(root, "server", "devparts")).catch(() => [])).sort()) {
+  if (f.endsWith(".mjs")) devparts.push(await import(pathToFileURL(path.join(root, "server", "devparts", f)).href));
+}
+for (const part of devparts) Object.assign(env, part.env ? part.env(PORT) : {});
+// Runs the timed jobs once, the way Cloudflare would: /__cron?cron=30 0 * * *  (default: the five-minute one)
+async function runCron(cron) {
+  const waits = [];
+  await worker.scheduled({ cron, scheduledTime: Date.now() }, env, { waitUntil: (p) => waits.push(p) });
+  await Promise.all(waits);
+}
 
 // ---- a pretend Instagram Graph API. Paste any token starting with SHORT to connect. ----
 const graphLog = [];
@@ -396,6 +411,22 @@ const readBody = (req) => new Promise((resolve, reject) => {
 http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://localhost:${PORT}`);
+    const tools = { env, PORT, readBody, runCron, worker };
+    for (const part of devparts) if (part.handle && (await part.handle(req, res, url, tools))) return;
+    if (url.pathname === "/__cron") { await runCron(url.searchParams.get("cron") || "*/5 * * * *"); res.writeHead(204).end(); return; }
+    if (url.pathname === "/__doc") {                         // read, write or remove one of the app's small stored documents
+      const key = `data/${url.searchParams.get("name")}.json`;
+      if (req.method === "PUT") { await env.MEDIA.put(key, await readBody(req)); res.writeHead(204).end(); return; }
+      if (req.method === "DELETE") { await env.MEDIA.delete(key); res.writeHead(204).end(); return; }
+      const obj = await env.MEDIA.get(key);
+      res.writeHead(obj ? 200 : 404, { "Content-Type": "application/json" }).end(obj ? await obj.text() : "null");
+      return;
+    }
+    if (url.pathname === "/__keys") {                        // what is in storage, by prefix
+      const { objects } = await env.MEDIA.list({ prefix: url.searchParams.get("prefix") || "", limit: 5000 });
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(objects.map((o) => o.key)));
+      return;
+    }
     if (url.pathname.startsWith("/__github/")) {           // pretend to be GitHub's "start workflow" call
       const body = JSON.parse((await readBody(req)).toString() || "{}");
       if (process.env.FAIL_DISPATCH) { res.writeHead(401).end(); return; }

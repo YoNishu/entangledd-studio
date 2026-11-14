@@ -14,6 +14,17 @@
      GITHUB_REPO    "owner/repo" that holds the render workflow
 */
 
+// Add-on sections, each in its own file beside this one. A section may export:
+//   open    { name: handler }   paths under /api/<name> that anyone may call (so: nothing secret, nothing private)
+//   routes  { name: handler }   paths under /api/<name> that need sign-in
+//   jobs    [{ name, everyHours, run }]   small timed jobs, run one at a time by the five-minute timer
+// Handlers are called as handler(request, env, parts, kit) and jobs as run(env, kit).
+// "kit" is the set of shared helpers gathered near the end of this file.
+import * as health from "./health.js";
+import * as scorer from "./scorer.js";
+import * as lovenotes from "./lovenotes.js";
+const SECTIONS = [health, scorer, lovenotes];
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PART_SIZE = 8 * 1024 * 1024;        // R2 needs equal parts of at least 5 MB
 const MAX_BG_BYTES = 500 * 1024 * 1024;
@@ -2383,6 +2394,7 @@ async function route(request, env, parts) {
   }
   if (parts[0] === "login" && request.method === "POST") return login(request, env);
   if (parts[0] === "passkey") return passkeyRoutes(request, env, parts, await signedIn(request, env));
+  for (const s of SECTIONS) if (s.open && Object.hasOwn(s.open, parts[0])) return s.open[parts[0]](request, env, parts, kit);
   if (parts[0] === "public" && parts[1] === "reel" && ["GET", "HEAD"].includes(request.method)) return publicReel(request, env, parts);
   if (parts[0] === "public" && parts[1] === "slide" && ["GET", "HEAD"].includes(request.method)) return publicSlide(request, env, parts);
   if (parts[0] === "render") {
@@ -2414,7 +2426,38 @@ async function route(request, env, parts) {
     if (parts[0] === "edit" && request.method === "POST") return editQuote(request, env);
     if (parts[0] === "scan" && request.method === "POST") return scanPage(request, env);
   }
+  for (const s of SECTIONS) {
+    if (!(s.routes && Object.hasOwn(s.routes, parts[0]))) continue;
+    if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
+    if (!env.MEDIA) return fail(503, "The app's storage isn't set up yet.");
+    return s.routes[parts[0]](request, env, parts, kit);
+  }
   return fail(404, "Not found.");
+}
+
+// Shared helpers handed to the add-on sections (see SECTIONS at the top).
+const kit = { json, fail, UserError, body, loadDoc, saveDoc, signedIn, claude, claudeRaw, graph, graphAny, loadIg, igReady,
+  reelsReady, stockProvider, todayIST, oneLine, lines, GRAPH_VERSION };
+
+// The sections' timed jobs. At most one runs per five-minute tick, so no single run does too much:
+// the free plan allows 50 outside calls (storage reads and writes count) and very little computing per run.
+const HOUR_MS = 60 * 60 * 1000;
+async function runOneDueJob(env) {
+  const jobs = SECTIONS.flatMap((s) => s.jobs || []);
+  if (!jobs.length) return;
+  const stamps = await loadDoc(env, "jobstamps", {});
+  const now = Date.now();
+  const due = jobs.find((j) => now - (stamps[j.name] || 0) >= (j.everyHours || 24) * HOUR_MS);
+  if (!due) return;
+  stamps[due.name] = now;                 // stamped before running, so a job that keeps failing can't run on every tick
+  await saveDoc(env, "jobstamps", stamps);
+  try { await due.run(env, kit); }
+  catch (e) {
+    console.error(`job ${due.name} failed`, e);
+    const again = await loadDoc(env, "jobstamps", {});
+    again[due.name] = now - (due.everyHours || 24) * HOUR_MS + HOUR_MS;   // try once more in about an hour
+    await saveDoc(env, "jobstamps", again);
+  }
 }
 
 export default {
@@ -2456,6 +2499,7 @@ export default {
       })());
       return;
     }
+    ctx.waitUntil(runOneDueJob(env).catch((e) => console.error("timed job failed", e)));
     // Every few minutes: finish any post still waiting on Instagram, in case she closed the app.
     ctx.waitUntil((async () => {
       const posts = await loadDoc(env, "posts", []);

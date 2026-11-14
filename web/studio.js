@@ -66,7 +66,7 @@
   }
 
   // What the Insights file (insights.js) borrows from here.
-  window.StudioKit = { el, getJson, friendly, compact, day };
+  window.StudioKit = { el, getJson, send, friendly, compact, day, chip, confirmDialog };
 
   // ---------- moving between the six sections ----------
   const VIEWS = ["today", "create", "library", "posts", "insights", "nishiii"];
@@ -83,6 +83,7 @@
     if (view === "posts") loadPosts();
     if (view === "insights") window.Insights.load();
     if (view === "nishiii") loadTaste();
+    document.dispatchEvent(new CustomEvent("studio:view", { detail: view }));
   }
   VIEWS.forEach((v) => $("nav-" + v).addEventListener("click", () => show(v)));
 
@@ -1029,6 +1030,7 @@
   });
   async function openSettings(message) {
     $("settings").hidden = false;
+    document.dispatchEvent(new CustomEvent("studio:settings"));
     renderFaceId();
     await loadIg();
     renderIg();
