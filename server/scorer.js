@@ -282,11 +282,14 @@ function foldOld(log, now, today) {
     if (left <= FOLD_TO) break;
     const pressing = log.rows.length > MAX_ROWS * 2;            // far too big: fold whatever is finished
     if (!closed(grp.g, now, today) || (!pressing && now - grp.t < FOLD_OLDER_MS)) break;
+    // She can go back to an old quote (an asked-for batch stays on its list for months). A group she chose from
+    // not long ago waits as rows: folded, it would leave no day before that choice testable (see "known").
+    const settled = settledAt(grp);
+    if (!pressing && now - settled < FOLD_OLDER_MS) continue;
     const { pos, neg } = outcomes(grp, true);
     for (const r of pos) add(fold, r, true, decay(grp.t));
     for (const r of neg) add(fold, r, false, decay(grp.t));
     fold.picks += pos.length; fold.passes += neg.length;
-    const settled = settledAt(grp);
     fold.upTo = Math.max(fold.upTo, grp.t); fold.known = Math.max(fold.known, Number.isFinite(settled) ? settled : now);
     for (const r of grp.rows) gone.add(r);
     left -= grp.rows.length;

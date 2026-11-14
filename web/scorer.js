@@ -7,7 +7,7 @@
   "use strict";
   const slot = document.getElementById("scorer-slot");
   if (!slot) return;
-  let busy = false, last = 0;
+  let busy = false, again = false;
 
   function render(s) {
     const { el } = window.StudioKit;
@@ -25,16 +25,15 @@
   }
 
   async function load() {
-    if (busy || !window.StudioKit) return;
-    busy = true; last = Date.now();
+    if (!window.StudioKit) return;
+    if (busy) { again = true; return; }            // asked while an answer is on its way: ask once more after it
+    busy = true;
     try { render(await window.StudioKit.getJson("scorer")); }
     catch (e) { slot.replaceChildren(); }          // nothing to say is better than an error here
-    finally { busy = false; }
+    finally { busy = false; if (again) { again = false; load(); } }
   }
 
   document.addEventListener("studio:view", (e) => { if (e.detail === "nishiii") load(); });
-  // After "Forget everything" the count starts again: the taste note changes, so look again.
-  const note = document.getElementById("taste-note");
-  if (note) new MutationObserver(() => { if (Date.now() - last > 1500 && !document.getElementById("view-nishiii").hidden) load(); })
-    .observe(note, { childList: true, characterData: true, subtree: true });
+  // After "Forget everything" the count starts again from nothing (web/studio.js says when that has happened).
+  document.addEventListener("studio:forgot", (e) => { if (e.detail === "all") load(); });
 })();
