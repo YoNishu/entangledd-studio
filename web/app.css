@@ -436,5 +436,6 @@ a.btn { text-decoration: none; }
 .lovenotes-edit > summary::-webkit-details-marker { display: none; }
 .lovenotes-edit > summary::after { content: "Show"; color: var(--glass); font-size: 13px; }
 .lovenotes-edit[open] > summary::after { content: "Hide"; }
-.lovenotes-edit[open] { display: grid; gap: 12px; }
+.lovenotes-edit > :not(summary) { margin-top: 10px; }        /* margins, not a grid gap: a gap doesn't reach inside an opened <details> in today's browsers */
+.lovenotes-edit > summary + * { margin-top: 0; }
 .lovenotes-acts { display: flex; gap: 12px; }
