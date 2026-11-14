@@ -143,12 +143,14 @@ body:has(.lock:not([hidden])) .bar .wm-heart { animation: none; }       /* behin
 .iconbtn::before { width: 22px; height: 22px; }
 .iconbtn:active { background: var(--swell); }
 
-/* Nishiii's note, in his hand: the line under the name on Today. Room for two lines is kept so little moves when
-   the note arrives. The small line above it and his signature are rose, like the heart. */
+/* Nishiii's note, in his hand: the first thing on Today, right under the name. It is part of the page, so it moves
+   up and away with the quotes and only the name stays put. Room for two lines is kept so little moves when the
+   note arrives. The small line above it and his signature are rose, like the heart. */
 .hello {
-  margin: 10px 0 2px; min-height: 54px; max-width: 620px;
+  min-height: 54px; max-width: 620px;
   font: 400 20px/1.35 var(--hand); color: var(--foam); text-wrap: pretty; overflow-wrap: break-word;
 }
+#hello { margin: 0 0 2px; }
 .sig { font-family: var(--hand); white-space: nowrap; }
 #hello .sig { margin-left: 8px; color: var(--rose); }
 #hello .sig::before { content: "\2014\00a0"; color: var(--mist); }
