@@ -21,6 +21,7 @@
      days that begin after that. Her own lines are left out of this test, since it never ranks them.
    - Once live, Nishiii is asked for about twice as many quotes. The best matches are kept, never
      more than two on one theme or by one author, plus one "wildcard" so her taste can keep growing.
+     They are shown in Nishiii's own order, as before, so her habits of the eye can't flatter the scorer.
    - A smaller second voice: themes and tones that did better than the posts around them on her
      own page get a small lift. Her picks stay the main voice. */
 
@@ -176,9 +177,10 @@ function outcomes(grp, shut) {
 }
 
 // One pass over the record. Returns the counts as they stand now, and, for each tested day, how often what was
-// known before that day began put the quote she picked above one she passed ("days", with the group each belongs
-// to in "at"). Nothing is used to predict a day unless it was settled before that day started: not the day itself,
-// not anything else from the same day, and not a choice she made later about an earlier day's quotes.
+// known before that day began put the quote she picked above one she passed ("days"; the group each belongs to is
+// in "at" and the moment its day began in "starts"). Nothing is used to predict a day unless it was settled before
+// that day started: not the day itself, not anything else from the same day, and not a choice she made later about
+// an earlier day's quotes.
 export function learn(log, now, today) {
   const order = grouped(log.rows);
   const fold = log.fold && Number.isFinite(log.fold.at) ? log.fold : null;
@@ -211,7 +213,7 @@ export function learn(log, now, today) {
   const feed = order.filter((grp) => grp.shut).sort((a, b) => a.settled - b.settled);
   // The folded counts hold days up to "known"; a day before that cannot be tested fairly against them.
   const known = fold && Number.isFinite(fold.known) ? fold.known : 0;
-  const days = [], at = [];
+  const days = [], at = [], starts = [];
   let fed = 0;
   for (const grp of order.filter((x) => x.shut && Number.isFinite(x.start)).sort((a, b) => a.start - b.start)) {
     const pos = grp.pos.filter(canRank), neg = grp.neg.filter(canRank);
@@ -222,7 +224,7 @@ export function learn(log, now, today) {
     const sp = pos.map((r) => tasteScore(ctx, r)), sn = neg.map((r) => tasteScore(ctx, r));
     let won = 0;
     for (const a of sp) for (const b of sn) won += Math.abs(a - b) < 1e-9 ? 0.5 : a > b ? 1 : 0;
-    days.push(won / (sp.length * sn.length)); at.push(grp.g);
+    days.push(won / (sp.length * sn.length)); at.push(grp.g); starts.push(grp.start);
   }
   // Everything else counts for what it knows now: the days settled since, and her choices so far in what is still open.
   while (fed < feed.length) take(feed[fed++]);
@@ -230,7 +232,7 @@ export function learn(log, now, today) {
   const back = 1 / grow(now);
   c.P *= back; c.N *= back;
   for (const [name] of FEATURES) for (const v in c.f[name]) { c.f[name][v][0] *= back; c.f[name][v][1] *= back; }
-  return { counts: c, days, at, picks, passes };
+  return { counts: c, days, at, starts, picks, passes };
 }
 
 // Is it better than chance, over the recent tested days?
@@ -247,6 +249,16 @@ export function nextState(prev, picks, ev) {
   if (picks < START_AT) return "learning";
   if (prev === "live") return ev.days < MIN_DAYS || ev.mean < STOP_MEAN || ev.z < STOP_Z || ev.recent < STOP_RECENT ? "learning" : "live";
   return ev.days >= MIN_DAYS && ev.mean >= GO_MEAN && ev.z >= GO_Z && ev.recent >= GO_RECENT ? "live" : "learning";
+}
+
+// Where it stands after a count: "live" or "learning", with the test result that decided it. Once it has stepped
+// back, what it got right (or wrong) before that no longer speaks for it: from then on it is judged only on the
+// days tested since. "back" is the moment it last stepped back; 0 if it never has.
+export function decide(prev, res, now) {
+  const wasLive = !!prev && prev.state === "live", back = (prev && Number(prev.back)) || 0;
+  const ev = judge(back ? res.days.filter((_, n) => res.starts[n] >= back) : res.days);
+  const state = nextState(wasLive ? "live" : "learning", res.picks, ev);
+  return { state, ev, back: wasLive && state !== "live" ? now : back };
 }
 
 // Keeps the record a steady size: the oldest days are folded into running counts, not dropped.
@@ -358,7 +370,10 @@ export function statusOf(m) {
 
 // ---------- choosing among candidates (only when live) ----------
 // Keeps the best "want" of the pool: the top matches, never more than two on one theme or by one
-// author, and one wildcard (the least familiar of the rest) in the last place.
+// author, and one wildcard (the least familiar of the rest). They are handed back in the order Nishiii
+// gave them, the wildcard wherever it happened to stand, not best-scored first: she may well have a habit
+// of taking the first card, and if the scorer decided which card came first, that habit would look like
+// proof that its scoring works (and the wildcard, always last, would hardly ever get its chance).
 export function choose(model, pool, want, already = []) {
   if (want < 1) return [];
   if (pool.length <= want) return pool.slice(0, want);
@@ -393,10 +408,8 @@ export function choose(model, pool, want, already = []) {
     if (chosen.length + (wild ? 1 : 0) >= want) break;
     if (!chosen.includes(e) && e !== wild) chosen.push(e);
   }
-  chosen.sort((a, b) => b.s - a.s || a.i - b.i);
-  const out = chosen.map((e) => e.item);
-  if (wild) out.push({ ...wild.item, wild: true });
-  return out;
+  const kept = wild ? [...chosen, wild] : chosen;
+  return kept.sort((a, b) => a.i - b.i).map((e) => (e === wild ? { ...e.item, wild: true } : e.item));
 }
 
 // Used by worker.js when it gathers suggestions. Gives nothing back unless the scorer is live and
@@ -565,8 +578,8 @@ async function refresh(env, kit, opts = {}) {
   if (dropped.size) log.rows = log.rows.filter((r) => !dropped.has(r.i));
 
   foldOld(log, now, today);
-  const res = learn(log, now, today), ev = judge(res.days);
-  const state = nextState(prev ? prev.state : "learning", res.picks, ev);
+  const res = learn(log, now, today);
+  const { state, ev, back } = decide(prev, res, now);
   const feat = {};
   for (const [name] of FEATURES) {
     feat[name] = {};
@@ -576,7 +589,7 @@ async function refresh(env, kit, opts = {}) {
     }
   }
   const model = {
-    v: 1, at: now, seen: history ? lastAt(history) : (prev && prev.seen) || 0, state, since: prev && prev.state === state ? prev.since || now : now,
+    v: 1, at: now, seen: history ? lastAt(history) : (prev && prev.seen) || 0, state, since: prev && prev.state === state ? prev.since || now : now, back,
     picks: res.picks, passes: res.passes, base: [round3(res.counts.P), round3(res.counts.N)], feat,
     eval: { days: ev.days, mean: round3(ev.mean), z: round3(ev.z), recent: round3(ev.recent) },
     aud: posts ? audience(posts) : (prev && prev.aud) || null,
