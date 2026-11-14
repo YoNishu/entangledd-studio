@@ -34,6 +34,9 @@ runs:
         prefix="render-tools-v2-${ImageOS:-linux}-${ImageVersion:-0}-${py}-${hash}-"
         echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
         echo "key=${prefix}${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-1}" >> "$GITHUB_OUTPUT"
+        # Should fetching the kept copy ever stall, give up after one minute (GitHub's own limit is ten) and
+        # install the long way instead.
+        echo "SEGMENT_DOWNLOAD_TIMEOUT_MINS=1" >> "$GITHUB_ENV"
     - id: restore
       uses: actions/cache/restore@v5
       continue-on-error: true            # no copy, or fetching it failed: tools.sh installs the long way

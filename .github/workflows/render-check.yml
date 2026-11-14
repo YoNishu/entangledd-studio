@@ -75,6 +75,7 @@ jobs:
         id: tools
         uses: ./.github/actions/render-tools
         continue-on-error: true
+        timeout-minutes: 4
 
       - name: Install ffmpeg and Pillow
         if: ${{ steps.tools.outcome != 'success' }}
@@ -133,6 +134,7 @@ jobs:
         id: tools
         uses: ./.github/actions/render-tools
         continue-on-error: true
+        timeout-minutes: 4
 
       - name: Install ffmpeg and Pillow
         if: ${{ steps.tools.outcome != 'success' }}
@@ -188,6 +190,7 @@ jobs:
         id: tools
         uses: ./.github/actions/render-tools
         continue-on-error: true
+        timeout-minutes: 4
 
       - name: Install ffmpeg and Pillow
         if: ${{ steps.tools.outcome != 'success' }}
