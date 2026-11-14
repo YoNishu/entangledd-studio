@@ -25,6 +25,11 @@ function likeCloudflare(bucket) {
   };
 }
 
+// Run the pretend server with CLAUDE_DAILY_CAP=5 to try a small daily limit on questions to Claude.
+export function env() {
+  return process.env.CLAUDE_DAILY_CAP ? { CLAUDE_DAILY_CAP: process.env.CLAUDE_DAILY_CAP } : {};
+}
+
 export async function handle(req, res, url, tools) {
   const bucket = tools.env.MEDIA;
   likeCloudflare(bucket);
