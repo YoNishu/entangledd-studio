@@ -50,17 +50,19 @@
     const text = K.el("div", {},
       K.el("p", { className: "main", textContent: item.title }),
       K.el("p", { className: "sub", textContent: item.line }));
-    if (item.fix && item.fix.length) {
-      text.append(K.el("details", { className: "explain", id: `health-fix-${item.id}` },
-        K.el("summary", { textContent: "How to fix it" }),
-        K.el("ol", { className: "steps" }, ...item.fix.map((step) => K.el("li", { textContent: step })))));
-    }
     if (item.action === "reconnect") {
       const again = K.el("button", { className: "btn", id: "health-reconnect", type: "button", textContent: "Connect again" });
       again.addEventListener("click", showConnect);
       text.append(again);
     }
-    return K.el("li", { id: `health-item-${item.id}` }, text, K.chip(colour, word));
+    const row = K.el("li", { id: `health-item-${item.id}` }, text, K.chip(colour, word));
+    // The steps get the full width of the line, under the title and the label.
+    if (item.fix && item.fix.length) {
+      row.append(K.el("details", { className: "explain health-fix", id: `health-fix-${item.id}` },
+        K.el("summary", { textContent: "How to fix it" }),
+        K.el("ol", { className: "steps" }, ...item.fix.map((step) => K.el("li", { textContent: step })))));
+    }
+    return row;
   }
 
   // Brings up the Instagram token box that Settings already has, without disconnecting first:

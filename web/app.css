@@ -415,6 +415,8 @@ a.btn { text-decoration: none; }
 .health .chip { white-space: nowrap; margin-top: 1px; }
 .health .explain { margin-top: 4px; }
 .health .steps { margin-top: 4px; font-size: 13.5px; }
+.health .health-fix { grid-column: 1 / -1; margin-top: -4px; }
+.health .steps li { display: list-item; background: none; border-radius: 0; padding: 0; }
 .health li .btn { margin-top: 10px; }
 .health-rest > summary { padding: 2px 0; }
 .health-rest > .list { margin-top: 8px; }
