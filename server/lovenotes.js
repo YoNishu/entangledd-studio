@@ -51,7 +51,14 @@ const listOf = (v) => (Array.isArray(v) ? v : []);
 // The stored document. Anything in it that isn't in the expected shape is left out, so one
 // damaged entry can't stop the notes.
 async function load(env, kit) {
-  const doc = await kit.loadDoc(env, DOC, null);
+  let doc;
+  try { doc = await kit.loadDoc(env, DOC, null); }
+  catch (e) {
+    // Said in our own words and nothing else: the storage's own error can quote the text it could
+    // not read, and no note may reach a log. The stored document is left alone.
+    console.error("little notes: the notes could not be read just now");
+    throw new kit.UserError(503, "The notes couldn't be read just now. Try again in a minute.");
+  }
   const state = { ...blank(), ...(doc && typeof doc === "object" && !Array.isArray(doc) ? doc : {}) };
   state.notes = listOf(state.notes).filter((n) => n && typeof n.id === "string" && typeof n.text === "string");
   state.bag = listOf(state.bag);
@@ -131,7 +138,7 @@ async function hashOf(box) {
   return hashes.get(box);
 }
 
-const PER_PASS = 8;          // deliveries opened in one request or one job run, so no run does much; any others wait their turn
+const PER_PASS = 4;          // deliveries opened in one request or one job run (each takes under a millisecond of computing); any others wait their turn
 const MAX_BOX = 200000;      // characters. A full set of the longest notes, sealed, is well under this.
 const RETRY_MS = 60 * 1000;  // after something went wrong, the timed job and the open key address leave it alone this long
 let retryAt = 0;
@@ -233,10 +240,7 @@ async function allSeen() {
 async function catchUp(env, kit) {
   if (!deliveries.list.length || Date.now() < retryAt || (await allSeen())) return;
   try { await loadAll(env, kit); }
-  catch (e) {
-    retryAt = Date.now() + RETRY_MS;
-    console.error("little notes: the notes could not be read just now");
-  }
+  catch (e) { retryAt = Date.now() + RETRY_MS; }     // already noted in the log by load()
 }
 
 // ---------- the app's own key pair ----------
