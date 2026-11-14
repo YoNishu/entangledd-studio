@@ -14,8 +14,11 @@
      speaks to, whether its wording is certain) it counts how often she picks that, compared with how
      often she picks anything. Recent choices count more; a value seen only a few times moves little.
    - Before it may rank anything it needs 50 picks AND proof on her own past choices: going day by
-     day, would what it knew from the earlier days have put the quote she picked above the ones she
+     day, would what it knew before that day began have put the quote she picked above the ones she
      passed, clearly more often than chance? If it stops being that good it goes back to learning.
+     "Knew before" is taken strictly: a day's list (or an asked-for batch) is learned from only once
+     nothing in it can change by itself and her last choice in it has been made, and only for the
+     days that begin after that. Her own lines are left out of this test, since it never ranks them.
    - Once live, Nishiii is asked for about twice as many quotes. The best matches are kept, never
      more than two on one theme or by one author, plus one "wildcard" so her taste can keep growing.
    - A smaller second voice: themes and tones that did better than the posts around them on her
@@ -31,7 +34,7 @@ const MIN_DAYS = 20, WINDOW = 60;           // tested days needed, and how many 
 const GO_MEAN = 0.56, GO_Z = 2.5;           // to go live: right this often, and this sure it isn't luck
 const STOP_MEAN = 0.52, STOP_Z = 1.0;       // to step back: lower bars, so it doesn't flip back and forth
 const RECENT = 10, GO_RECENT = 0.56, STOP_RECENT = 0.4;  // and the last ten tested days on their own: a sudden change of taste shows here first
-const LOOKBACK_DAYS = 7, BACKFILL_PER_RUN = 4, DAILY = 5;
+const LOOKBACK_DAYS = 7, BACKFILL_PER_RUN = 2, DAILY = 5;
 const MAX_ASK = 12, SAME_THEME = 2, SAME_AUTHOR = 2;
 const AUDIENCE_MIN_POSTS = 3, AUDIENCE_CAP = 0.5;
 const REFRESH_MS = 6 * 3600 * 1000;
@@ -130,7 +133,7 @@ function tasteScore(ctx, r) {
 }
 
 // ---------- learning from the record ----------
-const emptyLog = () => ({ v: 1, rows: [], fold: null, histAt: 0, postsAt: 0, since: 0, back: "", backTo: "" });
+const emptyLog = () => ({ v: 1, rows: [], fold: null, histAt: 0, since: 0, back: "", backTo: "" });
 const soundLog = (l) => !!l && l.v === 1 && Array.isArray(l.rows);
 
 function closed(g, now, today) {
@@ -138,6 +141,19 @@ function closed(g, now, today) {
   if (g[0] === "a") return now - Number(g.slice(1)) >= DAY_MS; // an asked-for batch: a day after she asked
   return true;                                                 // a single choice known only from the record
 }
+// The moment a group stops changing by itself (the same rule as above, as a time), and the start of the day it belongs to.
+const closesAt = (g, t) => (isDay(g) ? noonOf(g) + DAY_MS / 2 : g[0] === "a" ? Number(g.slice(1)) + DAY_MS : t);
+const dayStart = (g, t) => noonOf(isDay(g) ? g : istDate(t)) - DAY_MS / 2;
+// When everything about a finished group was known: when it closed, or her last choice in it if that came later
+// (she can go back to a quote from earlier in the week). Only after this moment may anything be learned from it.
+function settledAt(grp) {
+  let at = closesAt(grp.g, grp.t);
+  for (const r of grp.rows) if (r.s && r.u > at) at = r.u;
+  return Number.isFinite(at) ? at : Infinity;
+}
+// Her own lines go into a day's five as they are, one chosen at random; it never ranks them. So the test of
+// whether it ranks well compares only the quotes it could have ranked.
+const canRank = (r) => r.k !== "own";
 function grouped(rows) {
   const groups = new Map();
   for (const r of rows) {
@@ -159,8 +175,10 @@ function outcomes(grp, shut) {
   return { pos, neg };
 }
 
-// One pass over the record in time order. Returns the counts as they stand now, and, for each later
-// day, how often what was known from the earlier days put the quote she picked above one she passed.
+// One pass over the record. Returns the counts as they stand now, and, for each tested day, how often what was
+// known before that day began put the quote she picked above one she passed ("days", with the group each belongs
+// to in "at"). Nothing is used to predict a day unless it was settled before that day started: not the day itself,
+// not anything else from the same day, and not a choice she made later about an earlier day's quotes.
 export function learn(log, now, today) {
   const order = grouped(log.rows);
   const fold = log.fold && Number.isFinite(log.fold.at) ? log.fold : null;
@@ -177,26 +195,42 @@ export function learn(log, now, today) {
     }
     picks = fold.picks || 0; passes = fold.passes || 0;
   }
-  const days = [];
-  for (const grp of order) {
-    const shut = closed(grp.g, now, today);
-    const { pos, neg } = outcomes(grp, shut);
-    if (shut && pos.length && neg.length && picks >= WARMUP_PICKS) {
-      const ctx = prepare(c, 1 / grow(grp.t));
-      const sp = pos.map((r) => tasteScore(ctx, r)), sn = neg.map((r) => tasteScore(ctx, r));
-      let won = 0;
-      for (const a of sp) for (const b of sn) won += Math.abs(a - b) < 1e-9 ? 0.5 : a > b ? 1 : 0;
-      days.push(won / (sp.length * sn.length));
-    }
+  const take = (grp) => {
     const u = grow(grp.t);
-    for (const r of pos) add(c, r, true, u);
-    for (const r of neg) add(c, r, false, u);
-    picks += pos.length; passes += neg.length;
+    for (const r of grp.pos) add(c, r, true, u);
+    for (const r of grp.neg) add(c, r, false, u);
+    picks += grp.pos.length; passes += grp.neg.length;
+  };
+  for (const grp of order) {
+    grp.shut = closed(grp.g, now, today);
+    Object.assign(grp, outcomes(grp, grp.shut));
+    grp.settled = grp.shut ? settledAt(grp) : Infinity;
+    grp.start = dayStart(grp.g, grp.t);
   }
+  // Finished groups in the order in which they were settled: the order in which it could have learned from them.
+  const feed = order.filter((grp) => grp.shut).sort((a, b) => a.settled - b.settled);
+  // The folded counts hold days up to "known"; a day before that cannot be tested fairly against them.
+  const known = fold && Number.isFinite(fold.known) ? fold.known : 0;
+  const days = [], at = [];
+  let fed = 0;
+  for (const grp of order.filter((x) => x.shut && Number.isFinite(x.start)).sort((a, b) => a.start - b.start)) {
+    const pos = grp.pos.filter(canRank), neg = grp.neg.filter(canRank);
+    if (!pos.length || !neg.length) continue;
+    while (fed < feed.length && feed[fed].settled <= grp.start) take(feed[fed++]);
+    if (picks < WARMUP_PICKS || grp.start < known) continue;
+    const ctx = prepare(c, 1 / grow(grp.t));
+    const sp = pos.map((r) => tasteScore(ctx, r)), sn = neg.map((r) => tasteScore(ctx, r));
+    let won = 0;
+    for (const a of sp) for (const b of sn) won += Math.abs(a - b) < 1e-9 ? 0.5 : a > b ? 1 : 0;
+    days.push(won / (sp.length * sn.length)); at.push(grp.g);
+  }
+  // Everything else counts for what it knows now: the days settled since, and her choices so far in what is still open.
+  while (fed < feed.length) take(feed[fed++]);
+  for (const grp of order) if (!grp.shut) take(grp);
   const back = 1 / grow(now);
   c.P *= back; c.N *= back;
   for (const [name] of FEATURES) for (const v in c.f[name]) { c.f[name][v][0] *= back; c.f[name][v][1] *= back; }
-  return { counts: c, days, picks, passes };
+  return { counts: c, days, at, picks, passes };
 }
 
 // Is it better than chance, over the recent tested days?
@@ -220,11 +254,14 @@ function foldOld(log, now, today) {
   if (log.rows.length <= MAX_ROWS) return;
   const order = grouped(log.rows);
   const decay = (t) => Math.pow(2, -(now - t) / HALF_LIFE_MS);
-  const fold = { at: now, picks: 0, passes: 0, ...emptyCounts() };
+  // upTo: the time of the newest group folded (nothing at or before it is gathered again);
+  // known: the latest moment anything folded was settled (no day before that is tested against these counts).
+  const fold = { at: now, upTo: 0, known: 0, picks: 0, passes: 0, ...emptyCounts() };
   const old = log.fold && Number.isFinite(log.fold.at) ? log.fold : null;
   if (old) {
     const d = decay(old.at);
     fold.P = (old.P || 0) * d; fold.N = (old.N || 0) * d; fold.picks = old.picks || 0; fold.passes = old.passes || 0;
+    fold.upTo = Number(old.upTo) || 0; fold.known = Number(old.known) || 0;
     for (const [name] of FEATURES) for (const v in (old.f && old.f[name]) || {}) { const e = pairAt(old.f[name], v); if (e) fold.f[name][v] = [e[0] * d, e[1] * d]; }
   }
   const gone = new Set();
@@ -237,6 +274,8 @@ function foldOld(log, now, today) {
     for (const r of pos) add(fold, r, true, decay(grp.t));
     for (const r of neg) add(fold, r, false, decay(grp.t));
     fold.picks += pos.length; fold.passes += neg.length;
+    const settled = settledAt(grp);
+    fold.upTo = Math.max(fold.upTo, grp.t); fold.known = Math.max(fold.known, Number.isFinite(settled) ? settled : now);
     for (const r of grp.rows) gone.add(r);
     left -= grp.rows.length;
   }
@@ -365,7 +404,7 @@ export function choose(model, pool, want, already = []) {
 export async function ranker(env, kit) {
   try {
     const m = await kit.loadDoc(env, "scorer/model", null);
-    if (!usable(m) || m.state !== "live") return null;
+    if (!usable(m) || m.state !== "live" || !(m.picks >= START_AT)) return null;
     return {
       ask: (want) => Math.min(MAX_ASK, Math.max(want + 2, want * 2)),
       choose: (pool, want, already) => {
@@ -377,46 +416,80 @@ export async function ranker(env, kit) {
 }
 
 // "Forget everything" in the Nishiii section: the record and the model go, and nothing from before
-// this moment is gathered again.
+// this moment is gathered again. The mark is written first and is never touched by anything else, so a
+// count that happens to be under way sees it and stops, and a record older than the mark is never believed.
 export async function forget(env, kit) {
+  const now = Date.now();
+  await kit.saveDoc(env, "scorer/forgot", { at: now });
   await Promise.all([
-    kit.saveDoc(env, "scorer/log", { ...emptyLog(), since: Date.now(), back: "done" }),
+    kit.saveDoc(env, "scorer/log", { ...emptyLog(), since: now, back: "done" }),
     env.MEDIA.delete("data/scorer/model.json"),
   ]);
+}
+// Is there anything of hers here that "Forget everything" would erase? Asked before that button offers to.
+export async function remembers(env, kit) {
+  try {
+    const m = await kit.loadDoc(env, "scorer/model", null);
+    return !!m && (Number(m.picks) || 0) + (Number(m.passes) || 0) > 0;
+  } catch (e) { return true; }                    // can't tell just now: better to offer than to say there is nothing
 }
 
 // ---------- gathering the record, then rebuilding the model ----------
 const lastAt = (history) => (Array.isArray(history) ? history : []).reduce((m, h) => Math.max(m, (h && h.at) || 0), 0);
 
+// The scorer's own documents must never be taken for "nothing there" just because they failed to load: that
+// would start the lasting record again from nothing and save over it. One more try; if it still can't be had,
+// the run stops and saves nothing. Only a document damaged beyond reading counts as gone.
+async function mustLoad(env, kit, name) {
+  for (let tries = 1; ; tries++) {
+    try { return await kit.loadDoc(env, name, null); }
+    catch (e) {
+      if (tries < 2) continue;
+      if (e && e.name === "SyntaxError") return null;
+      throw e;
+    }
+  }
+}
+const forgottenAt = async (env, kit) => { const d = await mustLoad(env, kit, "scorer/forgot"); return (d && Number(d.at)) || 0; };
+
 // light: the quick version run when she opens the Nishiii section (no posts, no older days).
 async function refresh(env, kit, opts = {}) {
   const now = Date.now(), today = kit.todayIST();
   const dates = [today, ...Array.from({ length: LOOKBACK_DAYS }, (_, i) => istDate(now - (i + 1) * DAY_MS))];
-  const quiet = (p, fallback) => Promise.resolve(p).catch(() => fallback);
-  const [log0, prev0, asked, history, posts, ...dayDocs] = await Promise.all([
-    quiet(kit.loadDoc(env, "scorer/log", null), null),
-    opts.model !== undefined ? opts.model : quiet(kit.loadDoc(env, "scorer/model", null), null),
-    quiet(kit.loadDoc(env, "asked", []), []),
-    opts.history || quiet(kit.loadDoc(env, "history", []), []),
-    opts.light ? null : quiet(kit.loadDoc(env, "posts", []), []),
-    ...dates.map((d) => quiet(kit.loadDoc(env, `suggestions/${d}`, []), [])),
+  const later = (p) => Promise.resolve(p).catch(() => null);   // the app's own lists: one that can't be read now is read on the next run
+  const [log0, prev0, forgot, asked, history, posts, ...dayDocs] = await Promise.all([
+    mustLoad(env, kit, "scorer/log"),
+    opts.model !== undefined ? opts.model : mustLoad(env, kit, "scorer/model"),
+    forgottenAt(env, kit),
+    later(kit.loadDoc(env, "asked", [])),
+    opts.history || later(kit.loadDoc(env, "history", [])),
+    opts.light ? null : later(kit.loadDoc(env, "posts", [])),
+    ...dates.map((d) => later(kit.loadDoc(env, `suggestions/${d}`, []))),
   ]);
-  const log = soundLog(log0) ? { ...emptyLog(), ...log0 } : emptyLog();
+  let log = soundLog(log0) ? { ...emptyLog(), ...log0 } : emptyLog();
+  let prev = usable(prev0) ? prev0 : null;
+  if (forgot > (log.since || 0)) {                // "Forget everything" came after this record was saved: none of it counts
+    log = { ...emptyLog(), since: forgot, back: "done" };
+    prev = null;
+  }
   log.rows = log.rows.filter((r) => r && typeof r.i === "string" && typeof r.g === "string" && r.g && Number.isFinite(r.t));
-  const prev = usable(prev0) ? prev0 : null;
   const since = log.since || 0, sinceDay = since ? istDate(since) : "";
+  // Days already folded into the running counts: nothing at or before this time is taken in again.
+  const horizon = log.fold && Number.isFinite(log.fold.upTo) ? log.fold.upTo : 0;
 
   const byId = new Map(log.rows.map((r) => [r.i, r]));
   const touched = new Set(), dropped = new Set();
   const upsert = (item, g, t) => {
     if (!item || typeof item.id !== "string" || !item.text) return;
-    const s = item.state === "used" ? 1 : item.state === "rejected" ? 2 : 0;
+    const stated = item.state === "used" ? 1 : item.state === "rejected" ? 2 : 0;
     let r = byId.get(item.id);
     if (!r) {
-      r = { i: item.id, g, t, s, u: s ? now : 0, ...describe(item) };
+      if (t <= horizon) return;
+      r = { i: item.id, g, t, s: stated, u: stated ? now : 0, ...describe(item) };
       log.rows.push(r); byId.set(r.i, r);
       dropped.add("h" + r.x);          // the same quote known only from the record of choices: this fuller entry replaces it
     } else {
+      const s = stated || (r.p ? 1 : 0);          // a post was made from it: a pick, even if the list never said "used"
       if (r.s !== s) { r.s = s; r.u = now; }
       if (r.g !== g) { r.g = g; r.t = t; }
     }
@@ -449,10 +522,12 @@ async function refresh(env, kit, opts = {}) {
     } catch (e) { console.error("scorer: could not list older days", e); }
     if (older) {                                  // if the listing failed, try again on the next run
       const batch = older.slice(0, BACKFILL_PER_RUN);
-      const docs = await Promise.all(batch.map((d) => quiet(kit.loadDoc(env, `suggestions/${d}`, []), [])));
-      batch.forEach((d, n) => takeDay(d, docs[n]));
-      if (batch.length) log.backTo = batch[batch.length - 1];
-      if (older.length <= BACKFILL_PER_RUN) log.back = "done";
+      const docs = await Promise.all(batch.map((d) => later(kit.loadDoc(env, `suggestions/${d}`, []))));
+      if (docs.every(Array.isArray)) {            // one of them could not be read: the same days are tried again next time
+        batch.forEach((d, n) => takeDay(d, docs[n]));
+        if (batch.length) log.backTo = batch[batch.length - 1];
+        if (older.length <= BACKFILL_PER_RUN) log.back = "done";
+      }
     }
   }
 
@@ -472,22 +547,20 @@ async function refresh(env, kit, opts = {}) {
   }
   log.histAt = Math.max(log.histAt || 0, lastAt(history));
 
-  // Posts made from a suggestion that isn't in the record any other way: still a pick.
+  // Posts made from a suggestion: a pick, even where the list never said "used". Every post is looked at on each
+  // full run (a reel finished in Instagram is filed under the time she handed it over, so there is no "newest so far"
+  // to go by); the mark "p" on the row keeps a post from being counted twice, and keeps the pick from being undone.
   if (posts) {
-    const fromPosts = Math.max(log.postsAt || 0, since);
-    let newest = log.postsAt || 0;
     for (const p of Array.isArray(posts) ? posts : []) {
-      if (!p || !p.created) continue;
-      newest = Math.max(newest, p.created);
-      if (!(p.created > fromPosts) || !p.suggestionId || !p.quote || !["published", "processing"].includes(p.state)) continue;
+      if (!p || !p.suggestionId || !p.quote || !(p.created > since) || !["published", "processing"].includes(p.state)) continue;
       const r = byId.get(p.suggestionId);
-      if (r) { if (r.s === 0) { r.s = 1; r.u = now; } continue; }
+      if (r) { if (!r.p) { r.p = 1; if (r.s === 0) { r.s = 1; r.u = now; } } continue; }
+      if (p.created <= horizon) continue;
       const d = describe(p);
       if ((byKey.get(d.x) || []).some((x) => !dropped.has(x.i))) continue;
-      const row = { i: p.suggestionId, g: "p" + p.suggestionId, t: p.created, s: 1, u: p.created, ...d };
+      const row = { i: p.suggestionId, g: "p" + p.suggestionId, t: p.created, s: 1, u: p.created, p: 1, ...d };
       log.rows.push(row); byId.set(row.i, row); byKey.set(d.x, [row]);
     }
-    log.postsAt = newest;
   }
   if (dropped.size) log.rows = log.rows.filter((r) => !dropped.has(r.i));
 
@@ -503,12 +576,14 @@ async function refresh(env, kit, opts = {}) {
     }
   }
   const model = {
-    v: 1, at: now, seen: lastAt(history), state, since: prev && prev.state === state ? prev.since || now : now,
+    v: 1, at: now, seen: history ? lastAt(history) : (prev && prev.seen) || 0, state, since: prev && prev.state === state ? prev.since || now : now,
     picks: res.picks, passes: res.passes, base: [round3(res.counts.P), round3(res.counts.N)], feat,
     eval: { days: ev.days, mean: round3(ev.mean), z: round3(ev.z), recent: round3(ev.recent) },
     aud: posts ? audience(posts) : (prev && prev.aud) || null,
     lately: state === "live" ? lately(res.counts) : "",
   };
+  // A last look before saving: if she tapped "Forget everything" while this was being worked out, none of it is kept.
+  if ((await forgottenAt(env, kit)) > since) return { v: 1, state: "learning", picks: 0, passes: 0 };
   await Promise.all([kit.saveDoc(env, "scorer/log", log), kit.saveDoc(env, "scorer/model", model)]);
   return model;
 }
@@ -519,13 +594,19 @@ export const routes = {
   // GET /api/scorer: where the scorer stands, in one line for the Nishiii section.
   scorer: async (request, env, parts, kit) => {
     if (request.method !== "GET" || parts.length !== 1) return kit.fail(404, "Not found.");
-    const [stored, history] = await Promise.all([
-      kit.loadDoc(env, "scorer/model", null).catch(() => null), kit.loadDoc(env, "history", []).catch(() => []),
-    ]);
-    const model = usable(stored) ? stored : null;
-    // A choice made since the last look, or no look for a while: gather and count again first.
-    const stale = !model || lastAt(history) > (model.seen || 0) || Date.now() - model.at > REFRESH_MS;
-    return kit.json(statusOf(stale ? await refresh(env, kit, { light: true, history, model }) : model));
+    let model = null;
+    try {
+      const [stored, history] = await Promise.all([mustLoad(env, kit, "scorer/model"), kit.loadDoc(env, "history", []).catch(() => null)]);
+      model = usable(stored) ? stored : null;
+      // Gather and count again first if there is no status yet, if it is a while old, or if the record of her
+      // choices is not the one it was built from: a newer choice, or the record erased ("Forget everything").
+      const stale = !model || Date.now() - model.at > REFRESH_MS || (history !== null && lastAt(history) !== (model.seen || 0));
+      if (stale) model = await refresh(env, kit, { light: true, history: history || undefined, model });
+    } catch (e) {
+      if (!model) throw e;                          // nothing stored to fall back on: the line is left out
+      console.error("scorer: could not count again; showing the stored status", e);
+    }
+    return kit.json(statusOf(model));
   },
 };
 

@@ -2049,10 +2049,10 @@ async function tasteRoutes(request, env, parts) {
   const method = request.method;
   const taste = { ...emptyTaste(), ...(await loadDoc(env, "taste", emptyTaste())) };
   const out = async (t) => {
-    const [history, rewords] = await Promise.all([loadDoc(env, "history", []), loadDoc(env, "rewords", [])]);
+    const [history, rewords, scored] = await Promise.all([loadDoc(env, "history", []), loadDoc(env, "rewords", []), scorer.remembers(env, kit)]);
     return json({ profile: t.profile, notes: t.notes, updatedAt: t.updatedAt, evidence: evidenceCount(await gatherEvidence(env)),
-      // What each "forget" would actually erase right now.
-      canForget: { profile: !!t.profile, all: !!t.profile || t.notes.length > 0 || history.length > 0 || rewords.length > 0 } });
+      // What each "forget" would actually erase right now ("scored": the scorer's own count of picks and passes).
+      canForget: { profile: !!t.profile, all: !!t.profile || t.notes.length > 0 || history.length > 0 || rewords.length > 0 || scored } });
   };
   if (parts.length === 1 && method === "GET") {
     // A profile written before Nishiii spoke to her directly is rewritten once, the first time it is opened.
