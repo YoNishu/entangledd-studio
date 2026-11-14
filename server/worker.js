@@ -2120,13 +2120,31 @@ function derToRaw(der) {
   return raw;
 }
 // A challenge is 16 random bytes, the moment it stops working (6 bytes) and a seal only this server can make
-// (16 bytes), so handing one out needs no storage at all and the phone can ask for it the instant the app opens.
-// Each still works only once: a used one is remembered until long after it would have stopped working anyway.
+// (16 bytes), so handing one out needs no writing to storage and the phone can ask for it the instant the app
+// opens. Each still works only once: a used one is remembered until long after it would have stopped working.
 const CHALLENGE_MS = 5 * 60 * 1000;
+// The seal's key is 32 random bytes that the server makes for itself the first time one is needed, and keeps in
+// storage. It is never sent anywhere and has nothing to do with the passcode, so a challenge (which anyone may
+// ask for) gives away nothing that could help someone guess the passcode.
+const SEAL_KEY_AT = "secret/challenge-seal", SEAL_KEY_KEPT_MS = 60 * 60 * 1000;
+let sealKeyKept = null;                              // { key, at }: storage is asked about once an hour at most
+async function sealKey(env) {
+  if (sealKeyKept && Date.now() - sealKeyKept.at < SEAL_KEY_KEPT_MS) return sealKeyKept.key;
+  let obj = await env.MEDIA.get(SEAL_KEY_AT), found = !!obj;
+  if (!obj) {
+    // Only the first copy ever written is stored ("If-None-Match: *"), and the stored copy is the one used.
+    await env.MEDIA.put(SEAL_KEY_AT, b64u.enc(crypto.getRandomValues(new Uint8Array(32))), { onlyIf: new Headers({ "If-None-Match": "*" }) });
+    obj = await env.MEDIA.get(SEAL_KEY_AT);
+  }
+  const raw = b64u.dec(await obj.text());
+  if (raw.length !== 32) throw new Error("The stored seal key is damaged.");
+  const key = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  // Kept in memory only once it was found already stored, so two first-ever requests can't each keep their own.
+  if (found) sealKeyKept = { key, at: Date.now() };
+  return key;
+}
 async function challengeSeal(env, head) {
-  const k = await crypto.subtle.importKey("raw", new TextEncoder().encode("passkey-challenge-v1:" + env.APP_PASSCODE),
-    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  return new Uint8Array(await crypto.subtle.sign("HMAC", k, head)).slice(0, 16);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", await sealKey(env), head)).slice(0, 16);
 }
 async function makeChallenge(env) {
   const c = new Uint8Array(38);
@@ -2142,24 +2160,24 @@ async function takeChallenge(env, clientDataB64, type, request) {
   try { client = JSON.parse(new TextDecoder().decode(b64u.dec(clientDataB64))); } catch (e) { throw new UserError(400, "The device's reply couldn't be read."); }
   try { c = b64u.dec(client.challenge); } catch (e) { throw expired(); }
   if (c.length !== 38) throw expired();
-  const seal = await challengeSeal(env, c.slice(0, 22));
+  // The seal and the "already used?" look-up are fetched side by side; nothing is accepted until both are in.
+  const usedKey = `auth/used-${b64u.enc(c.slice(0, 16))}.json`;
+  const [seal, used] = await Promise.all([challengeSeal(env, c.slice(0, 22)), env.MEDIA.head(usedKey)]);
   let diff = 0, exp = 0;
   for (let i = 0; i < 16; i++) diff |= seal[i] ^ c[22 + i];
   for (let i = 16; i < 22; i++) exp = exp * 256 + c[i];
   if (diff !== 0 || client.type !== type || client.origin !== new URL(request.url).origin) {
     throw new UserError(401, "That unlock attempt wasn't valid. Try again.");
   }
-  if (Date.now() > exp) throw expired();
-  const key = `auth/used-${b64u.enc(c.slice(0, 16))}.json`;
-  if (await env.MEDIA.head(key)) throw expired();     // each challenge works once
-  await env.MEDIA.put(key, JSON.stringify({ exp }));
+  if (Date.now() > exp || used) throw expired();      // each challenge works once, and only for five minutes
+  await env.MEDIA.put(usedKey, JSON.stringify({ exp }));
 }
 
 async function passkeyRoutes(request, env, parts, authed) {
   const method = request.method;
   if (!env.APP_PASSCODE || !env.MEDIA) return fail(503, "The Face ID lock isn't set up yet.");
 
-  // No storage is touched here, so this answers as fast as the network allows.
+  // Nothing is written here, and storage is read at most once an hour (for the seal's key), so this answers fast.
   if (parts[1] === "challenge" && method === "POST") return json({ id: "sealed", challenge: await makeChallenge(env) });
 
   if (parts[1] === "login" && method === "POST") {
