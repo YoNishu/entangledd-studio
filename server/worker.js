@@ -1100,8 +1100,11 @@ async function publicReel(request, env, parts) {
   return obj ? new Response(obj.body, { headers: { ...base, "Content-Length": String(obj.size) } }) : new Response("Not found", { status: 404 });
 }
 
+// The name of the Instagram song on a post, as words. It is kept as plain text; a record that holds it as
+// {title: ...} instead still reads properly rather than as "[object Object]".
+const musicName = (m) => (typeof m === "string" ? m : m && typeof m === "object" ? oneLine(m.title || m.name || "", 120) || "a song" : "");
 const publicPost = (p) => ({ id: p.id, state: p.state, error: p.error, caption: p.caption, quote: p.quote, author: p.author,
-  music: p.music, via: p.via || "app", created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null,
+  music: musicName(p.music) || null, via: p.via || "app", created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null,
   kind: p.kind || "reel", slides: p.slides || 0 });
 const tokenFor = (ig, post) => (post.tokenKind === "user" ? ig.userToken : ig.pageToken);
 
@@ -1501,7 +1504,7 @@ function buildInsights(allPosts, range, now) {
       theme: p.theme || "", tone: p.tone || "", reach: reachOf(p), views: m.views || 0, likes: m.likes || 0, comments: m.comments || 0, saved: m.saved || 0, shares: m.shares || 0,
       interactions: interactionsOf(m), rate: share(interactionsOf(m), reachOf(p)), watch: m.watch || null, skip: m.skip != null ? m.skip : null,
       background: made.bg ? (made.bg === "plain" ? "plain" : `${made.bgFrom === "search" ? "searched" : "own"} ${made.bg}`) : "",
-      music: p.music ? `Instagram: ${p.music}` : made.music ? `${made.music === "library" ? "Free library" : "Own"}${made.musicTitle ? `: ${made.musicTitle}` : ""}` : "" };
+      music: p.music ? `Instagram: ${musicName(p.music)}` : made.music ? `${made.music === "library" ? "Free library" : "Own"}${made.musicTitle ? `: ${made.musicTitle}` : ""}` : "" };
   });
 
   // Reach over time: a bar per post while there are few, a bar per week once there are many.
@@ -2031,7 +2034,7 @@ async function gatherEvidence(env) {
     skipped: history.filter((h) => h.action === "rejected").slice(-40).map(slim),
     rewordRequests: rewords.slice(-25).map((r) => ({ asked: r.asked, before: r.before, after: r.after })),
     ownLines: (lib.quotes || []).slice(-25).map((q) => q.text),
-    posted: posts.filter((p) => p.state === "published").slice(-30).map((p) => ({ quote: p.quote, author: p.author, music: p.music || "", ...(p.metrics || {}) })),
+    posted: posts.filter((p) => p.state === "published").slice(-30).map((p) => ({ quote: p.quote, author: p.author, music: musicName(p.music), ...(p.metrics || {}) })),
     loved: insp.slice(-30).map((i) => ({ from: i.handle ? "@" + i.handle : i.kind, quote: i.quote || "", look: i.style || "",
       topPosts: (i.top || []).slice(0, 5).map((t) => ({ quote: t.quote || "", caption: (t.caption || "").slice(0, 160), likes: t.likes, views: t.views })) })),
   };
@@ -2302,7 +2305,7 @@ async function runChatTool(env, name, input, actions) {
   }
   if (name === "get_posts") {
     const posts = await loadDoc(env, "posts", []);
-    return posts.filter((p) => p.state === "published").slice(-12).reverse().map((p) => ({ quote: p.quote, posted: new Date(p.published || p.created).toISOString().slice(0, 10), music: p.music || "", ...(p.metrics || { numbers: "not available yet" }) }));
+    return posts.filter((p) => p.state === "published").slice(-12).reverse().map((p) => ({ quote: p.quote, posted: new Date(p.published || p.created).toISOString().slice(0, 10), music: musicName(p.music), ...(p.metrics || { numbers: "not available yet" }) }));
   }
   if (name === "get_week") {
     const w = weekStats(await loadDoc(env, "posts", []), Date.now());
