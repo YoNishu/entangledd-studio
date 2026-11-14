@@ -117,7 +117,7 @@ function choose(state, today, dayText) {
 // ---------- sealed deliveries ----------
 // The deliveries this version of the app was deployed with. (The local stand-in server swaps the
 // list through setDeliveries to act out a new deploy.)
-const deliveries = { list: SEALED };
+const deliveries = { list: SEALED.map(String) };
 const seen = new Map();      // delivery hash → opened fine (true) or not (false), as far as this running copy knows
 const hashes = new Map();    // delivery text → its hash
 async function hashOf(box) {
@@ -313,7 +313,7 @@ export let jobs = deliveries.list.length ? [DELIVERY_JOB] : [];   // { name, eve
 
 // For the local stand-in server only: act out "a new version was deployed with these deliveries".
 export function setDeliveries(list) {
-  deliveries.list = list;
+  deliveries.list = list.map(String);
   seen.clear();
   jobs = list.length ? [DELIVERY_JOB] : [];
 }

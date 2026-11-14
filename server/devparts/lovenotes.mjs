@@ -7,6 +7,8 @@
 //                             without "day" the real time comes back
 //   GET /__notes_claude_log   everything this pretend server has sent to the pretend Claude, so a test
 //                             can prove that no note was ever in it
+//   GET /__notes_ops          every storage read and write since this was last asked ("get data/x.json", ...),
+//                             so a test can prove that a quiet job really touches nothing
 import { setDeliveries } from "../lovenotes.js";
 
 const realNow = Date.now.bind(Date);
@@ -21,7 +23,26 @@ globalThis.fetch = (input, init) => {
   return realFetch(input, init);
 };
 
+let ops = null;
+function watchStorage(bucket) {
+  if (ops) return;
+  ops = [];
+  for (const name of ["get", "put", "delete", "head", "list"]) {
+    const real = bucket[name].bind(bucket);
+    bucket[name] = (key, ...rest) => {
+      ops.push(`${name} ${typeof key === "string" ? key : JSON.stringify(key)}`);
+      if (ops.length > 5000) ops.splice(0, 1000);
+      return real(key, ...rest);
+    };
+  }
+}
+
 export async function handle(req, res, url, tools) {
+  watchStorage(tools.env.MEDIA);
+  if (url.pathname === "/__notes_ops") {
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(ops.splice(0)));
+    return true;
+  }
   if (url.pathname === "/__notes_sealed" && req.method === "PUT") {
     setDeliveries(JSON.parse((await tools.readBody(req)).toString() || "[]"));
     res.writeHead(204).end();
