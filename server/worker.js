@@ -591,8 +591,9 @@ async function suggestFrom(env, b, already) {
 
 // Marks each quote with what really happened to it: "posted", or "deleted" if the post made from it
 // was later removed on Instagram. "Used" alone only means it was opened in Create.
-async function withFate(env, items, checkInstagram) {
-  const posts = await loadDoc(env, "posts", []);
+// "posts" may be handed in by a caller that fetched it side by side with its own document.
+async function withFate(env, items, checkInstagram, posts) {
+  if (!posts) posts = await loadDoc(env, "posts", []);
   const ids = new Set(items.map((i) => i.id));
   const linked = posts.filter((p) => p.suggestionId && ids.has(p.suggestionId));
   if (checkInstagram && linked.some((p) => p.state === "published") && igReady(env)) {
@@ -619,19 +620,19 @@ const pastDates = (n) => Array.from({ length: n }, (_, i) => new Date(Date.now()
 const daily = (day) => day.filter((i) => !i.askedFor).slice(0, DAILY);
 async function suggestionRoutes(request, env, parts) {
   const method = request.method, date = todayIST();
-  const visible = async (day, checkInstagram) =>
-    json({ date, items: await withFate(env, daily(day).filter((i) => i.state !== "rejected"), checkInstagram) });
+  const visible = async (day, checkInstagram, posts) =>
+    json({ date, items: await withFate(env, daily(day).filter((i) => i.state !== "rejected"), checkInstagram, posts) });
   if (parts.length === 1 && method === "GET") {
-    const day = await loadDoc(env, `suggestions/${date}`, []);
-    if (daily(day).length || !env.ANTHROPIC_API_KEY) return visible(day, true);
-    return visible((await generateSuggestions(env, DAILY)).items, false);
+    const [day, posts] = await Promise.all([loadDoc(env, `suggestions/${date}`, []), loadDoc(env, "posts", [])]);
+    if (daily(day).length || !env.ANTHROPIC_API_KEY) return visible(day, true, posts);
+    return visible((await generateSuggestions(env, DAILY)).items, false, posts);
   }
   if (parts[1] === "history" && method === "GET") {
     // The previous seven days, newest first. Days with nothing left to show are left out.
     const dates = pastDates(HISTORY_DAYS);
-    const days = await Promise.all(dates.map((d) => loadDoc(env, `suggestions/${d}`, [])));
+    const [posts, ...days] = await Promise.all([loadDoc(env, "posts", []), ...dates.map((d) => loadDoc(env, `suggestions/${d}`, []))]);
     const kept = days.map((day) => daily(day).filter((i) => i.state !== "rejected"));
-    const marked = await withFate(env, kept.flat(), false);
+    const marked = await withFate(env, kept.flat(), false, posts);
     let at = 0;
     const out = dates.map((d, n) => ({ date: d, items: marked.slice(at, (at += kept[n].length)) })).filter((x) => x.items.length);
     return json({ days: out });
@@ -655,8 +656,9 @@ async function suggestionRoutes(request, env, parts) {
 const ASKED_KEEP = 40;
 async function askedRoutes(request, env, parts) {
   const method = request.method;
-  const list = await loadDoc(env, "asked", []);
-  const reply = async (items, checkInstagram) => json({ items: await withFate(env, items.slice().reverse(), checkInstagram) });
+  // Showing the list also needs the posts (to mark what was posted): both are fetched side by side.
+  const [list, posts] = await Promise.all([loadDoc(env, "asked", []), parts.length === 1 && method === "GET" ? loadDoc(env, "posts", []) : null]);
+  const reply = async (items, checkInstagram) => json({ items: await withFate(env, items.slice().reverse(), checkInstagram, posts) });
   if (parts.length === 1 && method === "GET") return reply(list, true);
   if (parts.length === 1 && method === "POST") {
     const fresh = await suggestFrom(env, await body(request), list);
@@ -1130,8 +1132,7 @@ async function createContainer(env, ig, params, wantUser) {
 async function postRoutes(request, env, parts) {
   const method = request.method;
   if (!igReady(env)) return fail(503, "Instagram isn't set up yet.");
-  const ig = await loadIg(env);
-  const posts = await loadDoc(env, "posts", []);
+  const [ig, posts] = await Promise.all([loadIg(env), loadDoc(env, "posts", [])]);
 
   if (parts.length === 1 && method === "GET") {
     // Opening the list is when numbers are refreshed and posts deleted on Instagram are noticed.
@@ -1149,8 +1150,8 @@ async function postRoutes(request, env, parts) {
     const b = await body(request);
     if (Array.isArray(b.slides)) return postCarousel(request, env, ig, posts, b);
     if (!UUID.test(b.jobId || "")) return fail(400, "Create the reel first.");
-    const job = await readJob(env, b.jobId);
-    if (!job || job.state !== "done" || !(await env.MEDIA.head(jobKey(b.jobId, "reel.mp4")))) return fail(409, "That reel is no longer saved. Create it again, then post.");
+    const [job, saved] = await Promise.all([readJob(env, b.jobId), env.MEDIA.head(jobKey(b.jobId, "reel.mp4"))]);
+    if (!job || job.state !== "done" || !saved) return fail(409, "That reel is no longer saved. Create it again, then post.");
     if (posts.some((p) => p.jobId === b.jobId && (p.state === "processing" || p.state === "published"))) return fail(409, "This reel has already been posted.");
     let caption = String(b.caption || "").trim().slice(0, 2200);
     // A track whose licence asks for credit always carries it in the caption, even if the line was edited out.
@@ -1171,8 +1172,7 @@ async function postRoutes(request, env, parts) {
       made: cleanMade(b.made), created: Date.now(), published: null, permalink: "" };
     if (job.music) post.made = { ...(post.made || cleanMade({})), music: job.music.from, musicTitle: job.music.title };
     posts.push(post);
-    await saveDoc(env, "posts", posts.slice(-500));
-    const queue = await loadDoc(env, "queue", []);
+    const [, queue] = await Promise.all([saveDoc(env, "posts", posts.slice(-500)), loadDoc(env, "queue", [])]);
     if (queue.some((q) => q.jobId === b.jobId)) await saveDoc(env, "queue", queue.filter((q) => q.jobId !== b.jobId));
     return json(publicPost(post));
   }
@@ -1539,8 +1539,9 @@ function buildInsights(allPosts, range, now) {
 }
 
 // The account's own numbers: followers each day (kept by the app), and what Instagram reports for the page as a whole.
-async function snapshotAccount(env, ig, { force = false } = {}) {
-  const acct = await loadDoc(env, "account", { days: [] });
+// "acct" may be handed in by a caller that has just fetched the record itself.
+async function snapshotAccount(env, ig, { force = false, acct = null } = {}) {
+  if (!acct) acct = await loadDoc(env, "account", { days: [] });
   const today = todayIST();
   const have = acct.days.find((d) => d.d === today);
   if (have && !force && Date.now() - (have.at || 0) < 6 * 3600 * 1000) return acct;
@@ -1630,15 +1631,15 @@ async function insightRoutes(request, env, parts) {
   const asked = new URL(request.url).searchParams.get("range");
   const range = Object.prototype.hasOwnProperty.call(RANGE_DAYS, asked) ? asked : "all";
   if (parts[1] === "advice") return json(await insightAdvice(env, range));
-  const posts = await loadDoc(env, "posts", []);
-  const ig = igReady(env) ? await loadIg(env) : null;
-  let acct = await loadDoc(env, "account", { days: [] }), page = null, people = null;
+  const loaded = await Promise.all([loadDoc(env, "posts", []), igReady(env) ? loadIg(env) : null, loadDoc(env, "account", { days: [] })]);
+  const posts = loaded[0], ig = loaded[1];
+  let acct = loaded[2], page = null, people = null;
   if (ig) {
     // Bring the numbers up to date first, so everything below agrees with Instagram.
     // (Posts that were deleted on Instagram are noticed when the Posts section opens.)
     const linked = await adoptFromInstagram(env, ig, posts);
     if ((await refreshInsights(env, ig, posts, { max: 8 })) || linked) await saveDoc(env, "posts", posts.slice(-500));
-    acct = await snapshotAccount(env, ig);
+    acct = await snapshotAccount(env, ig, { acct });
     const followers = acct.days.length ? acct.days[acct.days.length - 1].followers : 0;
     [page, people] = await Promise.all([
       range === "7" || range === "30" ? accountNumbers(env, ig, Number(range), followers) : null,
@@ -2128,12 +2129,24 @@ const CHALLENGE_MS = 5 * 60 * 1000;
 // ask for) gives away nothing that could help someone guess the passcode.
 const SEAL_KEY_AT = "secret/challenge-seal", SEAL_KEY_KEPT_MS = 60 * 60 * 1000;
 let sealKeyKept = null;                              // { key, at }: storage is asked about once an hour at most
+// Stores something only if nothing is stored under that name yet. Answers false when something already was.
+// "Already there" is believed only once a look confirms it. Should storage ever refuse the "only if new"
+// condition itself, or say "already there" about a name that holds nothing, it is stored plainly, as it
+// always used to be.
+async function putIfNew(env, key, value) {
+  try {
+    if ((await env.MEDIA.put(key, value, { onlyIf: new Headers({ "If-None-Match": "*" }) })) !== null) return true;
+    if (await env.MEDIA.head(key)) return false;
+  } catch (e) { /* stored plainly below */ }
+  await env.MEDIA.put(key, value);
+  return true;
+}
 async function sealKey(env) {
   if (sealKeyKept && Date.now() - sealKeyKept.at < SEAL_KEY_KEPT_MS) return sealKeyKept.key;
   let obj = await env.MEDIA.get(SEAL_KEY_AT), found = !!obj;
   if (!obj) {
     // Only the first copy ever written is stored ("If-None-Match: *"), and the stored copy is the one used.
-    await env.MEDIA.put(SEAL_KEY_AT, b64u.enc(crypto.getRandomValues(new Uint8Array(32))), { onlyIf: new Headers({ "If-None-Match": "*" }) });
+    await putIfNew(env, SEAL_KEY_AT, b64u.enc(crypto.getRandomValues(new Uint8Array(32))));
     obj = await env.MEDIA.get(SEAL_KEY_AT);
   }
   const raw = b64u.dec(await obj.text());
@@ -2170,7 +2183,9 @@ async function takeChallenge(env, clientDataB64, type, request) {
     throw new UserError(401, "That unlock attempt wasn't valid. Try again.");
   }
   if (Date.now() > exp || used) throw expired();      // each challenge works once, and only for five minutes
-  await env.MEDIA.put(usedKey, JSON.stringify({ exp }));
+  // Marked as used before anything else is looked at. Of two replies arriving in the same instant with the same
+  // challenge, only the first to be marked goes on.
+  if (!(await putIfNew(env, usedKey, JSON.stringify({ exp })))) throw expired();
 }
 
 async function passkeyRoutes(request, env, parts, authed) {
