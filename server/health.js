@@ -617,7 +617,8 @@ function openView(record) {
   let message = need.length
     ? `${need.length === 1 ? "1 thing needs" : `${need.length} things need`} attention. ${parts.join(". ")}.`
     : "Everything is working.";
-  if (stale) message = `The daily check last ran ${Math.round(ageHours / 24)} days ago, so the app's timers may have stopped. ${need.length ? message : "What follows is the last known state."}`;
+  const ago = ageHours < 48 ? `${ageHours} hours ago` : `${Math.floor(ageHours / 24)} days ago`;
+  if (stale) message = `The daily check last ran ${ago}, so the app's timers may have stopped. ${need.length ? message : "What follows is the last known state."}`;
   return {
     ...head, needsAttention: stale || need.length > 0, message, asOf: new Date(record.asOf).toISOString(), ageHours,
     items: items.map((i) => ({ id: i.id, state: STATES.includes(i.state) ? i.state : "unknown", daysLeft: Number.isFinite(i.daysLeft) ? i.daysLeft : null,
