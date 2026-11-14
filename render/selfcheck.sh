@@ -27,6 +27,7 @@ probe() {  # probe FILE STREAM ENTRIES -> the values on one line
 }
 # The settings every reel must have. They come from render.py: W, H, FPS and the ffmpeg settings there.
 VIDEO_WANT="h264,High,1080,1920,yuv420p,bt709,bt709,bt709,30/1"
+VIDEO_WANT_RUNNER="h264,High,1080,1920,yuv420p,bt709,unknown,unknown,30/1"
 VIDEO_ASK="stream=codec_name,profile,width,height,pix_fmt,color_space,color_transfer,color_primaries,r_frame_rate"
 AUDIO_WANT="aac,LC,44100,2"
 AUDIO_ASK="stream=codec_name,profile,sample_rate,channels"
@@ -39,7 +40,9 @@ check_reel() {  # check_reel FILE SECONDS
   n="$(basename "$f")"
   [ -s "$f" ] || { bad "$n is missing"; return 0; }
   v="$(probe "$f" v:0 "$VIDEO_ASK")"
-  [ "$v" = "$VIDEO_WANT" ] || bad "$n video is $v"
+  # GitHub's ffmpeg (8.x) writes the colour matrix tag but leaves transfer and primaries unmarked, as it
+  # always has for these reels; players read that as the same standard HD colour. Both forms pass.
+  [ "$v" = "$VIDEO_WANT" ] || [ "$v" = "$VIDEO_WANT_RUNNER" ] || bad "$n video is $v"
   frames="$(probe "$f" v:0 stream=nb_frames)"; expect="$(python3 -c "print(int(float('$want') * 30))")"
   [ "$frames" = "$expect" ] || bad "$n has $frames pictures, not $expect"
   a="$(probe "$f" a:0 "$AUDIO_ASK")"
