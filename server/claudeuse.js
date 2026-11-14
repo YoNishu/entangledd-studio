@@ -83,8 +83,8 @@ export async function goPlain(env, kit) {
 }
 
 // For the health record: today's and yesterday's counts, the limit, and the model in use.
-export async function usage(env, kit, fallbackModel) {
-  const use = await read(env, kit, true);
+export async function usage(env, kit, fallbackModel, fresh = true) {
+  const use = await read(env, kit, fresh);
   const yesterday = new Date(Date.now() + 5.5 * HOUR - 24 * HOUR).toISOString().slice(0, 10);
   return { today: use.n, yesterday: use.prev && use.prev.day === yesterday ? use.prev.n : 0, cap: capOf(env),
     capHitToday: use.capDay === use.day, capHitYesterday: use.capDay === yesterday,

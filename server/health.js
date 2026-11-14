@@ -367,9 +367,11 @@ function withUse(got, use) {
 
 async function checkNishiii(env, kit, ctx) {
   if (!env.ANTHROPIC_API_KEY) return { title: "Nishiii", state: "off", line: "Nishiii isn't switched on yet.", brief: "" };
-  const before = await claudeuse.usage(env, kit, kit.CLAUDE_MODEL);
-  const got = await checkNishiiiKey(env, kit, ctx, before.model);
-  ctx.use = await claudeuse.usage(env, kit, kit.CLAUDE_MODEL);        // read again: the check itself may have moved the model on
+  ctx.use = await claudeuse.usage(env, kit, kit.CLAUDE_MODEL);
+  const got = await checkNishiiiKey(env, kit, ctx, ctx.use.model);
+  // If the check put a question to Claude, look again: that question may have moved the model on.
+  // (No storage read this time: the question just asked left the newest state with this running copy.)
+  if (ctx.askedClaude) ctx.use = await claudeuse.usage(env, kit, kit.CLAUDE_MODEL, false);
   return withUse(got, ctx.use);
 }
 
@@ -382,7 +384,7 @@ async function checkNishiiiKey(env, kit, ctx, modelInUse) {
     line: "The Claude model Nishiii runs on is no longer offered, and the app couldn't move to a newer one by itself, so suggestions, rewording and chat are off." };
   // One very small real question. It is the only proof that Nishiii can answer, and asking it is also what
   // moves the app to a newer model when the old one has gone (see claudeRaw in worker.js).
-  const ask = () => kit.claudeRaw(env, { system: "Answer with the single word OK.", messages: [{ role: "user", content: "OK?" }], maxTokens: 5 });
+  const ask = () => { ctx.askedClaude = true; return kit.claudeRaw(env, { system: "Answer with the single word OK.", messages: [{ role: "user", content: "OK?" }], maxTokens: 5 }); };
   const base = env.ANTHROPIC_API || "https://api.anthropic.com";
   const res = await fetch(`${base}/v1/models/${modelInUse}`, {
     headers: { "x-api-key": env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" }, signal: AbortSignal.timeout(TRIES.outside),
