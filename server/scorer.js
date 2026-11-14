@@ -39,6 +39,8 @@ const LOOKBACK_DAYS = 7, BACKFILL_PER_RUN = 2, DAILY = 5;
 const MAX_ASK = 12, SAME_THEME = 2, SAME_AUTHOR = 2;
 const AUDIENCE_MIN_POSTS = 3, AUDIENCE_CAP = 0.5;
 const REFRESH_MS = 6 * 3600 * 1000;
+const TRUST_MS = 3 * DAY_MS;                // a model nobody has rebuilt for three days is not ranked by (see ranker)
+const FAINT = 0.05;                         // a value whose faded count is under a twentieth of one choice is let go
 
 // What is looked at on a quote: its name here, how much it counts, and how many "ordinary" examples
 // each value starts with. The more values a feature can take, the more evidence one value needs.
@@ -295,7 +297,11 @@ function foldOld(log, now, today) {
     left -= grp.rows.length;
   }
   if (!gone.size) return;
-  for (const [name] of FEATURES) for (const v in fold.f[name]) fold.f[name][v] = fold.f[name][v].map(round3);
+  // The running counts stay small too: an author or a book last seen so long ago that it no longer counts is let go.
+  for (const [name] of FEATURES) for (const v of Object.keys(fold.f[name])) {
+    const e = fold.f[name][v].map(round3);
+    if (e[0] + e[1] < FAINT) delete fold.f[name][v]; else fold.f[name][v] = e;
+  }
   log.rows = log.rows.filter((r) => !gone.has(r));
   log.fold = fold;
 }
@@ -337,6 +343,9 @@ function audienceScore(aud, r) {
 // ---------- the stored model ----------
 const usable = (m) => !!m && m.v === 1 && Array.isArray(m.base) && Number.isFinite(m.base[0]) && Number.isFinite(m.base[1])
   && !!m.feat && typeof m.feat === "object" && Number.isFinite(m.at);
+// The timed job rebuilds and re-tests the model four times a day. If that has stopped, for whatever reason, a model
+// left saying "live" could never step back again, so after three days it is no longer ranked by.
+const current = (m) => Date.now() - m.at <= TRUST_MS;
 const countsOf = (m) => ({ P: m.base[0], N: m.base[1], f: Object.fromEntries(FEATURES.map(([name]) => [name, (m.feat && typeof m.feat[name] === "object" && m.feat[name]) || {}])) });
 
 // What it has learned, in a few plain words: "short, hopeful lines from books".
@@ -420,7 +429,7 @@ export function choose(model, pool, want, already = []) {
 export async function ranker(env, kit) {
   try {
     const m = await kit.loadDoc(env, "scorer/model", null);
-    if (!usable(m) || m.state !== "live" || !(m.picks >= START_AT)) return null;
+    if (!usable(m) || m.state !== "live" || !(m.picks >= START_AT) || !current(m)) return null;
     return {
       ask: (want) => Math.min(MAX_ASK, Math.max(want + 2, want * 2)),
       choose: (pool, want, already) => {
@@ -588,7 +597,7 @@ async function refresh(env, kit, opts = {}) {
     feat[name] = {};
     for (const v in res.counts.f[name]) {
       const [p, n] = res.counts.f[name][v];
-      if (p + n >= 0.05 && v !== "__proto__") feat[name][v] = [round3(p), round3(n)];
+      if (p + n >= FAINT && v !== "__proto__") feat[name][v] = [round3(p), round3(n)];
     }
   }
   const model = {
@@ -619,7 +628,7 @@ export const routes = {
       const stale = !model || Date.now() - model.at > REFRESH_MS || (history !== null && lastAt(history) !== (model.seen || 0));
       if (stale) model = await refresh(env, kit, { light: true, history: history || undefined, model });
     } catch (e) {
-      if (!model) throw e;                          // nothing stored to fall back on: the line is left out
+      if (!model || !current(model)) throw e;       // nothing stored, or only something long out of date: the line is left out
       console.error("scorer: could not count again; showing the stored status", e);
     }
     return kit.json(statusOf(model));

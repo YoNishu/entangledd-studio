@@ -18,9 +18,8 @@
     bar.setAttribute("aria-valuemax", String(s.need || 50));
     bar.setAttribute("aria-valuenow", String(Math.min(s.picks || 0, s.need || 50)));
     bar.setAttribute("aria-label", "Picks learned from");
-    slot.replaceChildren(
-      el("p", { className: "note", id: "scorer-line", textContent: s.line || "" }),
-      s.state === "live" ? null : bar);
+    const line = el("p", { className: "note", id: "scorer-line", textContent: s.line || "" });
+    slot.replaceChildren(...(s.state === "live" ? [line] : [line, bar]));   // no progress line once it is ranking
     slot.dataset.state = s.state || "learning";
   }
 
