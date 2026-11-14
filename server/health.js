@@ -12,7 +12,7 @@
    This file is one of the app's add-on sections (see SECTIONS in worker.js).
    Handlers are called as handler(request, env, parts, kit); jobs as run(env, kit). */
 
-const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
+const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR, WEEK = 7 * DAY;
 const RENEW_WHEN_DAYS_LEFT = 30;   // start asking Meta for a fresh sign-in this long before the old one ends
 const WARN_DAYS = 21;              // start telling Nishith this long before anything runs out
 const STALE_HOURS = 36;            // a record older than this means the timers have stopped
@@ -30,6 +30,18 @@ const timeIST = (ms) => {
 const daysUntil = (ms) => Math.floor((ms - Date.now()) / DAY);
 const inDays = (n) => (n <= 0 ? "today" : n === 1 ? "in 1 day" : `in ${n} days`);
 const short = (text, max = 160) => String(text || "").replace(/\s+/g, " ").trim().slice(0, max);
+
+// An outside service's own words may repeat what it was sent, a key or token included. Before any such text
+// is kept, shown or logged, the values named are cut out of it, and so is anything shaped like a key:
+// a long unbroken run of the letters, digits and marks that keys are made of.
+export function hide(text, ...values) {
+  let out = String(text ?? "");
+  for (const v of values) if (v && String(v).length >= 8) out = out.split(String(v)).join("[hidden]");
+  return out.replace(/[A-Za-z0-9_|%-]{24,}/g, "[hidden]");
+}
+// The keys the checks below send out, for hide().
+const keysOf = (env) => [env.GITHUB_TOKEN, env.ANTHROPIC_API_KEY, env.PIXABAY_API_KEY, env.PEXELS_API_KEY,
+  env.META_APP_SECRET, env.OPENVERSE_CLIENT_SECRET, env.RENDER_SECRET];
 
 // Where a key is replaced in Cloudflare. The same three taps for every key.
 const inCloudflare = (name) => `In Cloudflare: Workers & Pages, entangledd-studio, Settings, Variables and Secrets. Edit ${name}, paste the new value, then Deploy.`;
@@ -62,7 +74,21 @@ async function debugToken(env, kit, token) {
     dataUntil: Number(d.data_access_expires_at) > 0 ? Number(d.data_access_expires_at) * 1000 : 0,
     scopes: Array.isArray(d.scopes) ? d.scopes.map(String) : [],
     appId: String(d.app_id || ""),
+    userId: String(d.user_id || ""),
   };
+}
+const farEnd = (ms) => (ms > 0 ? ms : NEVER);          // no date from Meta means no end
+
+// Is a new token fit to stand in for the sign-in it came from, going by Meta's own report on each?
+// Returns "" when it is, or the plain reason why not. Nothing that fails here is ever taken over.
+function unfit(env, fresh, old) {
+  if (!fresh.valid) return "Meta's new sign-in didn't pass Meta's own check.";
+  if (fresh.appId && fresh.appId !== String(env.META_APP_ID)) return "Meta's new sign-in belongs to a different app.";
+  if (fresh.userId && old.userId && fresh.userId !== old.userId) return "Meta's new sign-in is for a different person.";
+  if (PERMISSIONS.some(([name]) => old.scopes.includes(name) && !fresh.scopes.includes(name))) {
+    return "Meta's new sign-in has fewer permissions than the current one.";
+  }
+  return "";
 }
 
 // The Page token that goes with a user sign-in, for the Page the app is already connected through.
@@ -85,52 +111,63 @@ async function saveIfSame(env, kit, before, changes) {
   return true;
 }
 
-// Once a day, when the sign-in is within a month of its end: ask Meta for a fresh one. The old one stays
-// in place until the new one has passed Meta's own check, so a working connection is never thrown away.
+// Once a day, when the sign-in is within a month of its end: ask Meta for a fresh one.
+//
+// A working connection is never thrown away. What is in use stays in use unless Meta itself reports the new
+// one as valid, for the same app and the same person, with every permission the old one has, ending no
+// sooner on either of its dates and more than a week later on at least one. Anything less, a refusal, or an
+// answer that can't be read: nothing is changed except a plain note of why, and tomorrow it is tried again.
 export async function renewInstagram(env, kit) {
   if (!kit.igReady(env)) return "off";
   const ig = await kit.loadIg(env);
   if (!ig) return "not connected";
   const now = Date.now();
   if (ig.userTokenExpires <= now) return "ended";          // an ended sign-in can't be renewed; the check says what to do
-  const dataEnds = ig.dataAccessUntil || NEVER;
-  if (Math.min(ig.userTokenExpires, dataEnds) - now > RENEW_WHEN_DAYS_LEFT * DAY) return "not due";
+  const dataDue = ig.dataAccessUntil > 0 && ig.dataAccessUntil - now <= RENEW_WHEN_DAYS_LEFT * DAY;
+  if (ig.userTokenExpires - now > RENEW_WHEN_DAYS_LEFT * DAY && !dataDue) return "not due";
   if (ig.renewTriedAt && now - ig.renewTriedAt < 20 * HOUR) return "tried today";
 
-  let fresh = null, note = "";
+  const changes = {};
+  let note = "";
   try {
     const got = await kit.graph(env, "GET", "/oauth/access_token", {
       grant_type: "fb_exchange_token", client_id: env.META_APP_ID, client_secret: env.META_APP_SECRET, fb_exchange_token: ig.userToken,
     });
     const token = String(got.access_token || "");
-    const info = token ? await debugToken(env, kit, token) : null;
     if (!token) note = "Meta sent nothing back.";
-    else if (!info.valid) note = "Meta's new sign-in didn't pass Meta's own check.";
-    else if (info.appId && info.appId !== String(env.META_APP_ID)) note = "Meta's new sign-in belongs to a different app.";
     else {
-      const until = info.expires || (Number(got.expires_in) > 0 ? now + Number(got.expires_in) * 1000 : 0);
-      const longer = until > ig.userTokenExpires + DAY;
-      const dataLonger = info.dataUntil > 0 && info.dataUntil > (ig.dataAccessUntil || 0) + DAY;
-      if (!longer && !dataLonger) note = "Meta gave the same end date as before.";
-      else {
-        fresh = { userToken: token, userTokenExpires: Math.max(until, ig.userTokenExpires) };
-        // A Page token made from the new sign-in carries the new dates too. Only taken if it checks out.
-        if (dataLonger || (ig.dataAccessUntil && ig.dataAccessUntil - now < RENEW_WHEN_DAYS_LEFT * DAY)) {
-          const page = await pageTokenFor(env, kit, ig, token).catch(() => null);
-          if (page) { fresh.pageToken = page.token; fresh.dataAccessUntil = soonest(info.dataUntil, page.info.dataUntil); }
-          else fresh.dataAccessUntil = ig.dataAccessUntil || 0;
+      // Meta's own report on the new sign-in and on the one in use, side by side.
+      const [fresh, old] = await Promise.all([debugToken(env, kit, token), debugToken(env, kit, ig.userToken)]);
+      if (Number(got.expires_in) > 0) fresh.expires = Math.min(fresh.expires, now + Number(got.expires_in) * 1000);   // of two end dates, believe the sooner
+      note = unfit(env, fresh, old);
+      if (!note && old.valid) {
+        const sooner = fresh.expires < old.expires - HOUR || farEnd(fresh.dataUntil) < farEnd(old.dataUntil) - HOUR;
+        const later = fresh.expires > old.expires + WEEK || farEnd(fresh.dataUntil) > farEnd(old.dataUntil) + WEEK;
+        if (sooner) note = "Meta's new sign-in would end sooner than the current one.";
+        else if (!later) note = "Meta gave the same end date as before.";
+      }
+      if (!note) Object.assign(changes, { userToken: token, userTokenExpires: fresh.expires });
+
+      // The Page token does the posting, and has no end date of its own. It is made again only when Meta's
+      // 90-day clock is what is running out and the sign-in in use from here on has really moved that clock;
+      // and it is taken only if it passes the same checks and moves the clock too.
+      const signIn = note ? { token: ig.userToken, info: old } : { token, info: fresh };
+      if (dataDue && signIn.info.valid && farEnd(signIn.info.dataUntil) > ig.dataAccessUntil + WEEK) {
+        const page = await pageTokenFor(env, kit, ig, signIn.token).catch(() => null);
+        if (page && !unfit(env, page.info, signIn.info) && farEnd(page.info.dataUntil) > ig.dataAccessUntil + WEEK) {
+          Object.assign(changes, { pageToken: page.token, dataAccessUntil: soonest(signIn.info.dataUntil, page.info.dataUntil) });
         }
       }
     }
   } catch (e) {
     if (!(e instanceof kit.UserError)) throw e;            // couldn't reach Meta: the timer tries again in about an hour
-    note = e.expired ? "Meta no longer accepts the current sign-in." : short(e.message);
+    note = e.expired ? "Meta no longer accepts the current sign-in."
+      : short(hide(e.message, ig.userToken, ig.pageToken, ...keysOf(env)));
   }
-  const changes = fresh
-    ? { ...fresh, renewedAt: now, renewTriedAt: now, renewNote: "" }
-    : { renewTriedAt: now, renewNote: note };
+  const renewed = !!(changes.userToken || changes.pageToken);
+  Object.assign(changes, { renewTriedAt: now, renewNote: renewed ? "" : note }, renewed ? { renewedAt: now } : {});
   if (!(await saveIfSame(env, kit, ig, changes))) return "connected again meanwhile";
-  return fresh ? "renewed" : `kept: ${note}`;
+  return renewed ? "renewed" : `kept: ${note}`;
 }
 const soonest = (...times) => { const real = times.filter((t) => t > 0); return real.length ? Math.min(...real) : 0; };
 
@@ -140,7 +177,7 @@ async function checkInstagram(env, kit, ctx) {
     return { title, state: "off", line: "Posting isn't set up yet.", brief: "",
       fix: ["Add META_APP_ID and META_APP_SECRET from the Meta developer app. " + inCloudflare("each of them")] };
   }
-  let ig = ctx.ig;
+  const ig = ctx.ig;
   if (!ig) return { title, state: "off", line: "Not connected. Connect it above to post and see your numbers.", brief: "" };
 
   let user, page;
@@ -151,29 +188,30 @@ async function checkInstagram(env, kit, ctx) {
     if (!(e instanceof kit.UserError) || ![100, 101, 102, 190].includes(e.code)) throw new Error("Meta couldn't answer just now");
     return { title, state: "attention", brief: "Meta no longer accepts the app's ID and secret",
       line: "Meta no longer accepts the app's own ID and secret, so Instagram can't be checked or renewed.",
-      fix: ["On developers.facebook.com open the app, then App settings, Basic. Copy the App ID and the App secret.", inCloudflare("META_APP_ID and META_APP_SECRET")] };
+      fix: ["On developers.facebook.com open the app, then App settings, Basic. Copy the App ID and the App secret.", inCloudflare("META_APP_ID and META_APP_SECRET"),
+        "If they were right already (the Meta app itself was changed), connect Instagram again in Settings, with a token made for this app."] };
   }
 
-  // The Page token does the posting. If Meta dropped it while the sign-in still stands, make a new one.
+  // The Page token does the posting. If Meta dropped it while the sign-in still stands, make a new one
+  // (Meta's own check has just said the old one is dead, so nothing that works is replaced).
+  const changes = {};
   if (!page.valid && user.valid) {
     const mended = await pageTokenFor(env, kit, ig, ig.userToken).catch(() => null);
-    if (mended && (await saveIfSame(env, kit, ig, { pageToken: mended.token }))) {
-      ig = { ...ig, pageToken: mended.token };
-      page = mended.info;
-      ctx.mended = true;
-    }
+    if (mended && !unfit(env, mended.info, user)) { changes.pageToken = mended.token; page = mended.info; }
   }
+  // Keep the stored dates true to what Meta says (they started life as an estimate).
+  const dataUntil = soonest(user.valid ? user.dataUntil : 0, page.dataUntil);
+  const userUntil = user.valid ? user.expires : Math.min(ig.userTokenExpires, Date.now());
+  if (page.valid && (Math.abs(userUntil - ig.userTokenExpires) > HOUR || (dataUntil || 0) !== (ig.dataAccessUntil || 0))) {
+    Object.assign(changes, { userTokenExpires: userUntil, dataAccessUntil: dataUntil });
+  }
+  // One save for both. If Instagram was connected again while this was going on, what was learned is about a
+  // connection that is gone: say nothing now, and let the next check look at the new one.
+  if (Object.keys(changes).length && !(await saveIfSame(env, kit, ig, changes))) throw new Error("the connection changed during the check");
   if (!page.valid) {
     return { title, state: "attention", action: "reconnect", fix: RECONNECT,
       brief: "the connection has stopped working, so posting is off",
       line: "Instagram has stopped accepting the app's connection. Posting and numbers are off until it is connected again." };
-  }
-
-  // Keep the stored dates true to what Meta says (they started life as an estimate).
-  const dataUntil = soonest(user.valid ? user.dataUntil : 0, page.dataUntil);
-  const userUntil = user.valid ? user.expires : Math.min(ig.userTokenExpires, Date.now());
-  if (Math.abs(userUntil - ig.userTokenExpires) > HOUR || (dataUntil || 0) !== (ig.dataAccessUntil || 0)) {
-    await saveIfSame(env, kit, ig, { userTokenExpires: userUntil, dataAccessUntil: dataUntil });
   }
 
   // Permissions: one that was there before and is gone now is a real loss; one never given is only mentioned.
@@ -195,8 +233,8 @@ async function checkInstagram(env, kit, ctx) {
     return { title, state: dataDays <= 0 ? "attention" : "soon", daysLeft: Math.max(dataDays, 0), action: "reconnect", fix: RECONNECT,
       brief: dataDays <= 0 ? "Meta wants a fresh sign-in now" : `Meta wants a fresh sign-in ${inDays(dataDays)}`,
       line: dataDays <= 0
-        ? "Meta wants a fresh sign-in before the app may go on using Instagram. Connect Instagram again."
-        : `Meta wants a fresh sign-in by ${dayIST(dataUntil)} (${inDays(dataDays)}). After that, posting stops until Instagram is connected again.` };
+        ? "Meta wants a fresh sign-in before the app may go on using Instagram, so posting and numbers may stop. Connect Instagram again."
+        : `Meta wants a fresh sign-in by ${dayIST(dataUntil)} (${inDays(dataDays)}). After that, posting and numbers may stop until Instagram is connected again.` };
   }
   if (!user.valid || userUntil <= Date.now()) {
     return { title, state: "soon", daysLeft: 0, action: "reconnect", fix: RECONNECT,
@@ -335,6 +373,7 @@ async function checkNishiii(env, kit, ctx) {
   let trouble = ctx.notes.claude || null;
   if (trouble && trouble.kind !== "credit") { trouble = null; ctx.clearClaude = true; }
   if (trouble) {
+    claudeTrouble = false; claudeLooked = Date.now();      // a good answer is noted once, below, not twice
     try {
       await kit.claudeRaw(env, { system: "Answer with the single word OK.", messages: [{ role: "user", content: "OK?" }], maxTokens: 5 });
       trouble = null; ctx.clearClaude = true;
@@ -407,7 +446,15 @@ function checkTimers(env, kit, ctx) {
     "If they are missing or stay silent, open Deployments and deploy the newest version again (or push any small change to GitHub)."];
   const last = Math.max(0, ...Object.values(ctx.stamps || {}).map(Number).filter(Number.isFinite));
   if (!ctx.fromTimer) {
-    if (!last) return { title, state: "unknown", brief: "", line: "The timers haven't run yet since the app was updated. They start within five minutes." };
+    if (!last) {
+      // Nothing has ever run. For a few minutes after an update that is normal; an hour later it is not.
+      const since = (ctx.old?.items || []).find((i) => i.id === "timers")?.unknownSince || 0;
+      if (since && Date.now() - since > HOUR) {
+        return { title, state: "attention", fix: TIMERS, keepSince: true, brief: "the app's timers have never run",
+          line: "The app's timers haven't run at all since the app was updated, so nothing is refreshed or renewed in the background." };
+      }
+      return { title, state: "unknown", brief: "", line: "The timers haven't run yet since the app was updated. They start within five minutes." };
+    }
     if (Date.now() - last > TIMER_QUIET_HOURS * HOUR) {
       return { title, state: "attention", fix: TIMERS, brief: "the app's timers have stopped",
         line: `The app's timers haven't run since ${dayIST(last)}, so nothing is refreshed or renewed in the background.` };
@@ -434,15 +481,32 @@ function checkTimers(env, kit, ctx) {
 
 const ORDER = ["instagram", "github", "reels", "nishiii", "backgrounds", "music", "timers"];
 
+// Reads one of this section's own two documents. If it can't be read or isn't what it should be, the answer
+// is the fallback, as if it had never been written.
+async function readOwn(env, kit, name, fallback) {
+  try {
+    const doc = await kit.loadDoc(env, name, fallback);
+    return doc && typeof doc === "object" && !Array.isArray(doc) ? doc : fallback;
+  } catch (e) {
+    console.error(`the ${name} record couldn't be read`, hide(e && e.message));
+    return fallback;
+  }
+}
+
 // Runs every check. Each one stands alone: one that can't be reached doesn't stop the others,
 // and the record is saved with whatever was learned.
 export async function checkAll(env, kit, { fromTimer = false } = {}) {
   const now = Date.now();
+  // A record of its own that can't be read must not stop the checks for good: the check starts again from nothing.
   const [old, notes, stamps, ig, today] = await Promise.all([
-    kit.loadDoc(env, "health", null), kit.loadDoc(env, "healthnotes", {}), kit.loadDoc(env, "jobstamps", {}),
+    readOwn(env, kit, "health", null), readOwn(env, kit, "healthnotes", {}), kit.loadDoc(env, "jobstamps", {}),
     kit.igReady(env) ? kit.loadIg(env) : null,
     env.MEDIA.head(`data/suggestions/${kit.todayIST()}.json`),
   ]);
+  if (old) {                                             // whatever shape it is in, the checks get lists to read
+    old.items = (Array.isArray(old.items) ? old.items : []).filter((i) => i && typeof i === "object");
+    old.seenScopes = (Array.isArray(old.seenScopes) ? old.seenScopes : []).map(String);
+  }
   const ctx = { old, notes, stamps, ig, fromTimer, todayReady: !!today };
   const checks = { instagram: checkInstagram, github: checkGithub, reels: checkReels, nishiii: checkNishiii,
     backgrounds: checkBackgrounds, music: checkMusic, timers: checkTimers };
@@ -454,12 +518,12 @@ export async function checkAll(env, kit, { fromTimer = false } = {}) {
       if (got.fix && got.state !== "ok") item.fix = got.fix;
       if (Number.isFinite(got.daysLeft)) item.daysLeft = got.daysLeft;
       if (got.action && got.state !== "ok") item.action = got.action;
-      if (got.state === "unknown") item.unknownSince = before?.unknownSince || now;
+      if (got.state === "unknown" || got.keepSince) item.unknownSince = before?.unknownSince || now;
       return item;
     } catch (e) {
       // The check itself couldn't be made (a service was down or slow). Keep what was known, say so,
       // and only raise it if it stays that way for three days.
-      console.error(`health check "${id}" couldn't run`, e && e.message);
+      console.error(`health check "${id}" couldn't run`, hide(e && e.message, ...keysOf(env)));
       const since = before?.unknownSince || now;
       const base = before && before.state !== "unknown" ? before : { id, title: titleOf(id), state: "unknown", brief: "", checked: 0 };
       if (now - since > 3 * DAY) {
@@ -473,7 +537,7 @@ export async function checkAll(env, kit, { fromTimer = false } = {}) {
     missedMornings: ctx.missedMornings || 0, missedDay: ctx.missedDay || "" };
   await kit.saveDoc(env, "health", record);
   if (ctx.clearClaude && notes.claude) {
-    const latest = await kit.loadDoc(env, "healthnotes", {});
+    const latest = await readOwn(env, kit, "healthnotes", {});
     delete latest.claude;
     await kit.saveDoc(env, "healthnotes", latest);
     claudeTrouble = false; claudeLooked = now;
@@ -496,7 +560,7 @@ export async function saw(env, kit, what, detail = {}) {
     if (!env.MEDIA) return;
     const now = Date.now();
     if (what === "claude-ok" && claudeTrouble === false && now - claudeLooked < 6 * HOUR) return;
-    const notes = await kit.loadDoc(env, "healthnotes", {});
+    const notes = await readOwn(env, kit, "healthnotes", {});
     const reel = notes.reel || {};
     let changed = true;
     if (what === "claude-ok") { changed = !!notes.claude; delete notes.claude; claudeTrouble = false; claudeLooked = now; }
@@ -508,7 +572,7 @@ export async function saw(env, kit, what, detail = {}) {
     else if (what === "reel-started") notes.reel = { ...reel, startedAt: now };
     else if (what === "reel-refused") notes.reel = { ...reel, refusedAt: now, refusedStatus: Number(detail.status) || 0 };
     else if (what === "reel-done") notes.reel = { ...reel, okAt: now, fails: 0, why: "" };
-    else if (what === "reel-failed") notes.reel = { ...reel, failAt: now, fails: (reel.fails || 0) + 1, why: short(detail.why, 200) };
+    else if (what === "reel-failed") notes.reel = { ...reel, failAt: now, fails: (reel.fails || 0) + 1, why: short(hide(detail.why, ...keysOf(env)), 200) };
     else changed = false;
     if (changed) await kit.saveDoc(env, "healthnotes", notes);
   } catch (e) { console.error("health note failed", e && e.message); }
@@ -516,36 +580,40 @@ export async function saw(env, kit, what, detail = {}) {
 
 // ---------------------------------------------------------------- the two addresses
 
+const STATES = ["ok", "soon", "attention", "off", "unknown"];
 const needsHim = (item) => item.state === "attention" || item.state === "soon";
 
-// What anyone may see: states and day counts, a sentence built from fixed phrases. Nothing else.
+// What anyone may see: states and day counts, a sentence built from fixed phrases. Nothing else:
+// no names, no ids, no steps, none of an outside service's own words.
 function openView(record) {
   const head = { app: "D's Studio" };
-  if (!record) {
+  if (!record || !Number.isFinite(record.asOf) || !Array.isArray(record.items)) {
     return { ...head, needsAttention: true, asOf: null, ageHours: null, items: [],
       message: "No check has run yet. The first one runs within ten minutes of the app being updated. If this is still the answer after that, the app's timers are not running." };
   }
   const ageHours = Math.max(0, Math.round((Date.now() - record.asOf) / HOUR));
   const stale = ageHours > STALE_HOURS;
-  const need = record.items.filter(needsHim);
-  const parts = need.map((i) => `${i.title}: ${i.brief || (i.state === "soon" ? "needs attention soon" : "needs attention")}`);
+  const items = record.items.filter((i) => i && ORDER.includes(i.id));
+  const need = items.filter(needsHim);
+  const parts = need.map((i) => `${titleOf(i.id)}: ${i.brief || (i.state === "soon" ? "needs attention soon" : "needs attention")}`);
   let message = need.length
-    ? `${need.length === 1 ? "1 thing needs" : `${need.length} things need`} Nishith. ${parts.join(". ")}.`
+    ? `${need.length === 1 ? "1 thing needs" : `${need.length} things need`} attention. ${parts.join(". ")}.`
     : "Everything is working.";
   if (stale) message = `The daily check last ran ${Math.round(ageHours / 24)} days ago, so the app's timers may have stopped. ${need.length ? message : "What follows is the last known state."}`;
   return {
     ...head, needsAttention: stale || need.length > 0, message, asOf: new Date(record.asOf).toISOString(), ageHours,
-    items: record.items.map((i) => ({ id: i.id, state: i.state, daysLeft: Number.isFinite(i.daysLeft) ? i.daysLeft : null,
-      checked: i.checked ? new Date(i.checked).toISOString() : null })),
+    items: items.map((i) => ({ id: i.id, state: STATES.includes(i.state) ? i.state : "unknown", daysLeft: Number.isFinite(i.daysLeft) ? i.daysLeft : null,
+      checked: Number.isFinite(i.checked) && i.checked > 0 ? new Date(i.checked).toISOString() : null })),
   };
 }
 
 // What she and Nishith see in Settings: everything, with the steps.
 function fullView(record) {
-  if (!record) return { asOf: 0, items: [], summary: "Not checked yet." };
-  const need = record.items.filter(needsHim).length;
+  if (!record || !Number.isFinite(record.asOf) || !Array.isArray(record.items)) return { asOf: 0, items: [], summary: "Not checked yet." };
+  const items = record.items.filter((i) => i && ORDER.includes(i.id));
+  const need = items.filter(needsHim).length;
   return { asOf: record.asOf, summary: need ? `${need === 1 ? "1 thing needs" : `${need} things need`} Nishith.` : "Everything is working.",
-    items: record.items.map(({ unknownSince, brief, ...rest }) => rest) };
+    items: items.map(({ unknownSince, brief, ...rest }) => rest) };
 }
 
 export const open = {
@@ -553,7 +621,7 @@ export const open = {
   // to burn the app's allowances, however often it is asked.
   health: async (request, env, parts, kit) => {
     if (request.method !== "GET" || parts.length !== 1) return kit.fail(404, "Not found.");
-    const record = env.MEDIA ? await kit.loadDoc(env, "health", null) : null;
+    const record = env.MEDIA ? await readOwn(env, kit, "health", null) : null;
     return new Response(JSON.stringify(openView(record)), {
       headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
     });
@@ -564,9 +632,9 @@ export const routes = {
   // GET /api/checkup: the full record.  POST /api/checkup: check now (at most once a minute).
   checkup: async (request, env, parts, kit) => {
     if (parts.length !== 1) return kit.fail(404, "Not found.");
-    if (request.method === "GET") return kit.json(fullView(await kit.loadDoc(env, "health", null)));
+    if (request.method === "GET") return kit.json(fullView(await readOwn(env, kit, "health", null)));
     if (request.method !== "POST") return kit.fail(404, "Not found.");
-    const old = await kit.loadDoc(env, "health", null);
+    const old = await readOwn(env, kit, "health", null);
     if (old && Date.now() - old.asOf < 60 * 1000) return kit.fail(429, "Checked a moment ago. Try again in a minute.");
     await renewInstagram(env, kit).catch((e) => console.error("renewing Instagram failed", e && e.message));
     return kit.json(fullView(await checkAll(env, kit)));

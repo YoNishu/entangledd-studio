@@ -4,6 +4,8 @@
 //   /__health_set?name=value&...   change how the pretend services behave (see "mode" below); "null" clears a value
 //   /__health_log                  every call the app made to a pretend outside service, in order
 //   /__health_reset                back to "everything is fine", log emptied
+//   /__health_ops                  how many storage operations and outside calls the app has made since
+//                                  /__health_ops?reset=1 (what one timed run or one request costs)
 //
 // These are asked before the built-in stand-ins in dev.mjs, so they can answer particular paths themselves
 // and leave the rest alone.
@@ -21,6 +23,10 @@ const fine = () => ({
   newDataDays: null,    // the same, for tokens handed out by a renewal
   scopes: ALL_SCOPES,
   exchange: "extend",   // what asking for a fresh sign-in gets: extend | same | refuse | invalid | busy
+                        //   | empty (an answer with no token) | echo (a refusal that repeats the token it was sent)
+                        //   | person (a sign-in for somebody else) | fewer (one without the permission to post)
+                        //   | sooner (one that ends before the current one)
+  pageMake: "",         // the Page token made from a renewed sign-in: "" = good | fewer (can't post) | stale (old dates) | none (Page not listed)
   appSecret: "ok",      // "refused": Meta turns down the app's own ID and secret
   graphBusy: "",        // "yes": Meta is briefly unavailable
   // GitHub
@@ -39,8 +45,21 @@ const fine = () => ({
 });
 let mode = fine();
 let log = [];
-let issued = new Map();   // tokens handed out by renewals: token -> { kind, expires, valid, dataDays }
+let issued = new Map();   // tokens handed out by renewals: token -> { kind, expires, valid, dataDays, person, scopes }
 let made = 0;
+
+// Counts what the app spends: every storage operation and every call to a pretend outside service.
+// Cloudflare's free plan allows 50 of these, together, per request or timed run.
+let ops = { storage: 0, outside: 0, what: [] };
+let counting = false;
+function countStorage(bucket) {
+  if (counting) return;
+  counting = true;
+  for (const name of ["get", "put", "head", "delete", "list"]) {
+    const real = bucket[name].bind(bucket);
+    bucket[name] = (...args) => { ops.storage += 1; ops.what.push(`${name} ${typeof args[0] === "string" ? args[0] : ""}`.trim()); return real(...args); };
+  }
+}
 
 const send = (res, status, body, headers = {}) => {
   res.writeHead(status, { "Content-Type": "application/json", ...headers }).end(typeof body === "string" ? body : JSON.stringify(body));
@@ -67,7 +86,8 @@ function debug(token) {
   const t = issued.get(token);
   if (!t) return { is_valid: false, scopes: [], error: { code: 190, message: "Malformed access token" } };
   return { ...base, type: t.kind === "page" ? "PAGE" : "USER", is_valid: t.valid && (t.expires === 0 || t.expires > now),
-    expires_at: t.expires ? secs(t.expires) : 0, data_access_expires_at: dataAt(t.dataDays) };
+    expires_at: t.expires ? secs(t.expires) : 0, data_access_expires_at: dataAt(t.dataDays),
+    ...(t.person ? { user_id: t.person } : {}), ...(t.scopes ? { scopes: t.scopes } : {}) };
 }
 
 function graph(req, res, url) {
@@ -87,18 +107,24 @@ function graph(req, res, url) {
     const oldEnds = old === USER ? userEnds() : issued.get(old)?.expires || 0;
     const oldValid = old === USER ? mode.userValid === "yes" && oldEnds > Date.now() : !!issued.get(old)?.valid;
     if (mode.exchange === "busy") return err(500, 1, "An unknown error occurred");
+    if (mode.exchange === "echo") return err(400, 100, `Invalid parameter: fb_exchange_token ${old} was not accepted`);
     if (mode.exchange === "refuse" || !oldValid) return err(400, 190, "Error validating access token: Session has expired.", { error_subcode: 463 });
+    if (mode.exchange === "empty") return send(res, 200, { token_type: "bearer" });
     const fresh = `LONG-user-token-R${++made}`;
-    const ends = mode.exchange === "same" ? oldEnds : Date.now() + 60 * DAY;
-    issued.set(fresh, { kind: "user", expires: ends, valid: mode.exchange !== "invalid", dataDays: mode.exchange === "same" ? mode.dataDays : mode.newDataDays });
+    const ends = mode.exchange === "same" ? oldEnds : mode.exchange === "sooner" ? oldEnds - 5 * DAY : Date.now() + 60 * DAY;
+    issued.set(fresh, { kind: "user", expires: ends, valid: mode.exchange !== "invalid", dataDays: mode.exchange === "same" ? mode.dataDays : mode.newDataDays,
+      person: mode.exchange === "person" ? "2002" : "",
+      scopes: mode.exchange === "fewer" ? String(mode.scopes).split(",").filter((s) => s && s !== "instagram_content_publish") : null });
     return send(res, 200, { access_token: fresh, token_type: "bearer", expires_in: secs(ends - Date.now()) });
   }
   // The Page token that goes with a sign-in: for a renewed sign-in, or when the first Page token has been dropped.
   if (p === "/me/accounts" && (issued.has(token) || (token === USER && mode.pageValid !== "yes"))) {
     const t = issued.get(token);
     if (t ? !t.valid : mode.userValid !== "yes") return err(400, 190, "Invalid OAuth access token.");
+    if (mode.pageMake === "none") return send(res, 200, { data: [] });
     const fresh = `PAGE-token-R${++made}`;
-    issued.set(fresh, { kind: "page", expires: 0, valid: true, dataDays: t ? t.dataDays : mode.newDataDays });
+    issued.set(fresh, { kind: "page", expires: 0, valid: true, dataDays: mode.pageMake === "stale" ? mode.dataDays : t ? t.dataDays : mode.newDataDays,
+      scopes: mode.pageMake === "fewer" ? String(mode.scopes).split(",").filter((s) => s && s !== "instagram_content_publish") : null });
     return send(res, 200, { data: [{ id: "111", access_token: fresh, instagram_business_account: { id: "17890" } }] });
   }
   // Everything else is left to the built-in pretend Instagram, which only knows the first two tokens:
@@ -153,6 +179,11 @@ function anthropic(req, res, url, tools) {
 
 export async function handle(req, res, url, tools) {
   const p = url.pathname;
+  countStorage(tools.env.MEDIA);
+  if (p === "/__health_ops") {
+    if (url.searchParams.get("reset")) ops = { storage: 0, outside: 0, what: [] };
+    return send(res, 200, ops);
+  }
   if (p === "/__health_set") {
     for (const [k, v] of url.searchParams) if (k in mode) mode[k] = v === "null" ? null : v;
     return send(res, 200, mode);
@@ -163,6 +194,7 @@ export async function handle(req, res, url, tools) {
   const service = /^\/__(graph|github|anthropic|pixabay|pexels|openverse|gutendex)\//.exec(p)?.[1];
   if (!service) return false;
   log.push({ service, method: req.method, path: p.replace(/^\/__\w+/, "") });
+  ops.outside += 1; ops.what.push(`${service} ${req.method} ${p.replace(/^\/__\w+/, "")}`);
   if (service === "graph") return graph(req, res, url);
   if (service === "github") return github(req, res, url, tools);
   if (service === "anthropic") return anthropic(req, res, url, tools);

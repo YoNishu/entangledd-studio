@@ -972,11 +972,13 @@ async function graph(env, method, path, params) {
   try { data = await res.json(); } catch (e) { /* not JSON: handled below */ }
   if (!res.ok || data.error) {
     const e = data.error || {};
-    console.error("Graph error", res.status, e.code, e.error_subcode, e.message);
+    // Meta's own words can repeat the token it was sent ("Malformed access token ..."), so anything shaped
+    // like a key is cut out before they are logged or passed on.
+    console.error("Graph error", res.status, e.code, e.error_subcode, health.hide(e.message));
     // 190 is Instagram's code for a sign-in it no longer accepts: ended, withdrawn, or pasted wrongly.
     const err = new UserError(502, e.code === 190
       ? "Instagram didn't accept the sign-in: it has ended or was withdrawn. Ask Nishith to connect Instagram again (Settings, Check everything, shows how)."
-      : `Instagram said: ${e.error_user_msg || e.message || `the request failed (status ${res.status})`}`);
+      : `Instagram said: ${health.hide(e.error_user_msg || e.message || `the request failed (status ${res.status})`)}`);
     err.code = e.code;
     err.expired = e.code === 190;
     err.denied = e.code === 10 || (e.code >= 200 && e.code < 300);

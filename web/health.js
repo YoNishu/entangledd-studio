@@ -25,6 +25,7 @@
     return d.toDateString() === now.toDateString() ? `today at ${time}` : `${K.day(ms)} at ${time}`;
   };
 
+  const STALE_MS = 26 * 60 * 60 * 1000;      // the server checks once a day; older than this is not normal
   let record = null, busy = false;
 
   function build() {
@@ -95,7 +96,9 @@
     try {
       record = await K.getJson("checkup");
       render();
-      if (!record.asOf) checkNow();          // first time in Settings: nothing on record yet
+      // Nothing on record yet, or the daily check has gone quiet for over a day: look now, so that what
+      // she reads is never old news (and a stopped timer shows up as its own line).
+      if (!record.asOf || Date.now() - record.asOf > STALE_MS) checkNow();
     } catch (e) { $("health-summary").textContent = K.friendly(e); }
   }
 
