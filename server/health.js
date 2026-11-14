@@ -162,7 +162,9 @@ export async function renewInstagram(env, kit) {
       }
     }
   } catch (e) {
-    if (!(e instanceof kit.UserError)) throw e;            // couldn't reach Meta: the timer tries again in about an hour
+    // Couldn't reach Meta: the timer tries again in about an hour. The error itself is not passed on (the
+    // timer logs whatever it is handed, and the address that was asked carries the sign-in).
+    if (!(e instanceof kit.UserError)) throw new Error("Meta couldn't be reached just now");
     note = e.expired ? "Meta no longer accepts the current sign-in."
       : short(hide(e.message, ig.userToken, ig.pageToken, ...keysOf(env)));
   }
@@ -384,7 +386,10 @@ async function checkNishiii(env, kit, ctx) {
     try {
       await kit.claudeRaw(env, { system: "Answer with the single word OK.", messages: [{ role: "user", content: "OK?" }], maxTokens: 5 });
       trouble = null; ctx.clearClaude = true;
-    } catch (e) { if (!(e instanceof kit.UserError)) throw e; }
+    } catch (e) {
+      claudeTrouble = true;                                // still on record: the next good answer in real use clears it
+      if (!(e instanceof kit.UserError)) throw e;
+    }
   }
   if (trouble) {
     return { title, state: "attention", brief: "Nishiii's Anthropic account is out of credit",
