@@ -37,7 +37,8 @@ const fine = () => ({
   dispatch: "",         // "" = starts normally; 401 | 403 | 404 | 422 = GitHub refuses to start a reel
   // Anthropic
   claudeKey: "ok",      // ok | 401
-  model: "active",      // active | deprecated | retired | 404
+  model: "active",      // active | deprecated | retired | 404 | any other word for a model on its way out
+                        //   | active-dated (still "active", but sent with the date in modelDays)
   modelDays: 90,        // days until a deprecated model is retired ("" = no date given)
   claudeAsk: "",        // how a real question is answered: "" = normally | credit | 401 | 404
   // the rest
@@ -168,7 +169,7 @@ function anthropic(req, res, url, tools) {
     const iso = (ms) => new Date(ms).toISOString();
     const leaving = mode.model !== "active";
     return send(res, 200, { type: "model", id, display_name: "Claude Sonnet 5.5", created_at: "2026-09-21T00:00:00Z", line: "sonnet",
-      lifecycle: mode.model, deprecated_at: leaving ? iso(Date.now() - 10 * DAY) : null,
+      lifecycle: mode.model === "active-dated" ? "active" : mode.model, deprecated_at: leaving && mode.model !== "active-dated" ? iso(Date.now() - 10 * DAY) : null,
       retires_at: leaving && mode.modelDays !== "" && mode.modelDays !== null ? iso(Date.now() + Number(mode.modelDays) * DAY) : null });
   }
   if (req.method === "POST" && url.pathname === "/__anthropic/v1/messages") {

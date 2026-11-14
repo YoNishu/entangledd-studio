@@ -15,6 +15,7 @@
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR, WEEK = 7 * DAY;
 const RENEW_WHEN_DAYS_LEFT = 30;   // start asking Meta for a fresh sign-in this long before the old one ends
 const WARN_DAYS = 21;              // start telling Nishith this long before anything runs out
+const MODEL_WARN_DAYS = 30;        // a Claude model being withdrawn stops Nishiii altogether: a little more notice
 const STALE_HOURS = 36;            // a record older than this means the timers have stopped
 const TIMER_QUIET_HOURS = 30;      // the daily jobs run every 24 hours; this much silence is not normal
 const NEVER = 4102444800000;       // 1 January 2100: how "no end date" is kept
@@ -79,7 +80,7 @@ async function debugToken(env, kit, token) {
 }
 const farEnd = (ms) => (ms > 0 ? ms : NEVER);          // no date from Meta means no end
 
-// Is a new token fit to stand in for the sign-in it came from, going by Meta's own report on each?
+// Is a new token fit to take the place of a working one of the same kind, going by Meta's own report on each?
 // Returns "" when it is, or the plain reason why not. Nothing that fails here is ever taken over.
 function unfit(env, fresh, old) {
   if (!fresh.valid) return "Meta's new sign-in didn't pass Meta's own check.";
@@ -150,11 +151,12 @@ export async function renewInstagram(env, kit) {
 
       // The Page token does the posting, and has no end date of its own. It is made again only when Meta's
       // 90-day clock is what is running out and the sign-in in use from here on has really moved that clock;
-      // and it is taken only if it passes the same checks and moves the clock too.
+      // and it is taken only if, set beside the Page token in use, it passes the same checks and moves the clock too.
       const signIn = note ? { token: ig.userToken, info: old } : { token, info: fresh };
       if (dataDue && signIn.info.valid && farEnd(signIn.info.dataUntil) > ig.dataAccessUntil + WEEK) {
-        const page = await pageTokenFor(env, kit, ig, signIn.token).catch(() => null);
-        if (page && !unfit(env, page.info, signIn.info) && farEnd(page.info.dataUntil) > ig.dataAccessUntil + WEEK) {
+        const [page, oldPage] = await Promise.all([
+          pageTokenFor(env, kit, ig, signIn.token).catch(() => null), debugToken(env, kit, ig.pageToken).catch(() => null)]);
+        if (page && oldPage && !unfit(env, page.info, oldPage) && farEnd(page.info.dataUntil) > ig.dataAccessUntil + WEEK) {
           Object.assign(changes, { pageToken: page.token, dataAccessUntil: soonest(signIn.info.dataUntil, page.info.dataUntil) });
         }
       }
@@ -197,7 +199,7 @@ async function checkInstagram(env, kit, ctx) {
   const changes = {};
   if (!page.valid && user.valid) {
     const mended = await pageTokenFor(env, kit, ig, ig.userToken).catch(() => null);
-    if (mended && !unfit(env, mended.info, user)) { changes.pageToken = mended.token; page = mended.info; }
+    if (mended) { changes.pageToken = mended.token; page = mended.info; }
   }
   // Keep the stored dates true to what Meta says (they started life as an estimate).
   const dataUntil = soonest(user.valid ? user.dataUntil : 0, page.dataUntil);
@@ -288,7 +290,8 @@ async function checkGithub(env, kit, ctx) {
     return { title, state: "attention", fix: NEW_GITHUB_KEY(env), brief: "the key can't see the reel maker on GitHub",
       line: "The key can't see the reel maker on GitHub: it was made for a different repository, or the repository was renamed." };
   }
-  if (res.status === 403 && res.headers.get("x-ratelimit-remaining") !== "0") {
+  // (403 is also how GitHub says "slow down": those answers carry a count of zero or a time to wait, and are no verdict.)
+  if (res.status === 403 && res.headers.get("x-ratelimit-remaining") !== "0" && !res.headers.get("retry-after")) {
     return { title, state: "attention", fix: NEW_GITHUB_KEY(env), brief: "the key isn't allowed to use the reel maker",
       line: "GitHub says the key isn't allowed to use the reel maker. It needs the permission Actions: Read and write." };
   }
@@ -346,7 +349,7 @@ function checkReels(env, kit, ctx) {
 async function checkNishiii(env, kit, ctx) {
   const title = "Nishiii";
   if (!env.ANTHROPIC_API_KEY) return { title, state: "off", line: "Nishiii isn't switched on yet.", brief: "" };
-  const NEW_KEY = ["On console.anthropic.com open API keys, tap Create key and copy it.", inCloudflare("ANTHROPIC_API_KEY")];
+  const NEW_KEY = ["On platform.claude.com (the Claude Console) open Settings, API keys, tap Create key and copy it.", inCloudflare("ANTHROPIC_API_KEY")];
   const NEW_MODEL = ["Open the Claude chat where the app was built and say: \"Nishiii's Claude model is being retired, please move the app to the current one.\" It is a one-line change."];
   const base = env.ANTHROPIC_API || "https://api.anthropic.com";
   const res = await fetch(`${base}/v1/models/${kit.CLAUDE_MODEL}`, {
@@ -363,7 +366,11 @@ async function checkNishiii(env, kit, ctx) {
   if (!res.ok) throw new Error(`Anthropic answered ${res.status}`);
   let model = {};
   try { model = await res.json(); } catch (e) { /* the status was enough */ }
-  if (model.lifecycle === "retired") {
+  // Anthropic says ahead of time when a model will be withdrawn: "lifecycle" stops being "active" and "retires_at"
+  // gives the day. Whatever word it uses for a model on its way out, the day is what counts.
+  const leaving = typeof model.lifecycle === "string" && model.lifecycle !== "" && model.lifecycle !== "active";
+  const retires = Date.parse(model.retires_at || "");
+  if (model.lifecycle === "retired" || (leaving && retires <= Date.now())) {
     return { title, state: "attention", fix: NEW_MODEL, brief: "the Claude model Nishiii runs on has been retired",
       line: "The Claude model Nishiii runs on has been retired, so suggestions, rewording and chat are off." };
   }
@@ -382,16 +389,19 @@ async function checkNishiii(env, kit, ctx) {
   if (trouble) {
     return { title, state: "attention", brief: "Nishiii's Anthropic account is out of credit",
       line: `Nishiii's Anthropic account ran out of credit on ${dayIST(trouble.at)}, so suggestions, rewording and chat are off.`,
-      fix: ["On console.anthropic.com open Billing and add credit.", "On the same page turn on Auto reload, so it tops itself up and this never comes back."] };
+      fix: ["On platform.claude.com (the Claude Console) open Settings, Billing, and add credit.",
+        "On the same page tap Set up auto-reload, so it tops itself up and this never comes back."] };
   }
-  const retires = model.lifecycle === "deprecated" ? Date.parse(model.retires_at || "") : NaN;
-  if (model.lifecycle === "deprecated") {
-    const days = Number.isFinite(retires) ? Math.max(daysUntil(retires), 0) : null;
-    return { title, state: "soon", daysLeft: days, fix: NEW_MODEL,
-      brief: days === null ? "the Claude model Nishiii runs on is being retired" : `the Claude model Nishiii runs on is retired ${inDays(days)}`,
-      line: Number.isFinite(retires)
-        ? `Working. The Claude model Nishiii runs on will be retired on ${dayIST(retires)} (${inDays(days)}); the app needs a small update before then.`
-        : "Working. The Claude model Nishiii runs on is being retired; the app needs a small update." };
+  if (retires > Date.now()) {
+    // A day is known. Months ahead it is only mentioned; it is raised when it comes near.
+    const days = daysUntil(retires);
+    const line = `Working. The Claude model Nishiii runs on will be retired on ${dayIST(retires)} (${inDays(days)}); the app needs a small update before then.`;
+    if (days > MODEL_WARN_DAYS) return { title, state: "ok", daysLeft: days, brief: "", line };
+    return { title, state: "soon", daysLeft: days, fix: NEW_MODEL, line, brief: `the Claude model Nishiii runs on is retired ${inDays(days)}` };
+  }
+  if (leaving) {
+    return { title, state: "soon", fix: NEW_MODEL, brief: "the Claude model Nishiii runs on is being retired",
+      line: "Working. The Claude model Nishiii runs on is being retired; the app needs a small update." };
   }
   return { title, state: "ok", brief: "", line: "Nishiii's key is working." };
 }
@@ -507,6 +517,8 @@ export async function checkAll(env, kit, { fromTimer = false } = {}) {
   if (old) {                                             // whatever shape it is in, the checks get lists to read
     old.items = (Array.isArray(old.items) ? old.items : []).filter((i) => i && typeof i === "object");
     old.seenScopes = (Array.isArray(old.seenScopes) ? old.seenScopes : []).map(String);
+    old.missedMornings = Number(old.missedMornings) || 0;
+    old.missedDay = typeof old.missedDay === "string" ? old.missedDay : "";
   }
   const ctx = { old, notes, stamps, ig, fromTimer, todayReady: !!today };
   const checks = { instagram: checkInstagram, github: checkGithub, reels: checkReels, nishiii: checkNishiii,
