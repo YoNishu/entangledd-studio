@@ -49,7 +49,7 @@ const realDate = (value) => {
 // The notes file, checked the same way the app will check it. Never prints the notes.
 export function readNotes(textOfFile) {
   let data;
-  try { data = JSON.parse(textOfFile); } catch (e) { throw new Error("the notes file isn't valid JSON."); }
+  try { data = JSON.parse(textOfFile.replace(/^\uFEFF/, "")); } catch (e) { throw new Error("the notes file isn't valid JSON."); }
   if (!data || !["add", "replace"].includes(data.mode)) throw new Error('the notes file needs "mode": "add" or "replace".');
   if (!Array.isArray(data.notes) || !data.notes.length) throw new Error('the notes file needs a "notes" list with at least one note.');
   if (data.notes.length > MAX_NOTES) throw new Error(`there is room for ${MAX_NOTES} notes; the file has ${data.notes.length}.`);
@@ -94,7 +94,8 @@ async function main() {
   catch (e) { if (e.code !== "ERR_MODULE_NOT_FOUND" && e.code !== "ENOENT") stop(`${to} exists but couldn't be read as a list of deliveries. Fix or remove it first.`); }
   if (!Array.isArray(have) || have.some((b) => typeof b !== "string")) stop(`${to} doesn't hold a list of deliveries. Fix or remove it first.`);
   const all = [...have, box];
-  await writeFile(to, `${FILE_HEAD}export const SEALED = [\n${all.map((b) => `  ${JSON.stringify(b)},\n`).join("")}];\n`);
+  try { await writeFile(to, `${FILE_HEAD}export const SEALED = [\n${all.map((b) => `  ${JSON.stringify(b)},\n`).join("")}];\n`); }
+  catch (e) { stop(`${to} couldn't be written (${e.code || "no reason given"}). Run this from the top folder of the repo, with --out server/sealed.js.`); }
   const n = delivery.notes.length;
   console.log(`Sealed ${n} ${n === 1 ? "note" : "notes"} (${delivery.mode}) for the key with check ${check}. ${path.relative(process.cwd(), to) || to} now holds ${all.length} ${all.length === 1 ? "delivery" : "deliveries"}.`);
   console.log(`The plain notes are still at ${from}. Delete that file once the delivery is committed.`);
