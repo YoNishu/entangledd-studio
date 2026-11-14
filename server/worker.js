@@ -62,6 +62,16 @@ async function signedIn(request, env) {
 }
 const isRenderer = (request, env) => !!env.RENDER_SECRET && safeEqual(bearer(request), env.RENDER_SECRET);
 const reelsReady = (env) => !!(env.MEDIA && env.GITHUB_TOKEN && env.RENDER_SECRET && env.GITHUB_REPO);
+// What the app needs to know before it can show anything. Sent with /api/status and again with a successful
+// sign-in, so the app never has to ask twice.
+const statusOf = (env, isSignedIn) => ({ configured: !!env.APP_PASSCODE, signedIn: isSignedIn, reels: reelsReady(env),
+  ai: !!(env.ANTHROPIC_API_KEY && env.MEDIA), stock: !!stockProvider(env), instagram: igReady(env) });
+// Work that can finish after the answer has gone out (tidying up), so nobody waits for it.
+const later = (ctx, promise) => {
+  const p = promise.catch((e) => console.error("background work failed", e));
+  if (ctx && ctx.waitUntil) ctx.waitUntil(p);
+  return p;
+};
 
 const jobKey = (id, name) => `jobs/${id}/${name}`;
 async function readJob(env, id) {
@@ -91,18 +101,19 @@ async function login(request, env) {
     return fail(401, "That passcode isn't right.");
   }
   if (env.MEDIA && tries.n) await env.MEDIA.delete(key);
-  return json({ token: await sessionToken(env) });
+  return json({ token: await sessionToken(env), status: statusOf(env, true) });
 }
 
 // ---------- jobs, called by the app ----------
 async function purgeOld(env) {
   const cutoff = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
-  const lists = await Promise.all(["jobs/", "slides/", "data/stockcache/", "data/musiccache/"].map((prefix) => env.MEDIA.list({ prefix, limit: 500 })));
+  // "auth/" holds used unlock challenges and wrong-passcode counts; both are long dead after a week.
+  const lists = await Promise.all(["jobs/", "slides/", "data/stockcache/", "data/musiccache/", "auth/"].map((prefix) => env.MEDIA.list({ prefix, limit: 500 })));
   const old = lists.flatMap((l) => l.objects).filter((o) => new Date(o.uploaded).getTime() < cutoff).map((o) => o.key);
   if (old.length) await env.MEDIA.delete(old);
 }
 
-async function createJob(request, env) {
+async function createJob(request, env, ctx) {
   let b;
   try { b = await request.json(); } catch (e) { return fail(400, "Send the reel settings as JSON."); }
   const length = Number(b.length), bgSize = Number(b.bgSize);
@@ -112,13 +123,12 @@ async function createJob(request, env) {
   const ext = (bgName.match(/\.([a-z0-9]{2,5})$/i) || [])[1];
   if (!ext || !/^(mp4|mov|m4v|webm|jpg|jpeg|png)$/i.test(ext)) return fail(400, "That background file type isn't supported.");
 
-  await purgeOld(env);
+  later(ctx, purgeOld(env));            // tidy up old files without making her wait for it
   const job = {
     id: crypto.randomUUID(), created: Date.now(), state: "uploading", error: null,
     length, keepAudio: !!b.keepAudio, fade: !!b.fade, bgExt: ext.toLowerCase(),
   };
-  const upload = await env.MEDIA.createMultipartUpload(jobKey(job.id, "bg"));
-  await writeJob(env, job);
+  const [upload] = await Promise.all([env.MEDIA.createMultipartUpload(jobKey(job.id, "bg")), writeJob(env, job)]);
   return json({ id: job.id, uploadId: upload.uploadId, partSize: PART_SIZE });
 }
 
@@ -196,10 +206,10 @@ const stream = (obj, type) => new Response(obj.body, {
   headers: { "Content-Type": type, "Content-Length": String(obj.size), "Cache-Control": "no-store" },
 });
 
-async function appRoutes(request, env, parts) {
+async function appRoutes(request, env, parts, ctx) {
   const method = request.method;
   if (!reelsReady(env)) return fail(503, "Reels aren't set up yet.");
-  if (parts.length === 1 && method === "POST") return createJob(request, env);
+  if (parts.length === 1 && method === "POST") return createJob(request, env, ctx);
 
   const id = parts[1];
   if (!UUID.test(id || "")) return fail(404, "No such reel.");
@@ -2109,36 +2119,55 @@ function derToRaw(der) {
   raw.set(int(), 0); raw.set(int(), 32);
   return raw;
 }
-async function takeChallenge(env, id, clientDataB64, type, request) {
-  if (!UUID.test(id || "")) throw new UserError(400, "That unlock attempt has expired. Try again.");
-  const key = `auth/challenge-${id}.json`;
-  const obj = await env.MEDIA.get(key);
-  if (!obj) throw new UserError(400, "That unlock attempt has expired. Try again.");
-  const saved = await obj.json();
-  await env.MEDIA.delete(key);                       // each challenge works once
-  let client;
+// A challenge is 16 random bytes, the moment it stops working (6 bytes) and a seal only this server can make
+// (16 bytes), so handing one out needs no storage at all and the phone can ask for it the instant the app opens.
+// Each still works only once: a used one is remembered until long after it would have stopped working anyway.
+const CHALLENGE_MS = 5 * 60 * 1000;
+async function challengeSeal(env, head) {
+  const k = await crypto.subtle.importKey("raw", new TextEncoder().encode("passkey-challenge-v1:" + env.APP_PASSCODE),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", k, head)).slice(0, 16);
+}
+async function makeChallenge(env) {
+  const c = new Uint8Array(38);
+  crypto.getRandomValues(c.subarray(0, 16));
+  let exp = Date.now() + CHALLENGE_MS;
+  for (let i = 21; i >= 16; i--) { c[i] = exp % 256; exp = Math.floor(exp / 256); }
+  c.set(await challengeSeal(env, c.slice(0, 22)), 22);
+  return b64u.enc(c);
+}
+async function takeChallenge(env, clientDataB64, type, request) {
+  const expired = () => new UserError(400, "That unlock attempt has expired. Try again.");
+  let client, c;
   try { client = JSON.parse(new TextDecoder().decode(b64u.dec(clientDataB64))); } catch (e) { throw new UserError(400, "The device's reply couldn't be read."); }
-  if (Date.now() > saved.exp || client.type !== type || !safeEqual(String(client.challenge), saved.challenge) || client.origin !== new URL(request.url).origin) {
+  try { c = b64u.dec(client.challenge); } catch (e) { throw expired(); }
+  if (c.length !== 38) throw expired();
+  const seal = await challengeSeal(env, c.slice(0, 22));
+  let diff = 0, exp = 0;
+  for (let i = 0; i < 16; i++) diff |= seal[i] ^ c[22 + i];
+  for (let i = 16; i < 22; i++) exp = exp * 256 + c[i];
+  if (diff !== 0 || client.type !== type || client.origin !== new URL(request.url).origin) {
     throw new UserError(401, "That unlock attempt wasn't valid. Try again.");
   }
+  if (Date.now() > exp) throw expired();
+  const key = `auth/used-${b64u.enc(c.slice(0, 16))}.json`;
+  if (await env.MEDIA.head(key)) throw expired();     // each challenge works once
+  await env.MEDIA.put(key, JSON.stringify({ exp }));
 }
 
 async function passkeyRoutes(request, env, parts, authed) {
   const method = request.method;
   if (!env.APP_PASSCODE || !env.MEDIA) return fail(503, "The Face ID lock isn't set up yet.");
-  const keys = await loadDoc(env, "passkeys", []);
 
-  if (parts[1] === "challenge" && method === "POST") {
-    const id = crypto.randomUUID(), challenge = b64u.enc(crypto.getRandomValues(new Uint8Array(32)));
-    await env.MEDIA.put(`auth/challenge-${id}.json`, JSON.stringify({ challenge, exp: Date.now() + 5 * 60 * 1000 }));
-    return json({ id, challenge });
-  }
+  // No storage is touched here, so this answers as fast as the network allows.
+  if (parts[1] === "challenge" && method === "POST") return json({ id: "sealed", challenge: await makeChallenge(env) });
 
   if (parts[1] === "login" && method === "POST") {
     const b = await body(request);
+    // The saved keys and the one-time check of the challenge are fetched side by side.
+    const [keys] = await Promise.all([loadDoc(env, "passkeys", []), takeChallenge(env, b.clientDataJSON, "webauthn.get", request)]);
     const saved = keys.find((k) => k.id === b.credentialId);
     if (!saved) return fail(401, "Face ID on this device isn't recognised any more. Use the passcode, then turn the lock on again in Settings.");
-    await takeChallenge(env, b.challengeId, b.clientDataJSON, "webauthn.get", request);
     let ok = false;
     try {
       const auth = b64u.dec(b.authenticatorData), client = b64u.dec(b.clientDataJSON);
@@ -2153,15 +2182,14 @@ async function passkeyRoutes(request, env, parts, authed) {
         await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, derToRaw(b64u.dec(b.signature)), signed);
     } catch (e) { ok = false; }
     if (!ok) return fail(401, "Face ID couldn't be confirmed. Try again or use the passcode.");
-    return json({ token: await sessionToken(env) });
+    return json({ token: await sessionToken(env), status: statusOf(env, true) });
   }
 
   if (!authed) return fail(401, "Enter the passcode to continue.");
-  if (parts.length === 1 && method === "GET") return json({ devices: keys.map((k) => ({ id: k.id, label: k.label, added: k.added })) });
   if (parts[1] === "register" && method === "POST") {
     const b = await body(request);
     if (Number(b.alg) !== -7) return fail(400, "Face ID on this device works in a way the app can't use.");
-    await takeChallenge(env, b.challengeId, b.clientDataJSON, "webauthn.create", request);
+    const [keys] = await Promise.all([loadDoc(env, "passkeys", []), takeChallenge(env, b.clientDataJSON, "webauthn.create", request)]);
     const id = String(b.credentialId || ""), publicKey = String(b.publicKey || "");
     if (!/^[A-Za-z0-9_-]{16,1400}$/.test(id) || !/^[A-Za-z0-9_-]{80,400}$/.test(publicKey)) return fail(400, "The device's reply couldn't be read.");
     try { await crypto.subtle.importKey("spki", b64u.dec(publicKey), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]); }
@@ -2171,6 +2199,8 @@ async function passkeyRoutes(request, env, parts, authed) {
     await saveDoc(env, "passkeys", next);
     return json({ ok: true });
   }
+  const keys = await loadDoc(env, "passkeys", []);
+  if (parts.length === 1 && method === "GET") return json({ devices: keys.map((k) => ({ id: k.id, label: k.label, added: k.added })) });
   if (parts[1] && method === "DELETE") {
     await saveDoc(env, "passkeys", keys.filter((k) => k.id !== parts[1]));
     return json({ ok: true });
@@ -2387,10 +2417,9 @@ async function renderRoutes(request, env, parts) {
 }
 
 // Decides which handler answers a request under /api/.
-async function route(request, env, parts) {
+async function route(request, env, parts, ctx) {
   if (parts[0] === "status" && request.method === "GET") {
-    return json({ configured: !!env.APP_PASSCODE, signedIn: await signedIn(request, env), reels: reelsReady(env),
-      ai: !!(env.ANTHROPIC_API_KEY && env.MEDIA), stock: !!stockProvider(env), instagram: igReady(env) });
+    return json(statusOf(env, await signedIn(request, env)));
   }
   if (parts[0] === "login" && request.method === "POST") return login(request, env);
   if (parts[0] === "passkey") return passkeyRoutes(request, env, parts, await signedIn(request, env));
@@ -2403,7 +2432,7 @@ async function route(request, env, parts) {
   }
   if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat", "slides", "check", "report", "looks", "queue", "insights", "music", "handoffs"].includes(parts[0])) {
     if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
-    if (parts[0] === "jobs") return appRoutes(request, env, parts);
+    if (parts[0] === "jobs") return appRoutes(request, env, parts, ctx);
     if (parts[0] === "stock") return stockRoutes(request, env, parts);
     if (parts[0] === "music") return musicRoutes(request, env, parts, new URL(request.url));
     if (!env.MEDIA) return fail(503, "The app's storage isn't set up yet.");
@@ -2461,13 +2490,13 @@ async function runOneDueJob(env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/")) return new Response("Not found", { status: 404 });
     const parts = url.pathname.slice(5).split("/").filter(Boolean);
     try {
       // "await" matters here: without it, an error inside a handler would skip the catch below.
-      return await route(request, env, parts);
+      return await route(request, env, parts, ctx);
     } catch (e) {
       if (e instanceof UserError) return fail(e.status, e.message);
       console.error(e);
