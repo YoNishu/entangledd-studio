@@ -52,6 +52,7 @@ weekly report, comment reply drafts.
 | 9 | Nishiii as a chat (top right) that can fetch quotes, fill Create, add to the Library, report on posts and the week, check who said a quote | Built against a stand-in; first real run pending |
 | 10 | Quotes copied from the full text of free (Project Gutenberg) books and checked against it; highlights import (Kindle files or plain text) | Built against a stand-in; first real run pending |
 | 11 | Extras: "Check who said this", the week's numbers with best time and themes, reels kept to post later, saved looks, eight more fonts, comment replies drafted by Nishiii, HDR clips tone-mapped | Built against a stand-in; first real run pending |
+| 11b | Insights section: totals for 7, 30, 90 days or all time; reach over time; followers; best posts; best days and times; what works by theme, tone, source, background, format, length, author, music, font, reel length and hashtags; the page's own totals and follower split; audience; rhythm; Nishiii's advice; a downloadable file | Built against a stand-in; first real run pending |
 | 12 | A small scoring model trained on her picks and skips | Only worth it after about 200 picks; not started |
 
 ## How the app is laid out
@@ -62,6 +63,7 @@ weekly report, comment reply drafts.
 | Create | The composer. Tabs: Background, Text (with "Check who said this"), Style (shape, styles, her saved looks), Finish (reel, picture or carousel; post now or keep for later) |
 | Library | What she feeds Nishiii: her own quotes (typed, scanned, or imported highlights), books (each marked if its full text is free to read), films and series, and reels and pages she loves |
 | Posts | The last 7 days against the week before, with Nishiii's note, the best time of day and themes so far; reels waiting to be posted; everything posted with its numbers and comments |
+| Insights | A period picker, then: people reached, the key numbers, reach of each post, best posts, a day-by-time grid, "What works" comparisons, the clearest differences with Nishiii's advice, followers over time, Instagram's totals for the whole page, who follows the page, posting rhythm, and a file of every post's numbers |
 | Settings (top right) | Face ID lock, the Instagram connection, signing out |
 | Nishiii | Ask for five quotes from chosen books, films, series or pages (kept here, apart from Today); what Nishiii has learned about her taste; notes she writes for Nishiii |
 
@@ -102,6 +104,13 @@ only to understand her taste and are never suggested back.
 - Best time of day and best themes appear after six posts have numbers, and only compare
   groups with at least two posts. Times are India time.
 - A reel kept to post later lives on the server for seven days, like every finished reel.
+- Insights compares kinds of post only when a kind has at least two posts, and says so. Backgrounds,
+  fonts and reel lengths are recorded from the day Insights was added; older posts lack them.
+- Followers are noted once a day by the app, so the follower chart starts on the day Insights first
+  ran. Instagram's totals for the whole page cover at most 30 days. Audience details (countries,
+  cities, ages) need 100 followers. Watch time and "left in the first 3 seconds" exist for reels only.
+- Not included: when followers are online (Instagram's format for it isn't documented clearly
+  enough to trust), story numbers, and comparisons against other accounts.
 - Comments need the `instagram_manage_comments` permission on the token used to connect.
   A reply is sent only when she taps Send reply.
 

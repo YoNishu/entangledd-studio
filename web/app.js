@@ -490,7 +490,9 @@
     $("len").value = state.length;
     $("done").hidden = true;
   }
-  function loadBackground(file) {
+  // "info" says where the file came from: { from: "search", words } for one picked from the photo and video search.
+  function loadBackground(file, info) {
+    const origin = { from: (info && info.from) || "own", words: (info && info.words) || "" };
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
       const isVideo = file.type.startsWith("video/") || /\.(mov|mp4|m4v|webm)$/i.test(file.name);
@@ -503,7 +505,7 @@
         v.muted = true; v.loop = true; v.playsInline = true; v.setAttribute("playsinline", "");
         v.addEventListener("loadeddata", () => {
           clearBackground();
-          state.bg = { kind: "video", el: v, url, name: file.name, file };
+          state.bg = { kind: "video", el: v, url, name: file.name, file, ...origin };
           if (isFinite(v.duration)) state.length = Math.round(Math.min(30, Math.max(5, v.duration)));
           v.play().catch(() => {});
           syncBackgroundPane();
@@ -513,7 +515,7 @@
         v.src = url; v.load();
       } else {
         const img = new Image();
-        img.onload = () => { clearBackground(); state.bg = { kind: "image", el: img, url, name: file.name, file }; syncBackgroundPane(); resolve(); };
+        img.onload = () => { clearBackground(); state.bg = { kind: "image", el: img, url, name: file.name, file, ...origin }; syncBackgroundPane(); resolve(); };
         img.onerror = fail;
         img.src = url;
       }
@@ -715,7 +717,14 @@
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // What is on the canvas right now, in the few words Insights compares posts by.
+  function madeWith() {
+    const main = state.blocks.find((b) => b.role !== "author") || state.blocks[0] || {};
+    return { bg: state.bg ? (state.bg.kind === "video" ? "video" : "photo") : "plain", bgFrom: state.bg ? state.bg.from || "own" : "", bgWords: state.bg ? state.bg.words || "" : "",
+      seconds: state.shape === "reel" ? state.length : 0, font: main.font || "", shape: state.shape, lower: !!main.lower };
+  }
   async function makeReel() {
+    const made = madeWith();
     $("done").hidden = true;
     syncReelPane("progress");
     try {
@@ -755,7 +764,7 @@
       progress("Fetching the finished reel…", null);
       const blob = await (await api(`jobs/${job.id}/reel`)).blob();
       if (reel && reel.url) URL.revokeObjectURL(reel.url);
-      reel = { id: job.id, blob, url: URL.createObjectURL(blob) };
+      reel = { id: job.id, blob, url: URL.createObjectURL(blob), made };
       $("result").src = reel.url;
       syncReelPane("result");
     } catch (e) {
@@ -804,7 +813,7 @@
     api, server, loadBackground, setQuote, showTab, signOut,
     faceId: { on: faceIdOn, supported: () => !!window.PublicKeyCredential, name: faceIdName, enable: faceIdEnable, disable: faceIdDisable },
     selectedText: () => (selectedBlock() ? selectedBlock().text : ""),
-    currentReel: () => reel,
+    currentReel: () => reel, madeWith,
     shape: () => state.shape,
     pictureBlob: () => toBlob(compose(false), "image/jpeg", 0.92),
     quoteText: () => state.blocks.map((b) => b.text.trim()).filter(Boolean).join("\n"),

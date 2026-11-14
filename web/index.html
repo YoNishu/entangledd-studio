@@ -28,6 +28,7 @@
     <button id="nav-create" aria-pressed="true">Create</button>
     <button id="nav-library" aria-pressed="false">Library</button>
     <button id="nav-posts" aria-pressed="false">Posts</button>
+    <button id="nav-insights" aria-pressed="false">Insights</button>
     <button id="nav-nishiii" aria-pressed="false">Nishiii</button>
   </nav>
 </header>
@@ -113,6 +114,43 @@
   <p class="note" id="posts-note" role="status"></p>
   <div class="cards" id="list-posts"></div>
 
+</section>
+
+<section class="page" id="view-insights" hidden>
+  <h2>Insights</h2>
+  <div class="seg four" id="ins-range" role="group" aria-label="Period">
+    <button type="button" data-range="7" aria-pressed="false">7 days</button>
+    <button type="button" data-range="30" aria-pressed="false">30 days</button>
+    <button type="button" data-range="90" aria-pressed="false">90 days</button>
+    <button type="button" data-range="all" aria-pressed="true">All time</button>
+  </div>
+  <p class="note" id="ins-note" role="status"></p>
+  <div class="ins" id="ins-body" hidden>
+    <article class="card hero" id="ins-hero"></article>
+    <div class="tiles" id="ins-tiles"></div>
+    <article class="card" id="ins-trend"></article>
+    <article class="card" id="ins-top"></article>
+    <article class="card" id="ins-times"></article>
+    <article class="card" id="ins-works"></article>
+    <article class="card" id="ins-know"></article>
+    <article class="card" id="ins-followers"></article>
+    <article class="card" id="ins-reach"></article>
+    <article class="card" id="ins-audience"></article>
+    <article class="card" id="ins-rhythm"></article>
+    <button class="btn" id="ins-download">Download every post's numbers</button>
+    <p class="note">A spreadsheet file with one row per post. Instagram forgets its numbers after about 90 days; the app keeps yours.</p>
+    <details class="explain">
+      <summary>What the numbers mean</summary>
+      <dl>
+        <dt>Reach</dt><dd>How many different people saw a post.</dd>
+        <dt>Views</dt><dd>How many times it was played or shown. One person can count several times.</dd>
+        <dt>Engagement rate</dt><dd>Likes, comments, saves and shares together, as a share of the people reached.</dd>
+        <dt>Saves and shares</dt><dd>The strongest signs a quote landed: someone kept it, or sent it to someone.</dd>
+        <dt>Average watch time</dt><dd>How long a reel was watched per play, on average.</dd>
+        <dt>Left in the first 3 seconds</dt><dd>The share of first views that swiped away almost at once.</dd>
+      </dl>
+    </details>
+  </div>
 </section>
 
 <section class="page" id="view-nishiii" hidden>
@@ -441,5 +479,6 @@
 
 <script src="app.js"></script>
 <script src="studio.js"></script>
+<script src="insights.js"></script>
 </body>
 </html>

@@ -65,8 +65,11 @@
     });
   }
 
-  // ---------- moving between the five sections ----------
-  const VIEWS = ["today", "create", "library", "posts", "nishiii"];
+  // What the Insights file (insights.js) borrows from here.
+  window.StudioKit = { el, getJson, friendly, compact, day };
+
+  // ---------- moving between the six sections ----------
+  const VIEWS = ["today", "create", "library", "posts", "insights", "nishiii"];
   let current = "create";
   function show(view) {
     current = view;
@@ -78,6 +81,7 @@
     if (view === "today") loadToday();
     if (view === "library") loadLibrary();
     if (view === "posts") loadPosts();
+    if (view === "insights") window.Insights.load();
     if (view === "nishiii") loadTaste();
   }
   VIEWS.forEach((v) => $("nav-" + v).addEventListener("click", () => show(v)));
@@ -626,7 +630,7 @@
         const blob = await fetchFromLibrary(item);
         if (mine !== pickNo) return;
         const video = item.kind === "video";
-        await S.loadBackground(new File([blob], `stock-${item.id}.${video ? "mp4" : "jpg"}`, { type: video ? "video/mp4" : "image/jpeg" }));
+        await S.loadBackground(new File([blob], `stock-${item.id}.${video ? "mp4" : "jpg"}`, { type: video ? "video/mp4" : "image/jpeg" }), { from: "search", words: stock.q });
         $("stock-sheet").hidden = true;
         status("");
       } catch (e) { if (mine === pickNo) status(friendly(e)); }
@@ -723,6 +727,9 @@
     if (w.times.length) kids.push(el("p", { className: "src", textContent: `Best time so far: ${w.times[0].name.toLowerCase()}, about ${compact(w.times[0].reach)} reach a post across ${w.times[0].posts} posts. Next is ${w.times[1].name.toLowerCase()} at ${compact(w.times[1].reach)}.` }));
     else if (w.measured < 6) kids.push(el("p", { className: "src", textContent: `Best times to post show up here after six posts have numbers. So far: ${w.measured}.` }));
     if (w.themes.length) kids.push(el("p", { className: "src", textContent: `Themes that travel furthest: ${w.themes.map((t) => `${t.name} (${compact(t.reach)})`).join(", ")}.` }));
+    const more = el("button", { className: "btn quiet", type: "button", textContent: "See everything in Insights" });
+    more.addEventListener("click", () => show("insights"));
+    kids.push(more);
     card.replaceChildren(...kids);
     $("queue-note").textContent = w.times.length ? `Nothing here posts by itself: each one waits for your tap. Your posts have done best in the ${w.times[0].name.toLowerCase()} so far.` : "Nothing here posts by itself: each one waits for your tap. Finished reels are kept for a week.";
   }
@@ -749,7 +756,7 @@
     const btn = $("queue-add");
     btn.disabled = true;
     try {
-      await send("queue", "POST", { jobId: reel.id, quote: S.quoteText(), ...onCanvas });
+      await send("queue", "POST", { jobId: reel.id, quote: S.quoteText(), ...onCanvas, made: reel.made });
       btn.textContent = "Kept. Find it in Posts, under Waiting to be posted.";
     } catch (e) { btn.disabled = false; btn.textContent = friendly(e); }
   });
@@ -951,6 +958,7 @@
   }
   $("slide-add").addEventListener("click", async () => {
     const blob = await S.pictureBlob();
+    if (!slides.length) carouselMade = S.madeWith();      // the first picture stands for the carousel in Insights
     slides.push({ blob, url: URL.createObjectURL(blob) });
     renderSlides();
   });
@@ -960,6 +968,7 @@
   // ---------- Post to Instagram ----------
   let music = null, posting = false, player = null, postMode = "reel";
   let waiting = null;      // set when posting a reel from the waiting list instead of the one just made
+  let carouselMade = null; // what the carousel's first picture was made with
   const postStatus = (msg) => { $("post-status").textContent = msg; };
   function chooseMusic(item) {
     music = item;
@@ -1034,7 +1043,8 @@
     posting = true; $("post-go").disabled = true;
     const sent = waiting ? { author: waiting.author, theme: waiting.theme, tone: waiting.tone, source: waiting.source, suggestionId: waiting.suggestionId } : onCanvas;
     try {
-      const about = { caption: $("post-caption").value, quote: waiting ? waiting.quote : S.quoteText(), ...sent };
+      const about = { caption: $("post-caption").value, quote: waiting ? waiting.quote : S.quoteText(), ...sent,
+        made: waiting ? waiting.made : postMode === "carousel" ? carouselMade : reel && reel.made };
       let post;
       if (postMode === "carousel") {
         const ids = [];

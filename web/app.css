@@ -162,8 +162,8 @@ input[type="range"] { width: 100%; accent-color: var(--glass); height: 28px; }
 }
 
 /* ---------- sections: Today, Create, Library ---------- */
-.views { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 10px; background: var(--tide); border-radius: 999px; padding: 4px; }
-.views button { padding: 8px 0; border: 0; border-radius: 999px; background: none; color: var(--mist); font: 500 13.5px "Poppins", sans-serif; cursor: pointer; }
+.views { display: grid; grid-template-columns: repeat(6, auto); justify-content: space-between; gap: 0; margin-top: 10px; background: var(--tide); border-radius: 999px; padding: 4px; }
+.views button { padding: 8px clamp(3px, 1.5vw, 14px); border: 0; border-radius: 999px; background: none; color: var(--mist); font: 500 clamp(11px, 3.3vw, 13.5px) "Poppins", sans-serif; cursor: pointer; white-space: nowrap; }
 .views button[aria-pressed="true"] { background: var(--swell); color: var(--foam); }
 .work[hidden], .page[hidden] { display: none; }
 
@@ -332,3 +332,65 @@ a.btn { text-decoration: none; }
 .comment textarea { background: var(--ink); }
 #check-result { display: grid; gap: 8px; }
 #check-result p { margin: 0; }
+
+/* ---------- Insights ---------- */
+.seg.four { grid-template-columns: repeat(4, 1fr); }
+.ins { display: grid; gap: 14px; transition: opacity 0.15s; }
+.ins.stale { opacity: 0.45; }
+.ins .card { position: relative; }
+.ins .card h3 { font: 500 17px/1.3 "Lora", serif; color: var(--foam); margin: 0; }
+.ins .card h3 + .sub, .ins .sub { margin: 0; color: var(--mist); font-size: 12.5px; line-height: 1.45; }
+.ins .card ul:not(.rank):not(.key) { padding-left: 18px; font-size: 14px; display: grid; gap: 6px; }
+.ins .card > div > h3 { margin-top: 10px; }
+.tile-label { margin: 0; color: var(--mist); font-size: 12.5px; }
+.hero-num { margin: 0; font: 600 54px/1.05 "Poppins", sans-serif; color: var(--foam); letter-spacing: -0.02em; }
+.delta { margin: 0; color: var(--mist); font-size: 12px; line-height: 1.4; }
+.delta .up { color: var(--glass); }
+.delta .down { color: var(--coral); }
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tile { background: var(--tide); border-radius: var(--radius); padding: 12px 14px; display: grid; gap: 2px; align-content: start; }
+.tile-num { margin: 0; font: 600 24px/1.2 "Poppins", sans-serif; color: var(--foam); }
+
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .tick { font: 400 10px "Poppins", sans-serif; fill: var(--mist); font-variant-numeric: tabular-nums; }
+.chart .val { font: 500 11px "Poppins", sans-serif; fill: var(--foam); }
+.chart .mark.lit { filter: brightness(1.25); }
+.chart .hit { outline: none; cursor: pointer; }
+.chart .hit:focus-visible { stroke: var(--foam); stroke-width: 1; }
+.tip { position: absolute; z-index: 2; pointer-events: none; background: var(--ink); border: 1px solid var(--swell); border-radius: 10px; padding: 7px 10px; display: grid; gap: 1px; max-width: 220px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+.tip strong { font: 600 14px "Poppins", sans-serif; color: var(--foam); }
+.tip span { font-size: 11.5px; color: var(--mist); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.chips.pick button { color: var(--mist); padding: 6px 11px; font-size: 13px; }
+.chips.pick button[aria-pressed="true"] { background: var(--swell); color: var(--foam); border-color: var(--swell); }
+.rank, .ins .card ul.rank, .ins .card ul.key { list-style: none; margin: 0; padding: 0; }
+.rank { display: grid; gap: 12px; }
+.rank li { display: grid; gap: 5px; margin: 0; }
+.rank-top { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: baseline; }
+.rank-name { margin: 0; font-size: 14px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.rank-name a { color: var(--foam); text-decoration: none; }
+.rank-val { margin: 0; font: 600 15px "Poppins", sans-serif; font-variant-numeric: tabular-nums; }
+.rank.tight { gap: 8px; }
+.meter { height: 10px; background: var(--ink); border-radius: 0 4px 4px 0; overflow: hidden; }
+.meter i { display: block; height: 100%; background: #2A9D8A; border-radius: 0 4px 4px 0; }
+.meter.tall { height: 12px; }
+
+.heat { display: grid; grid-template-columns: 34px repeat(4, 1fr); gap: 2px; align-items: center; }
+.heat-head { font-size: 11px; color: var(--mist); text-align: center; padding-bottom: 3px; }
+.heat-day { font-size: 11.5px; color: var(--mist); }
+.heat-cell { height: 30px; border-radius: 4px; display: grid; place-items: center; font: 500 11.5px "Poppins", sans-serif; font-variant-numeric: tabular-nums; cursor: pointer; outline-offset: 1px; }
+.heat-cell.none { background: var(--ink); opacity: 0.5; cursor: default; }
+
+.split { display: flex; gap: 2px; height: 8px; }
+.split i { border-radius: 999px; min-width: 4px; }
+.key { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13.5px; }
+.key li { display: grid; grid-template-columns: 10px 1fr auto; gap: 8px; align-items: center; margin: 0; }
+.key i { width: 10px; height: 10px; border-radius: 3px; }
+.key b { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+.explain { color: var(--mist); font-size: 13.5px; }
+.explain summary { cursor: pointer; padding: 6px 0; color: var(--foam); }
+.explain dl { margin: 6px 0 0; display: grid; gap: 8px; }
+.explain dt { color: var(--foam); font-weight: 500; }
+.explain dd { margin: 0; }

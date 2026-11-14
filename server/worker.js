@@ -835,6 +835,7 @@ async function graph(env, method, path, params) {
     const e = data.error || {};
     console.error("Graph error", res.status, e.code, e.error_subcode, e.message);
     const err = new UserError(502, `Instagram said: ${e.error_user_msg || e.message || `the request failed (status ${res.status})`}`);
+    err.code = e.code;
     err.expired = e.code === 190;
     err.denied = e.code === 10 || (e.code >= 200 && e.code < 300);
     // Instagram's answer for something that has been deleted (or was never visible to this app).
@@ -1028,7 +1029,7 @@ async function postRoutes(request, env, parts) {
     const post = { id: crypto.randomUUID(), jobId: b.jobId, ...made, state: "processing", error: null, caption, music,
       quote: lines(b.quote, 600), author: oneLine(b.author, 80), theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20),
       source: oneLine(b.source, 20), suggestionId: UUID.test(b.suggestionId || "") ? b.suggestionId : "",
-      created: Date.now(), published: null, permalink: "" };
+      made: cleanMade(b.made), created: Date.now(), published: null, permalink: "" };
     posts.push(post);
     await saveDoc(env, "posts", posts.slice(-500));
     const queue = await loadDoc(env, "queue", []);
@@ -1066,7 +1067,7 @@ async function postCarousel(request, env, ig, posts, b) {
     access_token: tokenKind === "user" ? ig.userToken : ig.pageToken });
   const post = { id: crypto.randomUUID(), kind: "carousel", slides: slides.length, containerId: whole.id, tokenKind, state: "processing", error: null, caption, music: null,
     quote: lines(b.quote, 600), author: oneLine(b.author, 80), theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20), source: oneLine(b.source, 20),
-    suggestionId: UUID.test(b.suggestionId || "") ? b.suggestionId : "", created: Date.now(), published: null, permalink: "" };
+    suggestionId: UUID.test(b.suggestionId || "") ? b.suggestionId : "", made: cleanMade(b.made), created: Date.now(), published: null, permalink: "" };
   posts.push(post);
   await saveDoc(env, "posts", posts.slice(-500));
   return json(publicPost(post));
@@ -1103,8 +1104,15 @@ async function graphAny(env, ig, method, path, params) {
 
 // ---------- insights: how her own posts did ----------
 const INSIGHT_METRICS = ["reach", "views", "likes", "comments", "saved", "shares"];
+const ALL_POST_METRICS = [...INSIGHT_METRICS, "total_interactions", "reposts", "follows", "profile_visits"];
+const metricLists = (post) => (post.kind === "carousel"
+  ? [[...INSIGHT_METRICS, "total_interactions", "follows", "profile_visits"], INSIGHT_METRICS, ["reach", "likes", "comments", "saved", "shares"]]
+  : [[...INSIGHT_METRICS, "total_interactions", "ig_reels_avg_watch_time", "ig_reels_video_view_total_time", "reels_skip_rate", "reposts"],
+    [...INSIGHT_METRICS, "total_interactions", "ig_reels_avg_watch_time", "ig_reels_video_view_total_time"], INSIGHT_METRICS, ["reach", "likes", "comments", "saved", "shares"]]);
 async function refreshInsights(env, ig, posts, { force = false, max = 15 } = {}) {
-  let changed = false, done = 0;
+  let changed = false, done = 0, knownChanged = false;
+  let known = await loadDoc(env, "metriclists", {});
+  if (known.at && Date.now() - known.at > 7 * 24 * 3600 * 1000) known = {};       // try the fullest list again each week
   const recent = posts.filter((p) => p.state === "published" && p.mediaId).slice(-60).reverse();
   for (const post of recent) {
     if (done >= max) break;
@@ -1113,17 +1121,29 @@ async function refreshInsights(env, ig, posts, { force = false, max = 15 } = {})
     if (!force && post.insightsAt && Date.now() - post.insightsAt < every) continue;
     done += 1;
     try {
-      let data;
-      try { data = await graphAny(env, ig, "GET", `/${post.mediaId}/insights`, { metric: INSIGHT_METRICS.join(",") }); }
-      catch (e) {
-        // Not every kind of post has every number; ask again for the ones all posts share.
-        if (!(e instanceof UserError) || e.gone || e.expired) throw e;
-        data = await graphAny(env, ig, "GET", `/${post.mediaId}/insights`, { metric: "reach,likes,comments,saved,shares" });
+      // Not every kind of post, or every account, has every number. Ask for the fullest list first and step
+      // down until Instagram accepts one. The step that worked is remembered for a week, for all posts of that kind.
+      const lists = metricLists(post), kind = post.kind === "carousel" ? "carousel" : "reel";
+      let data = null;
+      for (let i = Math.min(known[kind] || 0, lists.length - 1); i < lists.length; i++) {
+        try {
+          data = await graphAny(env, ig, "GET", `/${post.mediaId}/insights`, { metric: lists[i].join(",") });
+          if ((known[kind] || 0) !== i) { known[kind] = i; known.at = Date.now(); knownChanged = true; }
+          break;
+        } catch (e) {
+          // Step down only when Instagram says the list itself is the problem (its "invalid parameter" answer).
+          if (!(e instanceof UserError) || e.gone || e.expired || e.code !== 100 || i === lists.length - 1) throw e;
+        }
       }
       const m = {};
       for (const row of data.data || []) {
-        const v = row.total_value ? row.total_value.value : row.values && row.values[0] ? row.values[0].value : null;
-        if (INSIGHT_METRICS.includes(row.name) && Number.isFinite(Number(v))) m[row.name] = Number(v);
+        const raw = row.total_value ? row.total_value.value : row.values && row.values[0] ? row.values[0].value : null;
+        const v = Number(raw);
+        if (raw == null || !Number.isFinite(v)) continue;
+        if (row.name === "ig_reels_avg_watch_time") m.watch = Math.round((v > 600 ? v / 1000 : v) * 10) / 10;            // seconds; Instagram sends milliseconds
+        else if (row.name === "ig_reels_video_view_total_time") m.watchTotal = Math.round(v > 600 ? v / 1000 : v);
+        else if (row.name === "reels_skip_rate") m.skip = Math.round((v <= 1 ? v * 100 : v) * 10) / 10;                   // a percentage
+        else if (ALL_POST_METRICS.includes(row.name)) m[row.name] = v;
       }
       post.metrics = { ...(post.metrics || {}), ...m };
       post.insightsAt = Date.now(); changed = true;
@@ -1137,6 +1157,7 @@ async function refreshInsights(env, ig, posts, { force = false, max = 15 } = {})
       }
     }
   }
+  if (knownChanged) await saveDoc(env, "metriclists", known);
   return changed;
 }
 
@@ -1230,6 +1251,266 @@ async function report(env) {
   return { ...stats, note };
 }
 
+// ---------- Insights: what the numbers say, over any stretch of time ----------
+// Instagram itself forgets after about 90 days; everything here is kept by the app, so "All time" stays whole.
+const DAY_MS = 24 * 3600 * 1000;
+const RANGE_DAYS = { 7: 7, 30: 30, 90: 90, all: 0 };
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const PART_SHORT = ["Morning", "Midday", "Evening", "Night"];
+const FONT_NAMES = { lora: "Lora", "lora-italic": "Lora italic", poppins: "Poppins", "poppins-light": "Poppins light", "poppins-italic": "Poppins italic",
+  crimson: "Crimson", "crimson-italic": "Crimson italic", baskerville: "Baskerville", young: "Young Serif", italiana: "Italiana", poiret: "Poiret", hand: "Handwritten", typewriter: "Typewriter" };
+const SOURCE_NAMES = { book: "From a book", film: "From a film", series: "From a series", classic: "A well-known line", own: "Your own lines", page: "In the spirit of a page you love" };
+
+const interactionsOf = (m) => (m.total_interactions != null ? m.total_interactions : (m.likes || 0) + (m.comments || 0) + (m.saved || 0) + (m.shares || 0));
+const share = (part, whole) => (whole > 0 ? Math.round((part / whole) * 1000) / 10 : null);
+const mean = (list) => (list.length ? list.reduce((a, b) => a + b, 0) / list.length : null);
+const round1 = (v) => (v == null ? null : Math.round(v * 10) / 10);
+const shortNumber = (n) => (n >= 10000 ? `${Math.round(n / 1000)}K` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
+const wordsIn = (text) => String(text || "").split(/\s+/).filter(Boolean).length;
+
+// What was on the canvas when a post was made, as sent by the app. Kept so results can be compared later.
+function cleanMade(m) {
+  if (!m || typeof m !== "object") return null;
+  const one = (v, list) => (list.includes(v) ? v : "");
+  const seconds = Number(m.seconds);
+  return { bg: one(m.bg, ["video", "photo", "plain"]), bgFrom: one(m.bgFrom, ["own", "search"]), bgWords: oneLine(m.bgWords, 60).toLowerCase(),
+    seconds: Number.isFinite(seconds) && seconds > 0 ? Math.min(90, Math.round(seconds)) : 0, font: oneLine(m.font, 30), shape: one(m.shape, ["reel", "post"]), lower: !!m.lower };
+}
+
+function totalsOf(list) {
+  const t = { posts: list.length, reach: 0, views: 0, likes: 0, comments: 0, saved: 0, shares: 0, interactions: 0 };
+  for (const p of list) {
+    const m = p.metrics || {};
+    for (const k of INSIGHT_METRICS) t[k] += m[k] || 0;
+    t.interactions += interactionsOf(m);
+  }
+  // Rates are worked out on the totals, so one tiny post can't swing them.
+  t.rate = share(t.interactions, t.reach); t.saveRate = share(t.saved, t.reach); t.shareRate = share(t.shares, t.reach);
+  t.avgReach = list.length ? Math.round(t.reach / list.length) : null;
+  t.watch = round1(mean(list.map((p) => (p.metrics || {}).watch).filter((v) => v > 0)));
+  t.skip = round1(mean(list.map((p) => (p.metrics || {}).skip).filter((v) => v != null)));
+  return t;
+}
+
+// The ways posts can be compared. Each gives a post one name (or several, for hashtags), or nothing.
+const DIMENSIONS = [
+  ["theme", "Theme", (p) => (p.theme || "").toLowerCase()],
+  ["tone", "Tone", (p) => (p.tone || "").toLowerCase()],
+  ["source", "Where the quote came from", (p) => SOURCE_NAMES[p.source] || ""],
+  ["background", "Background", (p) => {
+    const m = p.made; if (!m || !m.bg) return "";
+    if (m.bg === "plain") return "Plain colour";
+    return `${m.bgFrom === "search" ? "Searched" : "Your own"} ${m.bg}`;
+  }],
+  ["bgWords", "Background search words", (p) => (p.made && p.made.bgFrom === "search" ? p.made.bgWords : "")],
+  ["format", "Reel or carousel", (p) => (p.kind === "carousel" ? "Carousel" : "Reel")],
+  ["length", "Quote length", (p) => { const n = wordsIn(p.quote); return !n ? "" : n <= 10 ? "Short (up to 10 words)" : n <= 25 ? "Medium (11 to 25 words)" : "Long (over 25 words)"; }],
+  ["author", "Author's name", (p) => (p.quote ? (p.author ? "With an author's name" : "Without a name") : "")],
+  ["music", "Music", (p) => (p.kind === "carousel" ? "" : p.music ? "With music" : "Without music")],
+  ["font", "Font", (p) => (p.made && p.made.font ? FONT_NAMES[p.made.font] || p.made.font : "")],
+  ["seconds", "Reel length", (p) => { const s = p.made && p.made.seconds; return !s || p.kind === "carousel" ? "" : s <= 8 ? "Up to 8 seconds" : s <= 15 ? "9 to 15 seconds" : "Over 15 seconds"; }],
+  ["hashtags", "Hashtags", (p) => [...new Set((String(p.caption || "").toLowerCase().match(/#[\p{L}\p{N}_]+/gu) || []))].slice(0, 30)],
+];
+
+function groupsFor(list, nameOf) {
+  const groups = new Map();
+  for (const p of list) {
+    const names = nameOf(p);
+    for (const name of Array.isArray(names) ? names : [names]) {
+      if (!name) continue;
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(p);
+    }
+  }
+  // A group needs two posts before it is shown, so one lucky post doesn't decide anything.
+  return [...groups].filter(([, v]) => v.length >= 2).map(([name, v]) => {
+    const t = totalsOf(v);
+    return { name, posts: v.length, reach: t.avgReach, rate: t.rate, saves: Math.round(t.saved / v.length) };
+  }).sort((a, b) => b.reach - a.reach);
+}
+
+function buildInsights(allPosts, range, now) {
+  const days = RANGE_DAYS[range] || 0;
+  const live = allPosts.filter((p) => p.state === "published" && p.published).sort((a, b) => a.published - b.published);
+  const from = days ? now - days * DAY_MS : (live[0] ? live[0].published : now);
+  const inRange = live.filter((p) => p.published > from - (days ? 0 : 1));
+  const before = days ? live.filter((p) => p.published > from - days * DAY_MS && p.published <= from) : [];
+  const measured = inRange.filter((p) => reachOf(p) > 0);
+
+  // One row per post: what the lists, the chart and the downloaded file are made from.
+  const rows = inRange.map((p) => {
+    const m = p.metrics || {}, made = p.made || {};
+    return { id: p.id, quote: oneLine(p.quote, 140), author: p.author || "", published: p.published, kind: p.kind || "reel", permalink: p.permalink || "",
+      theme: p.theme || "", tone: p.tone || "", reach: reachOf(p), views: m.views || 0, likes: m.likes || 0, comments: m.comments || 0, saved: m.saved || 0, shares: m.shares || 0,
+      interactions: interactionsOf(m), rate: share(interactionsOf(m), reachOf(p)), watch: m.watch || null, skip: m.skip != null ? m.skip : null,
+      background: made.bg ? (made.bg === "plain" ? "plain" : `${made.bgFrom === "search" ? "searched" : "own"} ${made.bg}`) : "", music: p.music ? p.music.title || "yes" : "" };
+  });
+
+  // Reach over time: a bar per post while there are few, a bar per week once there are many.
+  let trend;
+  if (measured.length <= 24) {
+    trend = { by: "post", bars: measured.map((p) => ({ at: p.published, reach: reachOf(p), label: oneLine(p.quote, 60) })) };
+  } else {
+    const weeks = new Map();
+    for (const p of measured) {
+      const start = Math.floor((p.published + IST_MS - 4 * DAY_MS) / (7 * DAY_MS)) * 7 * DAY_MS + 4 * DAY_MS - IST_MS;   // weeks start on Monday, India time
+      const w = weeks.get(start) || { at: start, reach: 0, posts: 0 };
+      w.reach += reachOf(p); w.posts += 1; weeks.set(start, w);
+    }
+    trend = { by: "week", bars: [...weeks.values()].sort((a, b) => a.at - b.at).slice(-26).map((w) => ({ ...w, label: `${w.posts} post${w.posts === 1 ? "" : "s"}` })) };
+  }
+
+  // When posts do best: day of the week against time of day (India time).
+  const cells = WEEKDAYS.map(() => DAYPARTS.map(() => []));
+  for (const p of measured) {
+    const d = new Date(p.published + IST_MS), h = d.getUTCHours();
+    const part = DAYPARTS.findIndex(([, a, b]) => (h >= a && h < b) || (h + 24 >= a && h + 24 < b));
+    cells[(d.getUTCDay() + 6) % 7][part].push(reachOf(p));
+  }
+  const grid = cells.map((row) => row.map((v) => (v.length ? { posts: v.length, reach: Math.round(mean(v)) } : null)));
+  const ranked = (rowsOf) => rowsOf.filter((r) => r.posts >= 2).sort((a, b) => b.reach - a.reach);
+  const byPart = ranked(DAYPARTS.map(([name], i) => { const v = cells.flatMap((row) => row[i]); return { name, posts: v.length, reach: Math.round(mean(v) || 0) }; }));
+  const byDay = ranked(WEEKDAYS.map((name, i) => { const v = cells[i].flat(); return { name, posts: v.length, reach: Math.round(mean(v) || 0) }; }));
+  const times = { days: WEEKDAYS, parts: PART_SHORT, grid, byPart: byPart.length >= 2 ? byPart : [], byDay: byDay.length >= 2 ? byDay : [], enough: measured.length >= 6 };
+
+  // What works: every comparison that has at least two groups of two posts.
+  const dimensions = DIMENSIONS.map(([id, name, nameOf]) => ({ id, name, groups: groupsFor(measured, nameOf).slice(0, 8) })).filter((d) => d.groups.length >= 2);
+
+  // The clearest differences, in plain words.
+  const standouts = dimensions.filter((d) => d.id !== "hashtags" && d.id !== "bgWords").map((d) => {
+    const top = d.groups[0], low = d.groups[d.groups.length - 1];
+    return { ratio: low.reach > 0 ? top.reach / low.reach : 0, weight: Math.min(top.posts, low.posts),
+      text: `${d.name}: "${top.name}" posts reach about ${(top.reach / Math.max(1, low.reach)).toFixed(1)} times as far as "${low.name}" (${top.posts} posts against ${low.posts}).` };
+  }).filter((s) => s.ratio >= 1.3).sort((a, b) => b.ratio * Math.sqrt(b.weight) - a.ratio * Math.sqrt(a.weight)).slice(0, 4).map((s) => s.text);
+  if (times.byPart.length) standouts.push(`Time of day: ${times.byPart[0].name.toLowerCase()} posts reach about ${shortNumber(times.byPart[0].reach)} each, the best so far (${times.byPart[0].posts} posts).`);
+
+  // Rhythm: how regularly posts go out, over the last eight weeks whatever the range.
+  const weeks = [];
+  for (let i = 7; i >= 0; i--) weeks.push({ start: now - (i + 1) * 7 * DAY_MS, posts: live.filter((p) => p.published > now - (i + 1) * 7 * DAY_MS && p.published <= now - i * 7 * DAY_MS).length });
+  let streak = 0;
+  for (let i = weeks.length - 1; i >= 0 && weeks[i].posts > 0; i--) streak += 1;
+  const last = live[live.length - 1];
+  const rhythm = { weeks, streak, sinceLast: last ? Math.floor((now - last.published) / DAY_MS) : null, perWeek: round1(weeks.reduce((a, w) => a + w.posts, 0) / weeks.length) };
+
+  return { range, from, to: now, totals: totalsOf(inRange), before: days && before.length ? totalsOf(before) : null, measured: measured.length,
+    posts: rows.reverse(), trend, times, dimensions, standouts, rhythm };
+}
+
+// The account's own numbers: followers each day (kept by the app), and what Instagram reports for the page as a whole.
+async function snapshotAccount(env, ig, { force = false } = {}) {
+  const acct = await loadDoc(env, "account", { days: [] });
+  const today = todayIST();
+  const have = acct.days.find((d) => d.d === today);
+  if (have && !force && Date.now() - (have.at || 0) < 6 * 3600 * 1000) return acct;
+  try {
+    const me = await graphAny(env, ig, "GET", `/${ig.igId}`, { fields: "followers_count,media_count" });
+    const row = { d: today, at: Date.now(), followers: Number(me.followers_count) || 0, media: Number(me.media_count) || 0 };
+    acct.days = [...acct.days.filter((d) => d.d !== today), row].slice(-800);
+    await saveDoc(env, "account", acct);
+  } catch (e) { if (!(e instanceof UserError)) throw e; }
+  return acct;
+}
+
+const valueOf = (row) => (row && row.total_value ? row.total_value : null);
+async function accountNumbers(env, ig, days, followers) {
+  // Instagram answers for at most 30 days at a time, and its numbers lag, so this is kept for a few hours.
+  const cache = await loadDoc(env, `insightcache/account-${days}`, null);
+  if (cache && Date.now() - cache.at < 4 * 3600 * 1000) return cache.data;
+  const until = Math.floor(Date.now() / 1000), since = until - Math.min(days, 30) * 24 * 3600 + 3600;
+  const ask = async (params) => {
+    try { return (await graphAny(env, ig, "GET", `/${ig.igId}/insights`, { period: "day", metric_type: "total_value", since: String(since), until: String(until), ...params })).data || []; }
+    catch (e) { if (!(e instanceof UserError)) throw e; return []; }
+  };
+  const [whole, split] = await Promise.all([ask({ metric: "reach,views,accounts_engaged,total_interactions" }), ask({ metric: "reach", breakdown: "follow_type" })]);
+  const get = (name) => { const v = valueOf(whole.find((r) => r.name === name)); return v && Number.isFinite(Number(v.value)) ? Number(v.value) : null; };
+  const data = { days: Math.min(days, 30), reached: get("reach"), views: get("views"), engaged: get("accounts_engaged"), interactions: get("total_interactions"), followers: null, others: null };
+  const parts = ((valueOf(split[0]) || {}).breakdowns || [])[0];
+  for (const r of (parts && parts.results) || []) {
+    if (r.dimension_values.includes("FOLLOWER")) data.followers = r.value;
+    if (r.dimension_values.includes("NON_FOLLOWER")) data.others = r.value;
+  }
+  if (data.reached != null || data.views != null) await saveDoc(env, `insightcache/account-${days}`, { at: Date.now(), data });
+  return data;
+}
+
+async function audience(env, ig, followers) {
+  // Instagram only shares who follows a page once it has 100 followers.
+  if (followers < 100) return { available: false, followers };
+  const cache = await loadDoc(env, "insightcache/audience", null);
+  if (cache && Date.now() - cache.at < 7 * DAY_MS) return cache.data;
+  const one = async (breakdown) => {
+    for (const timeframe of ["this_month", "last_30_days"]) {
+      try {
+        const data = (await graphAny(env, ig, "GET", `/${ig.igId}/insights`, { metric: "follower_demographics", period: "lifetime", metric_type: "total_value", timeframe, breakdown })).data || [];
+        const parts = ((valueOf(data[0]) || {}).breakdowns || [])[0];
+        const rows = ((parts && parts.results) || []).map((r) => ({ name: oneLine(r.dimension_values[r.dimension_values.length - 1], 60), value: Number(r.value) || 0 })).filter((r) => r.value > 0);
+        if (rows.length) return rows;
+      } catch (e) { if (!(e instanceof UserError)) throw e; }
+    }
+    return [];
+  };
+  const [country, city, age, gender] = await Promise.all([one("country"), one("city"), one("age"), one("gender")]);
+  const top = (rows, n) => rows.sort((a, b) => b.value - a.value).slice(0, n);
+  const genderNames = { F: "Women", M: "Men", U: "Not stated" };
+  const data = { available: country.length + city.length + age.length + gender.length > 0, followers,
+    country: top(country, 6), city: top(city, 6), age: age.sort((a, b) => a.name.localeCompare(b.name)), gender: top(gender, 3).map((g) => ({ ...g, name: genderNames[g.name] || g.name })) };
+  if (data.available) await saveDoc(env, "insightcache/audience", { at: Date.now(), data });
+  return data;
+}
+
+const ADVICE_SYSTEM = `You are Nishiii. You read the numbers for Dhruuu's Instagram quotes page and tell her what to try next.
+${TO_HER}
+You get totals, the comparisons that have enough posts behind them, the best times so far, and how regularly she posts.
+Reply with a JSON array of exactly three short strings. Each is one concrete thing to try in the coming week, tied to a number you were given ("Your evening posts reach about 4,600 each, so…"). Plain and warm, no hype, no emojis, no markdown.
+Use only the numbers given. If there are fewer than six posts with numbers, say in the first string that it is early and these are hints, not patterns.`;
+
+async function insightAdvice(env, range) {
+  const posts = await loadDoc(env, "posts", []);
+  const ins = buildInsights(posts, range, Date.now());
+  if (!env.ANTHROPIC_API_KEY || ins.measured < 3) return { advice: [] };
+  const stamp = `v1:${todayIST()}:${range}:${ins.totals.posts}:${ins.totals.reach}`;
+  const saved = await loadDoc(env, `insightcache/advice-${range}`, {});
+  if (saved.stamp === stamp) return { advice: saved.advice };
+  const given = JSON.stringify({ range: range === "all" ? "all time" : `last ${range} days`, totals: ins.totals, before: ins.before, postsWithNumbers: ins.measured,
+    comparisons: ins.dimensions.map((d) => ({ what: d.name, groups: d.groups.slice(0, 5) })), bestTimesOfDay: ins.times.byPart, bestDays: ins.times.byDay, rhythm: ins.rhythm });
+  const write = async (extra) => {
+    const a = parseJson(await claude(env, { system: ADVICE_SYSTEM, maxTokens: 500, messages: [{ role: "user", content: given + extra }] }));
+    return (Array.isArray(a) ? a : []).map((x) => lines(x, 300)).filter(Boolean).slice(0, 3);
+  };
+  let advice = await write("");
+  if (aboutHer(advice.join(" "))) advice = await write(SAY_IT_TO_HER);
+  if (advice.length) await saveDoc(env, `insightcache/advice-${range}`, { stamp, advice });
+  return { advice };
+}
+
+async function insightRoutes(request, env, parts) {
+  if (request.method !== "GET") return fail(404, "Not found.");
+  const asked = new URL(request.url).searchParams.get("range");
+  const range = Object.prototype.hasOwnProperty.call(RANGE_DAYS, asked) ? asked : "all";
+  if (parts[1] === "advice") return json(await insightAdvice(env, range));
+  const posts = await loadDoc(env, "posts", []);
+  const ig = igReady(env) ? await loadIg(env) : null;
+  let acct = await loadDoc(env, "account", { days: [] }), page = null, people = null;
+  if (ig) {
+    // Bring the numbers up to date first, so everything below agrees with Instagram.
+    // (Posts that were deleted on Instagram are noticed when the Posts section opens.)
+    if (await refreshInsights(env, ig, posts, { max: 8 })) await saveDoc(env, "posts", posts);
+    acct = await snapshotAccount(env, ig);
+    const followers = acct.days.length ? acct.days[acct.days.length - 1].followers : 0;
+    [page, people] = await Promise.all([
+      range === "7" || range === "30" ? accountNumbers(env, ig, Number(range), followers) : null,
+      audience(env, ig, followers),
+    ]);
+  }
+  const out = buildInsights(posts, range, Date.now());
+  const latest = acct.days[acct.days.length - 1] || null;
+  // Follower change over the range, from the app's own daily record (it starts the day Insights first ran).
+  const start = RANGE_DAYS[range] ? acct.days.find((d) => d.at >= out.from) : acct.days[0];
+  const followers = latest ? { now: latest.followers, change: start && start !== latest ? latest.followers - start.followers : null, since: start ? start.d : null,
+    series: acct.days.slice(-120).map((d) => ({ d: d.d, followers: d.followers })) } : null;
+  return json({ ...out, connected: !!ig, followers, page, audience: people });
+}
+
 // ---------- looks she has saved (font, size, colour and placement, by name) ----------
 async function lookRoutes(request, env, parts) {
   const looks = await loadDoc(env, "looks", []);
@@ -1274,7 +1555,8 @@ async function queueRoutes(request, env, parts) {
     if (queue.some((q) => q.jobId === b.jobId)) return out();
     if (queue.length >= 14) return fail(400, "That's the limit of 14 reels waiting. Post or remove one first.");
     queue.push({ id: crypto.randomUUID(), jobId: b.jobId, created: job.created || Date.now(), quote: lines(b.quote, 600), author: oneLine(b.author, 80),
-      theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20), source: oneLine(b.source, 20), suggestionId: UUID.test(b.suggestionId || "") ? b.suggestionId : "" });
+      theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20), source: oneLine(b.source, 20), suggestionId: UUID.test(b.suggestionId || "") ? b.suggestionId : "",
+      made: cleanMade(b.made) });
     await saveDoc(env, "queue", queue);
     return out();
   }
@@ -1678,7 +1960,7 @@ async function passkeyRoutes(request, env, parts, authed) {
 
 // ---------- Nishiii as a chat assistant that can do things in the app ----------
 const CHAT_SYSTEM = `You are Nishiii, the chat assistant inside Entangledd Studio, an app Dhruuu uses to run her Instagram quotes page. You are warm, brief and practical. You are talking with Dhruuu herself: say "you" and "your", and use her name now and then, not in every message.
-You can act in the app with your tools: look at today's quotes, fetch quotes from books, films, series or a subject, add things to her Library, put a quote on the canvas in Create, open a section, read how her posts and her week did, check who really said a quote, read what you have learned about her taste, save a note she wants you to follow, and write a caption.
+You can act in the app with your tools: look at today's quotes, fetch quotes from books, films, series or a subject, add things to her Library, put a quote on the canvas in Create, open a section, read how her posts, her week and her page over any period did (get_insights for anything about what works, best times or growth), check who really said a quote, read what you have learned about her taste, save a note she wants you to follow, and write a caption.
 Rules:
 - Use tools for anything about her data. Never make up numbers, posts or quotes.
 - When she asks for quotes, fetch them with ask_for_quotes, then list them briefly, numbered.
@@ -1702,6 +1984,8 @@ const CHAT_TOOLS = [
     input_schema: { type: "object", required: ["section"], properties: { section: { type: "string", enum: ["today", "create", "library", "posts", "nishiii"] } } } },
   { name: "get_posts", description: "Her recent posts made from the app, with reach, views, likes, comments, saves and shares where known.", input_schema: { type: "object", properties: {} } },
   { name: "get_week", description: "This week's totals against last week's, her best post of the week, and which times of day and themes have done best so far.", input_schema: { type: "object", properties: {} } },
+  { name: "get_insights", description: "The fuller picture of how her page is doing over a stretch of time: totals and rates, top posts, best days and times, what kinds of post do best (theme, tone, background, length, music, font, hashtags), followers and posting rhythm.",
+    input_schema: { type: "object", properties: { range: { type: "string", enum: ["7", "30", "90", "all"], description: "Days to look back; all for everything. Default all." } } } },
   { name: "check_quote", description: "Check whether a quote is worded and credited correctly, from what is known. Use before she posts a quote with a famous name on it, or when she asks who said something.",
     input_schema: { type: "object", required: ["text"], properties: { text: { type: "string" }, author: { type: "string" } } } },
   { name: "get_taste", description: "What you have learned about her taste so far, and the notes she has given you.", input_schema: { type: "object", properties: {} } },
@@ -1778,6 +2062,15 @@ async function runChatTool(env, name, input, actions) {
     const w = weekStats(await loadDoc(env, "posts", []), Date.now());
     return { thisWeek: w.thisWeek, lastWeek: w.lastWeek, bestPost: w.best && { quote: w.best.quote, ...(w.best.metrics || {}) },
       bestTimesSoFar: w.times.length ? w.times : "not enough posts with numbers yet (needs six)", themesSoFar: w.themes.length ? w.themes : "not enough yet" };
+  }
+  if (name === "get_insights") {
+    const range = Object.prototype.hasOwnProperty.call(RANGE_DAYS, input.range) ? input.range : "all";
+    const ins = buildInsights(await loadDoc(env, "posts", []), range, Date.now());
+    const acct = await loadDoc(env, "account", { days: [] });
+    return { range: range === "all" ? "all time" : `last ${range} days`, totals: ins.totals, thePeriodBefore: ins.before, postsWithNumbers: ins.measured,
+      topPosts: [...ins.posts].sort((a, b) => b.reach - a.reach).slice(0, 5).map((r) => ({ quote: r.quote, reach: r.reach, saves: r.saved, shares: r.shares, engagementPercent: r.rate })),
+      comparisons: ins.dimensions.map((d) => ({ what: d.name, groups: d.groups.slice(0, 5) })), bestTimesOfDay: ins.times.byPart, bestDays: ins.times.byDay,
+      clearestDifferences: ins.standouts, rhythm: ins.rhythm, followers: acct.days.length ? acct.days[acct.days.length - 1].followers : "not recorded yet" };
   }
   if (name === "check_quote") {
     const a = parseJson(await claude(env, { system: CHECK_SYSTEM, maxTokens: 500,
@@ -1883,7 +2176,7 @@ async function route(request, env, parts) {
     if (!isRenderer(request, env)) return fail(401, "Not allowed.");
     return renderRoutes(request, env, parts);
   }
-  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat", "slides", "check", "report", "looks", "queue"].includes(parts[0])) {
+  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat", "slides", "check", "report", "looks", "queue", "insights"].includes(parts[0])) {
     if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
     if (parts[0] === "jobs") return appRoutes(request, env, parts);
     if (parts[0] === "stock") return stockRoutes(request, env, parts);
@@ -1901,6 +2194,7 @@ async function route(request, env, parts) {
     if (parts[0] === "report" && request.method === "GET") return json(await report(env));
     if (parts[0] === "looks") return lookRoutes(request, env, parts);
     if (parts[0] === "queue") return queueRoutes(request, env, parts);
+    if (parts[0] === "insights") return insightRoutes(request, env, parts);
     if (parts[0] === "slides" && request.method === "PUT") return putSlide(request, env);
     if (parts[0] === "edit" && request.method === "POST") return editQuote(request, env);
     if (parts[0] === "scan" && request.method === "POST") return scanPage(request, env);
@@ -1936,6 +2230,7 @@ export default {
           if (!ig) return;
           const posts = await loadDoc(env, "posts", []);
           if (await refreshInsights(env, ig, posts, { max: 15 })) await saveDoc(env, "posts", posts);
+          await snapshotAccount(env, ig, { force: true });      // today's follower count, for the chart in Insights
         });
         if (!env.ANTHROPIC_API_KEY) return;
         await step("taste", () => buildTaste(env));

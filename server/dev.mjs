@@ -169,8 +169,14 @@ async function pretendGraph(method, url, form) {
     const id = p.split("/")[1];
     if (deleted.has(id)) return err("Unsupported get request. Object with ID does not exist.", 100);
     const n = Number(id.slice(1));
-    const val = { reach: 1200 * n, views: 2100 * n, likes: 90 * n, comments: 4 * n, saved: 31 * n, shares: 12 * n };
-    return { status: 200, body: { data: q.get("metric").split(",").map((name) => ({ name, period: "lifetime", values: [{ value: val[name] }] })) } };
+    const val = { reach: 1200 * n, views: 2100 * n, likes: 90 * n, comments: 4 * n, saved: 31 * n, shares: 12 * n, total_interactions: 137 * n,
+      ig_reels_avg_watch_time: 4200 + 100 * n, ig_reels_video_view_total_time: 900000 * n, reels_skip_rate: 0.41, reposts: n, follows: n, profile_visits: 3 * n };
+    const asked = q.get("metric").split(",");
+    // Some accounts are refused the newest numbers; the app should step down to a shorter list.
+    if (process.env.NO_SKIP && asked.includes("reels_skip_rate")) return err("(#100) metric[4] must be one of the following values: reach, views, ...", 100);
+    const unknown = asked.find((name) => !(name in val));
+    if (unknown) return err(`(#100) ${unknown} is not a valid metric`, 100);
+    return { status: 200, body: { data: asked.map((name) => ({ name, period: "lifetime", values: [{ value: val[name] }] })) } };
   }
   if (/^\/M\d+\/comments$/.test(p)) {
     if (process.env.NO_COMMENTS) return err("(#10) Application does not have permission for this action", 10);
@@ -186,6 +192,26 @@ async function pretendGraph(method, url, form) {
   if (/^\/M\d+$/.test(p)) {
     if (deleted.has(p.slice(1))) return err("Unsupported get request. Object with ID does not exist.", 100);
     return { status: 200, body: { permalink: `https://www.instagram.com/reel/TEST${p.slice(2)}/`, id: p.slice(1) } };
+  }
+  if (p === "/17890" && /followers_count/.test(q.get("fields") || "") && !/business_discovery/.test(q.get("fields") || "")) {
+    return { status: 200, body: { followers_count: Number(process.env.FOLLOWERS || 64), media_count: 18, id: "17890" } };
+  }
+  if (p === "/17890/insights") {
+    const metric = q.get("metric"), breakdown = q.get("breakdown");
+    if (metric === "follower_demographics") {
+      if (Number(process.env.FOLLOWERS || 64) < 100) return { status: 200, body: { data: [] } };
+      const sets = { country: [["IN", 310], ["US", 62], ["GB", 21], ["AE", 14]], city: [["Mumbai, Maharashtra", 88], ["Ahmedabad, Gujarat", 71], ["Bengaluru, Karnataka", 40]],
+        age: [["18-24", 190], ["25-34", 170], ["13-17", 12], ["35-44", 31]], gender: [["F", 260], ["M", 120], ["U", 27]] };
+      return { status: 200, body: { data: [{ name: metric, period: "lifetime", total_value: { breakdowns: [{ dimension_keys: ["timeframe", breakdown],
+        results: (sets[breakdown] || []).map(([k, v]) => ({ dimension_values: ["THIS_MONTH", k], value: v })) }] } }] } };
+    }
+    if (Number(q.get("until")) - Number(q.get("since")) > 30 * 24 * 3600) return err("(#100) There cannot be more than 30 days (2592000 s) between since and until", 100);
+    if (breakdown === "follow_type") {
+      return { status: 200, body: { data: [{ name: "reach", period: "day", total_value: { value: 9100, breakdowns: [{ dimension_keys: ["follow_type"],
+        results: [{ dimension_values: ["FOLLOWER"], value: 2300 }, { dimension_values: ["NON_FOLLOWER"], value: 6800 }] }] } }] } };
+    }
+    const val = { reach: 9100, views: 21400, accounts_engaged: 640, total_interactions: 1180 };
+    return { status: 200, body: { data: metric.split(",").map((name) => ({ name, period: "day", total_value: { value: val[name] } })) } };
   }
   if (p === "/17890" && /business_discovery/.test(q.get("fields") || "")) {
     const handle = (/username\(([^)]+)\)/.exec(q.get("fields")) || [])[1];
@@ -243,6 +269,13 @@ function pretendClaude(req) {
       : /Marcus/.test(said) ? { verdict: "matches", author: "Marcus Aurelius", work: "Meditations", wording: "", note: "A well-known line from Meditations." }
       : { verdict: "unsure", author: "", work: "", wording: "", note: "I don't recognise this line well enough to say." };
     return { status: 200, body: { content: [{ type: "text", text: JSON.stringify(out) }] } };
+  }
+  if (system.startsWith("You are Nishiii. You read the numbers")) {
+    const n = JSON.parse(req.messages[0].content.split("\n\nReminder:")[0]);
+    return { status: 200, body: { content: [{ type: "text", text: JSON.stringify([
+      `Your ${n.postsWithNumbers} posts reached ${n.totals.reach} people over ${n.range}; keep the same pace.`,
+      n.bestTimesOfDay[0] ? `Your ${n.bestTimesOfDay[0].name.toLowerCase()} posts do best, so try two more then.` : "Post at a few different times so a best time can show up.",
+      n.comparisons[0] ? `Try another post on ${n.comparisons[0].groups[0].name}, your strongest ${n.comparisons[0].what.toLowerCase()}.` : "Keep adding variety so comparisons can form."]) }] } };
   }
   if (system.startsWith("You write a short weekly note")) {
     const n = JSON.parse(req.messages[0].content.split("\n\nReminder:")[0]);
@@ -387,6 +420,53 @@ http.createServer(async (req, res) => {
         created: startOfDayIST - daysAgo * 24 * H + hourIST * H, published: startOfDayIST - daysAgo * 24 * H + hourIST * H, permalink: `https://www.instagram.com/reel/SEED${i + 1}/`,
         metrics: { reach, views: reach * 2, likes: Math.round(reach / 12), comments: 3, saved: Math.round(reach / 40), shares: Math.round(reach / 90) }, insightsAt: now }));
       await env.MEDIA.put("data/posts.json", JSON.stringify(posts));
+      res.writeHead(204).end(); return;
+    }
+    if (url.pathname === "/__stale_numbers") {
+      // Marks every post's numbers as old, so the next refresh asks Instagram again.
+      const posts = JSON.parse(await (await env.MEDIA.get("data/posts.json")).text());
+      for (const post of posts) { post.insightsAt = 0; post.metrics = null; }
+      await env.MEDIA.put("data/posts.json", JSON.stringify(posts));
+      res.writeHead(204).end(); return;
+    }
+    if (url.pathname === "/__seed_insights") {
+      // Six weeks of pretend posts with everything recorded, so every part of Insights has something to show.
+      const H = 3600 * 1000, now = Date.now(), posts = [];
+      const day0 = Math.floor((now + 5.5 * H) / (24 * H)) * 24 * H - 5.5 * H;
+      // days ago, hour (India), theme, tone, reach, background, from, search words, font, seconds, music, kind, author, tags
+      const plan = [
+        [1, 19, "love", "tender", 6400, "video", "search", "ocean waves", "lora-italic", 8, true, "reel", "", "#love #poetry #quotes"],
+        [2, 8, "self", "calm", 900, "photo", "own", "", "poppins-light", 8, false, "reel", "Seneca", "#stoic #quotes"],
+        [3, 20, "love", "tender", 7100, "video", "search", "ocean waves", "lora-italic", 12, true, "reel", "", "#love #poetry"],
+        [5, 13, "growth", "calm", 1500, "photo", "search", "mountain fog", "crimson", 8, false, "reel", "Rumi", "#growth #quotes"],
+        [6, 7, "self", "calm", 1100, "plain", "", "", "poppins-light", 6, false, "reel", "Seneca", "#stoic #mindset"],
+        [8, 19, "growth", "bold", 4800, "video", "own", "", "lora-italic", 10, true, "reel", "", "#growth #poetry"],
+        [9, 21, "love", "tender", 5200, "video", "search", "rain window", "hand", 14, true, "reel", "", "#love #quotes"],
+        [11, 9, "self", "calm", 700, "plain", "", "", "poppins-light", 6, false, "reel", "Marcus Aurelius", "#stoic #quotes"],
+        [12, 20, "love", "tender", 3900, "photo", "search", "mountain fog", "crimson", 8, true, "carousel", "", "#love #poetry"],
+        [15, 14, "growth", "bold", 1300, "photo", "own", "", "crimson", 8, false, "carousel", "Rumi", "#growth #mindset"],
+        [17, 18, "love", "tender", 3000, "video", "own", "", "lora-italic", 9, true, "reel", "", "#love #quotes"],
+        [20, 20, "healing", "tender", 4100, "video", "search", "rain window", "hand", 16, true, "reel", "", "#healing #poetry"],
+        [24, 8, "healing", "calm", 1200, "photo", "own", "", "poppins-light", 8, false, "reel", "", "#healing #quotes"],
+        [29, 19, "growth", "bold", 2600, "video", "search", "ocean waves", "lora-italic", 8, true, "reel", "", "#growth #quotes"],
+        [34, 12, "self", "calm", 800, "plain", "", "", "poppins-light", 6, false, "reel", "Seneca", "#stoic"],
+        [40, 20, "love", "tender", 2200, "video", "own", "", "lora-italic", 8, false, "reel", "", "#love"],
+      ];
+      const lines = ["the sea keeps no calendar", "you are allowed to start again and again until the starting itself feels like home to you and not like failure", "what did you learn that it was enough"];
+      plan.forEach(([ago, hour, theme, tone, reach, bg, bgFrom, bgWords, font, seconds, music, kind, author, tags], i) => {
+        const at = day0 - ago * 24 * H + hour * H;
+        posts.unshift({ id: crypto.randomUUID(), jobId: crypto.randomUUID(), state: "published", error: null, caption: `a line about ${theme}\n\n${tags}`,
+          quote: `${lines[i % 3]} (${theme} ${i + 1})`, author, theme, tone, source: author ? "classic" : i % 2 ? "book" : "own", suggestionId: "", kind: kind === "carousel" ? "carousel" : undefined,
+          slides: kind === "carousel" ? 3 : undefined, music: music ? { id: "A1", title: "Slow Tide" } : null, mediaId: "M" + (i + 1), tokenKind: "page", created: at, published: at,
+          permalink: `https://www.instagram.com/reel/SEED${i + 1}/`, made: { bg, bgFrom, bgWords, seconds, font, shape: kind === "carousel" ? "post" : "reel", lower: i % 2 === 0 },
+          metrics: { reach, views: Math.round(reach * 1.9), likes: Math.round(reach / 11), comments: 2 + (i % 5), saved: Math.round(reach / (bg === "video" ? 28 : 45)), shares: Math.round(reach / 80),
+            ...(kind === "carousel" ? {} : { watch: Math.round((3 + (reach / 2000)) * 10) / 10, skip: Math.round(60 - reach / 200) }) }, insightsAt: now });
+      });
+      await env.MEDIA.put("data/posts.json", JSON.stringify(posts));
+      // Followers recorded on each of the last 30 days.
+      const days = [];
+      for (let n = 30; n >= 1; n--) { const t = now - n * 24 * H; days.push({ d: new Date(t + 5.5 * H).toISOString().slice(0, 10), at: t, followers: Math.round(Number(process.env.FOLLOWERS || 64) * (1 - n / 60)), media: 18 - Math.floor(n / 3) }); }
+      await env.MEDIA.put("data/account.json", JSON.stringify({ days }));
       res.writeHead(204).end(); return;
     }
     if (url.pathname === "/__graph_delete") { deleted.add(url.searchParams.get("id")); res.writeHead(204).end(); return; }
