@@ -768,30 +768,40 @@
     return early ? early.then((ch) => (ch && ch.challenge ? ch : freshChallenge()), freshChallenge) : freshChallenge();
   }
   // auto = the app is asking by itself (on opening, or on coming back after a while), not because of a tap.
-  let prompting = false;
+  // One try at a time. The app never starts a second try of its own while one is going on. A tap always gets a
+  // fresh try: an iPhone can leave a try the app started by itself hanging with nothing on screen, and the
+  // button must still work then, so the hanging one is given up first.
+  let prompting = null;                      // the try going on right now, if any: { stop, answered }
   async function faceIdUnlock(auto) {
-    if (prompting) return;
-    prompting = true;
+    if (prompting) {
+      if (auto || prompting.answered) return;  // (once the phone has answered, the sign-in is on its way: nothing to give up)
+      prompting.stop.abort();
+    }
+    const mine = prompting = { stop: new AbortController(), answered: false };
     $("lock-error").hidden = true;
     try {
       const ch = await nextChallenge();
+      if (prompting !== mine) return;
       const got = await navigator.credentials.get({ publicKey: {
         challenge: b64u.dec(ch.challenge), userVerification: "required", timeout: 60000,
         allowCredentials: [{ type: "public-key", id: b64u.dec(store.get(FACEID_KEY)), transports: ["internal"] }],
         hints: ["client-device"],
-      } });
+      }, signal: mine.stop.signal });
+      if (prompting !== mine) return;
+      mine.answered = true;
       const r = got.response;
       const res = await postJson("passkey/login", { challengeId: ch.id, credentialId: b64u.enc(got.rawId),
         authenticatorData: b64u.enc(r.authenticatorData), clientDataJSON: b64u.enc(r.clientDataJSON), signature: b64u.enc(r.signature) });
       unlocked(res.token, res.status);
     } catch (e) {
+      if (prompting !== mine) return;        // given up for a newer try, which speaks for itself
       // NotAllowedError is what a cancelled, timed-out or refused Face ID prompt looks like. When the app asked by
       // itself there is nothing to explain: the button is right there for another try.
       const quiet = e.name === "NotAllowedError" || e.name === "AbortError";
       if (!quiet) lockError(e);
       else if (!auto) lockError(new Error("Face ID was cancelled. Try again, or use the passcode."));
       if (server.locked && faceIdOn() && navigator.onLine !== false) fetchAhead();
-    } finally { prompting = false; }
+    } finally { if (prompting === mine) prompting = null; }
   }
   $("faceid-unlock").addEventListener("click", () => faceIdUnlock(false));
 
