@@ -81,7 +81,7 @@ button, summary, .btn { -webkit-user-select: none; user-select: none; -webkit-to
   content: ""; flex: none; width: 20px; height: 20px; background: currentColor;
   -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat;
 }
-:root { --i-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6.5 9.5l5.5 5.5 5.5-5.5'/%3E%3C/svg%3E"); }
+:root { --i-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6.5 9.5l5.5 5.5 5.5-5.5'/%3E%3C/svg%3E"); --i-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8.4'/%3E%3Cpath d='M8.3 12.3l2.6 2.6 4.9-5.3'/%3E%3C/svg%3E"); --i-later: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8.4'/%3E%3Cpath d='M12 7.3V12l3.2 2'/%3E%3C/svg%3E"); --i-alert: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4.3l8.5 14.7h-17z'/%3E%3Cpath d='M12 10v4M12 16.8v.2'/%3E%3C/svg%3E"); --i-pulse: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12.5h4l2.2-5.5 3.8 10.5 2.3-5H21'/%3E%3C/svg%3E"); --i-letter: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3.5' y='5.8' width='17' height='12.7' rx='2.4'/%3E%3Cpath d='M4.3 7.3l7.7 6 7.7-6'/%3E%3C/svg%3E"); }
 .ic-today { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='3.8'/%3E%3Cpath d='M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7'/%3E%3C/svg%3E"); }
 .ic-create { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M11.5 4.5H6.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-5'/%3E%3Cpath d='M17.6 3.4a1.9 1.9 0 0 1 2.9 2.6l-8.3 8.6-3.5.9.8-3.6z'/%3E%3C/svg%3E"); }
 .ic-library { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 5.2A2.2 2.2 0 0 1 7.2 3H19v14.5H7.2A2.2 2.2 0 0 0 5 19.7z'/%3E%3Cpath d='M5 19.7A2.2 2.2 0 0 0 7.2 21H19v-3.5'/%3E%3Cpath d='M9.5 7.5h5.5'/%3E%3C/svg%3E"); }
@@ -406,14 +406,14 @@ progress::-moz-progress-bar { background: var(--glass); }
   --ctl: var(--lift); --field: var(--ink);
 }
 .list li > :first-child { padding: 6px 0; }
-.list .main { margin: 0; white-space: pre-line; font-size: 15px; overflow-wrap: break-word; }
+.list .main { margin: 0; white-space: pre-line; font-size: 15px; color: var(--foam); overflow-wrap: break-word; }
 .list .sub { margin: 2px 0 0; color: var(--mist); font-size: 13px; }
 .list button { min-height: 44px; min-width: 44px; background: none; border: 0; color: var(--mist); font: 400 13px var(--ui); padding: 0 8px; cursor: pointer; }
 .list button:active { color: var(--foam); }
 .list .ok { color: var(--glass); }
 .list .bad { color: var(--coral); }
 .list .chip { margin: 4px 0; }
-.more-body .list li, .card .list li, .dialog .list li { background: var(--ink); }
+.more-body .list li, .card .list li, .dialog .list li, details.explain .list li { background: var(--ink); }
 
 .nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 12px; margin: 4px 0 0; }
 .nums div { display: grid; }
@@ -434,12 +434,17 @@ progress::-moz-progress-bar { background: var(--glass); }
 .card .cap { margin: 0; font-size: 13px; color: var(--mist); white-space: pre-line; }
 
 /* A small label for the state of something. The words carry the meaning; the colour helps at a glance. */
-.chip { margin: 0; justify-self: start; padding: 3px 10px; border-radius: 999px; border: 1px solid currentColor; font: 500 11.5px/1.4 var(--ui); }
-.chip.ok { color: var(--glass); background: rgba(127, 200, 178, 0.12); }
-.chip.wait { color: var(--amber); background: rgba(235, 203, 122, 0.12); }
+.chip { margin: 0; justify-self: start; display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; border: 1px solid currentColor; font: 500 11.5px/1.4 var(--ui); }
+/* done, waiting and needs-a-look also carry a small sign, so the state does not rest on colour alone */
+.chip.ok::before, .chip.wait::before, .chip.bad::before {
+  content: ""; flex: none; width: 13px; height: 13px; margin-left: -2px; background: currentColor;
+  -webkit-mask: var(--i-state) center / contain no-repeat; mask: var(--i-state) center / contain no-repeat;
+}
+.chip.ok { color: var(--glass); background: rgba(127, 200, 178, 0.12); --i-state: var(--i-check); }
+.chip.wait { color: var(--amber); background: rgba(235, 203, 122, 0.12); --i-state: var(--i-later); }
 .chip.info { color: var(--sky); background: rgba(156, 195, 240, 0.12); }
 .chip.gone { color: var(--mist); background: rgba(157, 180, 184, 0.10); }
-.chip.bad { color: var(--coral); background: rgba(240, 169, 138, 0.12); }
+.chip.bad { color: var(--coral); background: rgba(240, 169, 138, 0.12); --i-state: var(--i-alert); }
 
 /* ---------- Today ---------- */
 .dayhead { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 12px; padding: 2px 0 0; }
@@ -529,6 +534,7 @@ a.btn { text-decoration: none; }
 .dialog { width: min(100%, 380px); background: var(--tide); border-radius: var(--r-l); padding: 20px; display: grid; gap: var(--gap); --ctl: var(--lift); --field: var(--ink); animation: rise 0.18s ease-out; }
 .dialog h2 { margin: 0; font: 500 21px/1.3 var(--serif); }
 .dialog p { margin: 0; font-size: 15px; color: var(--foam); }
+.dialog .pair { grid-template-columns: minmax(104px, auto) 1fr; }       /* Cancel stays small; the answer gets the room */
 
 /* asking for quotes from chosen sources */
 #ask-groups { display: grid; gap: var(--gap); }
@@ -600,10 +606,38 @@ a.btn { text-decoration: none; }
 .explain dt { color: var(--foam); font-weight: 500; }
 .explain dd { margin: 0; }
 
-/* ---------- homes for the add-on sections (their own styles follow in the slots at the end) ---------- */
+/* ---------- homes for the add-on sections (their own styles follow in the slots at the end) ----------
+   Written against the names those pieces really use, and a little more specific than their own rules,
+   so they take this look as soon as they are merged in. */
 #settings-lovenotes, #settings-health, #scorer-slot { display: grid; gap: var(--gap); }
 #settings-lovenotes:empty, #settings-health:empty, #scorer-slot:empty { display: none; }
-#scorer-slot .note { display: flex; justify-content: space-between; gap: 12px; }
+#settings-lovenotes { margin-top: 12px; }
+/* Check everything: its heading wears an icon like the other Settings headings; its lines are rows. */
+#health-title { display: flex; align-items: center; gap: 10px; }
+#health-title::before {
+  content: ""; flex: none; width: 19px; height: 19px; background: var(--glass);
+  -webkit-mask: var(--i-pulse) center / contain no-repeat; mask: var(--i-pulse) center / contain no-repeat;
+}
+details.explain > .list { margin: 0; padding: 2px 8px 8px; }
+#settings-health .list li { align-items: start; padding: 10px 12px 10px 14px; }
+#settings-health .list li > :first-child { padding: 0; }
+/* The little notes editor: one closed row, marked in his colour. */
+details.lovenotes-edit { background: var(--tide); border-radius: var(--radius); padding: 0 14px; --ctl: var(--lift); --field: var(--ink); }
+details.lovenotes-edit[open] { padding-bottom: 14px; }
+details.lovenotes-edit > summary { justify-content: flex-start; gap: 10px; min-height: 46px; font: 500 15px/1.25 var(--ui); color: var(--foam); }
+details.lovenotes-edit > summary::before {
+  content: ""; flex: none; width: 20px; height: 20px; background: var(--rose);
+  -webkit-mask: var(--i-letter) center / contain no-repeat; mask: var(--i-letter) center / contain no-repeat;
+}
+details.lovenotes-edit > summary::after, details.lovenotes-edit[open] > summary::after {
+  content: ""; flex: none; margin-left: auto; width: 18px; height: 18px; background: var(--mist);
+  -webkit-mask: var(--i-chevron) center / contain no-repeat; mask: var(--i-chevron) center / contain no-repeat;
+  transition: transform 0.15s;
+}
+details.lovenotes-edit[open] > summary::after { transform: rotate(180deg); }
+details.lovenotes-edit .list li { background: var(--ink); }
+/* The scorer's one line and its thin bar, under "Your taste". */
+#scorer-slot { gap: 6px; }
 
 /* ---------- wider screens and people who prefer less motion ---------- */
 @media (min-width: 900px) {
