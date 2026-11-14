@@ -156,7 +156,7 @@
   // The picture is redrawn only when something on it has changed (or a video is playing), and never while it
   // can't be seen. Drawing a full-size canvas sixty times a second for nothing drains the battery and makes
   // the other sections feel heavy.
-  let textReady = false, fontsSeen = 0, lastDrawn = "";
+  let textReady = false, fontsSeen = 0, lastDrawn = "", settleUntil = 0;
   const redraw = () => { lastDrawn = ""; };
   if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener("loadingdone", () => { fontsSeen++; });
   const onScreen = () => !document.hidden && !$("view-create").hidden && $("lock").hidden;
@@ -168,8 +168,11 @@
   function loop() {
     if (onScreen()) {
       const bg = state.bg, playing = !!bg && bg.kind === "video" && !bg.el.paused && !bg.el.ended;
-      const key = pictureKey();
-      if (playing || key !== lastDrawn) { render(); lastDrawn = key; }
+      const key = pictureKey(), now = performance.now();
+      // A video's picture can arrive a moment after the video says it has one (a paused clip, a first frame):
+      // with a video behind the words, keep drawing for half a second after anything changed.
+      if (key !== lastDrawn && bg && bg.kind === "video") settleUntil = now + 500;
+      if (playing || key !== lastDrawn || now < settleUntil) { render(); lastDrawn = key; }
     } else redraw();                         // start afresh when it comes back into view
     requestAnimationFrame(loop);
   }
@@ -755,9 +758,13 @@
   // The challenge is asked for the instant the page starts (the small script at the top of index.html), so by
   // the time Face ID is wanted it is usually already here. Later tries ask for a fresh one.
   const freshChallenge = () => postJson("passkey/challenge");
+  // After a try that didn't unlock, the next challenge is fetched straight away, so a tap on the button goes to
+  // Face ID with no wait in between. (One is good for five minutes; one older than three is not used.)
+  let ahead = null;                          // { at, promise }
+  function fetchAhead() { ahead = { at: Date.now(), promise: freshChallenge().catch(() => null) }; }
   function nextChallenge() {
-    const early = window.__challenge;
-    window.__challenge = null;
+    const early = window.__challenge || (ahead && Date.now() - ahead.at < 3 * 60 * 1000 ? ahead.promise : null);
+    window.__challenge = null; ahead = null;
     return early ? early.then((ch) => (ch && ch.challenge ? ch : freshChallenge()), freshChallenge) : freshChallenge();
   }
   // auto = the app is asking by itself (on opening, or on coming back after a while), not because of a tap.
@@ -783,6 +790,7 @@
       const quiet = e.name === "NotAllowedError" || e.name === "AbortError";
       if (!quiet) lockError(e);
       else if (!auto) lockError(new Error("Face ID was cancelled. Try again, or use the passcode."));
+      if (server.locked && faceIdOn() && navigator.onLine !== false) fetchAhead();
     } finally { prompting = false; }
   }
   $("faceid-unlock").addEventListener("click", () => faceIdUnlock(false));
@@ -866,6 +874,16 @@
     if (pct == null) $("bar").removeAttribute("value"); else $("bar").value = pct;
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Like sleep, but ends early when she comes back to the app (a phone pauses timers while the app is away).
+  const sleepOrReturn = (ms) => new Promise((r) => {
+    const done = () => { clearTimeout(timer); document.removeEventListener("visibilitychange", back); r(); };
+    const back = () => { if (!document.hidden) done(); };
+    const timer = setTimeout(done, ms);
+    document.addEventListener("visibilitychange", back);
+  });
+  // How long to wait before asking again whether the reel is ready. Nothing can be ready in the first seconds;
+  // after that it is asked often, so the reel shows up almost the moment it is done; a slow one is asked about less.
+  const reelCheckEvery = (waited) => (waited < 12000 ? 3000 : waited < 90000 ? 1500 : waited < 240000 ? 3000 : 5000);
 
   // What is on the canvas right now, in the few words Insights compares posts by.
   function madeWith() {
@@ -912,9 +930,10 @@
       }
       await api(`jobs/${job.id}/start`, { method: "POST" });
 
-      progress("Creating your reel. This usually takes a minute or two. Keep the app open until it's ready.", null);
+      progress("Creating your reel. This takes about a minute. Keep the app open until it's ready.", null);
+      const asked = Date.now();
       for (;;) {
-        await sleep(4000);
+        await sleepOrReturn(reelCheckEvery(Date.now() - asked));
         const st = await (await api(`jobs/${job.id}`)).json();
         if (st.state === "done") break;
         if (st.state === "failed") throw new Error(st.error || "The reel couldn't be created. Try again.");

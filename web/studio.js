@@ -858,6 +858,20 @@
     $("list-handoffs").replaceChildren(...list.map(handoffCard));
     showPostedHead();
   }
+  // A finished reel is fetched once. The one just made is already here (the composer has it); one from the
+  // waiting list is fetched the first time it is wanted and kept (the last two), so opening the sheet again is instant.
+  const fetchedReels = new Map();        // job id -> promise of the reel
+  function reelBlob(jobId) {
+    const made = S.currentReel();
+    if (made && made.id === jobId && made.blob) return Promise.resolve(made.blob);
+    if (!fetchedReels.has(jobId)) {
+      const fetching = S.api(`jobs/${jobId}/reel`).then((r) => r.blob());
+      fetching.catch(() => { if (fetchedReels.get(jobId) === fetching) fetchedReels.delete(jobId); });   // a failed fetch is tried again next time
+      fetchedReels.set(jobId, fetching);
+      if (fetchedReels.size > 2) fetchedReels.delete(fetchedReels.keys().next().value);
+    }
+    return fetchedReels.get(jobId);
+  }
   async function openHandoff(fromQueue) {
     const reel = fromQueue ? null : S.currentReel();
     if (!fromQueue && !reel) return;
@@ -877,7 +891,7 @@
       // A reel from the waiting list is fetched first, so that the tap on the button below can open the share menu at once.
       const mine = handing;
       try {
-        const blob = await (await S.api(`jobs/${mine.jobId}/reel`)).blob();
+        const blob = await reelBlob(mine.jobId);
         if (handing !== mine) return;
         mine.blob = blob; $("handoff-go").disabled = false; handStatus("");
       } catch (e) { if (handing === mine) handStatus(friendly(e)); }
@@ -1262,8 +1276,11 @@
       }
       $("post-form").hidden = true;
       postStatus("Instagram is processing it. This usually takes under a minute. You can close the app; it will still post.");
+      // Asked every three seconds at first (most reels are through within half a minute), then less often.
+      const handedAt = Date.now();
       while (post.state === "processing") {
-        await new Promise((r) => setTimeout(r, 5000));
+        const waited = Date.now() - handedAt;
+        await new Promise((r) => setTimeout(r, waited < 45000 ? 3000 : waited < 180000 ? 5000 : 10000));
         post = await getJson("posts/" + post.id);
       }
       if (post.state === "failed") throw new Error(post.error || "Instagram didn't accept it.");
