@@ -176,12 +176,19 @@ async function startJob(request, env, id, job) {
   });
   if (!res.ok) {
     job.state = "failed";
-    job.error = `GitHub wouldn't start the render (status ${res.status}). The GitHub token may be wrong or expired.`;
+    const why = res.status === 401 ? "GitHub no longer accepts the key that starts them (it has run out or was removed)"
+      : res.status === 403 ? "the key isn't allowed to start the reel maker on GitHub"
+      : res.status === 404 ? "the key can't find the reel maker on GitHub" : "";
+    job.error = why
+      ? `Reels can't be made right now: ${why}. Ask Nishith to renew it (Settings, Check everything, shows how).`
+      : `GitHub couldn't start the reel just now (status ${res.status}). Try again in a minute.`;
     await writeJob(env, job);
+    if (why) await health.saw(env, kit, "reel-refused", { status: res.status });
     return fail(502, job.error);
   }
   job.state = "rendering"; job.started = Date.now();
   await writeJob(env, job);
+  await health.saw(env, kit, "reel-started");
   return json({ state: job.state });
 }
 
@@ -310,6 +317,7 @@ async function libraryRoutes(request, env, parts) {
 }
 
 // ---------- Claude ----------
+const CLAUDE_MODEL = "claude-sonnet-5-5";
 async function claude(env, opts) {
   const data = await claudeRaw(env, opts);
   return (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
@@ -320,18 +328,25 @@ async function claudeRaw(env, { system, messages, maxTokens = 2000, tools }) {
   const res = await fetch((env.ANTHROPIC_API || "https://api.anthropic.com") + "/v1/messages", {
     method: "POST",
     headers: { "x-api-key": env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: maxTokens, output_config: { effort: "medium" }, system, messages, tools }),
+    body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: maxTokens, output_config: { effort: "medium" }, system, messages, tools }),
   });
-  if (res.status === 401 || res.status === 403) throw new UserError(502, "Nishiii can't answer right now. (Setup: the Anthropic key was rejected; check it in Cloudflare.)");
+  if (res.status === 401 || res.status === 403) {
+    await health.saw(env, kit, "claude-fail", { kind: "key" });
+    throw new UserError(502, "Nishiii can't answer right now: Anthropic no longer accepts the key. Ask Nishith to renew it (Settings, Check everything, shows how).");
+  }
   if (res.status === 429) throw new UserError(502, "Nishiii is busy right now. Try again in a minute.");
   if (!res.ok) {
     let detail = "";
     try { detail = (await res.json()).error?.message || ""; } catch (e) { /* no detail */ }
     console.error("Claude error", res.status, detail);
-    throw new UserError(502, /credit|billing/i.test(detail)
-      ? "The Anthropic account is out of credit. Add credit in the Anthropic console."
+    const credit = /credit|billing/i.test(detail), retired = res.status === 404;
+    if (credit || retired) await health.saw(env, kit, "claude-fail", { kind: credit ? "credit" : "model" });
+    throw new UserError(502, credit
+      ? "Nishiii can't answer right now: the Anthropic account is out of credit. Ask Nishith to top it up (Settings, Check everything, shows how)."
+      : retired ? "Nishiii can't answer right now: the Claude model the app uses has been retired. Ask Nishith to update the app (Settings, Check everything, shows how)."
       : `Claude couldn't answer (status ${res.status}). Try again.`);
   }
+  await health.saw(env, kit, "claude-ok");
   return res.json();
 }
 // Claude is asked for JSON only; this copes with stray text or code fences around it.
@@ -729,7 +744,7 @@ function stockHostAllowed(env, host) {
   return !!env.STOCK_HOSTS && env.STOCK_HOSTS.split(",").includes(host);   // used only by the local dev server
 }
 function stockError(name, status) {
-  if (status === 400 || status === 401 || status === 403) return new UserError(502, `Photo and video search isn't working. (Setup: the ${name} key was rejected; check it in Cloudflare.)`);
+  if (status === 400 || status === 401 || status === 403) return new UserError(502, `Searching for backgrounds isn't working: ${name} no longer accepts the key. Ask Nishith to renew it (Settings, Check everything, shows how). Your own photos and videos still work.`);
   if (status === 429) return new UserError(502, `Too many searches in a short time. Try again in a minute.`);
   return new UserError(502, `${name} couldn't be searched just now. Try again. (Status ${status}.)`);
 }
@@ -957,8 +972,13 @@ async function graph(env, method, path, params) {
   try { data = await res.json(); } catch (e) { /* not JSON: handled below */ }
   if (!res.ok || data.error) {
     const e = data.error || {};
-    console.error("Graph error", res.status, e.code, e.error_subcode, e.message);
-    const err = new UserError(502, `Instagram said: ${e.error_user_msg || e.message || `the request failed (status ${res.status})`}`);
+    // Meta's own words can repeat the token it was sent ("Malformed access token ..."), so anything shaped
+    // like a key is cut out before they are logged or passed on.
+    console.error("Graph error", res.status, e.code, e.error_subcode, health.hide(e.message));
+    // 190 is Instagram's code for a sign-in it no longer accepts: ended, withdrawn, or pasted wrongly.
+    const err = new UserError(502, e.code === 190
+      ? "Instagram didn't accept the sign-in: it has ended or was withdrawn. Ask Nishith to connect Instagram again (Settings, Check everything, shows how)."
+      : `Instagram said: ${health.hide(e.error_user_msg || e.message || `the request failed (status ${res.status})`)}`);
     err.code = e.code;
     err.expired = e.code === 190;
     err.denied = e.code === 10 || (e.code >= 200 && e.code < 300);
@@ -971,7 +991,7 @@ async function graph(env, method, path, params) {
 const igReady = (env) => !!(env.META_APP_ID && env.META_APP_SECRET && env.MEDIA);
 const loadIg = (env) => loadDoc(env, "instagram", null);
 const publicIg = (ig) => (ig
-  ? { connected: true, username: ig.username, page: ig.pageName, musicUntil: ig.userTokenExpires }
+  ? { connected: true, username: ig.username, page: ig.pageName, musicUntil: ig.userTokenExpires, renewedAt: ig.renewedAt || 0 }
   : { connected: false });
 
 async function igRoutes(request, env, parts) {
@@ -985,9 +1005,15 @@ async function igRoutes(request, env, parts) {
     const short = String(b.token || "").trim();
     if (short.length < 50 || /\s/.test(short)) return fail(400, "Paste the access token exactly as Meta's Graph API Explorer shows it.");
     // Swap the short-lived token (about an hour) for a long-lived one (about 60 days).
-    const long = await graph(env, "GET", "/oauth/access_token", {
-      grant_type: "fb_exchange_token", client_id: env.META_APP_ID, client_secret: env.META_APP_SECRET, fb_exchange_token: short,
-    });
+    let long;
+    try {
+      long = await graph(env, "GET", "/oauth/access_token", {
+        grant_type: "fb_exchange_token", client_id: env.META_APP_ID, client_secret: env.META_APP_SECRET, fb_exchange_token: short,
+      });
+    } catch (e) {
+      if (e instanceof UserError && e.expired) throw new UserError(400, "Meta didn't accept that token. Generate a fresh one in the Graph API Explorer and paste it straight away: it only lasts about an hour.");
+      throw e;
+    }
     const pages = await graph(env, "GET", "/me/accounts", {
       fields: "id,name,access_token,instagram_business_account{id,username}", access_token: long.access_token,
     });
@@ -2373,6 +2399,7 @@ async function renderRoutes(request, env, parts) {
     await env.MEDIA.put(jobKey(id, "reel.mp4"), request.body, { httpMetadata: { contentType: "video/mp4" } });
     job.state = "done"; job.error = null; job.finished = Date.now();
     await writeJob(env, job);
+    await health.saw(env, kit, "reel-done");
     return json({ ok: true });
   }
   if (what === "status" && method === "POST") {
@@ -2381,6 +2408,7 @@ async function renderRoutes(request, env, parts) {
     if (b.state !== "failed") return fail(400, "Only a failed status can be reported here.");
     job.state = "failed"; job.error = String(b.error || "The reel could not be put together.").slice(0, 300);
     await writeJob(env, job);
+    await health.saw(env, kit, "reel-failed", { why: job.error });
     return json({ ok: true });
   }
   return fail(404, "Not found.");
@@ -2437,7 +2465,8 @@ async function route(request, env, parts) {
 
 // Shared helpers handed to the add-on sections (see SECTIONS at the top).
 const kit = { json, fail, UserError, body, loadDoc, saveDoc, signedIn, claude, claudeRaw, graph, graphAny, loadIg, igReady,
-  reelsReady, stockProvider, todayIST, oneLine, lines, GRAPH_VERSION };
+  reelsReady, stockProvider, todayIST, oneLine, lines, GRAPH_VERSION,
+  CLAUDE_MODEL };
 
 // The sections' timed jobs. At most one runs per five-minute tick, so no single run does too much:
 // the free plan allows 50 outside calls (storage reads and writes count) and very little computing per run.

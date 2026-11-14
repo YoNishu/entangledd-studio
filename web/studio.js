@@ -759,7 +759,11 @@
     $("ig-disconnect").hidden = !on;
     if (!S.server.instagram) { $("ig-status").textContent = "Posting isn't set up yet. (Setup: the Meta app's ID and secret are missing.)"; $("ig-connect").hidden = true; return; }
     $("ig-status").textContent = on
-      ? `Connected as @${ig.username}${ig.page ? ` through the Facebook Page "${ig.page}"` : ""}. Music search works until ${day(ig.musicUntil)}. After that, connect again here; posting keeps working either way.`
+      ? `Connected as @${ig.username}${ig.page ? ` through the Facebook Page "${ig.page}"` : ""}. ${
+        ig.musicUntil > Date.now() + 5 * 365 * 86400000 ? "The sign-in has no end date."
+        : ig.musicUntil < Date.now() ? "Instagram's music search has stopped until Instagram is connected again; posting keeps working."
+        : ig.renewedAt ? `The app renews the sign-in by itself; music search is good until ${day(ig.musicUntil)}.`
+        : `Music search is good until ${day(ig.musicUntil)}, and the app will try to renew it by itself before then. Posting keeps working either way.`}`
       : "Not connected yet.";
   }
 
