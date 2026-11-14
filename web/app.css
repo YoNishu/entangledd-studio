@@ -418,4 +418,23 @@ a.btn { text-decoration: none; }
 
 
 /* ---- little notes from Nishiii ---- */
-/* (little-notes styles go here) */
+/* The line under the heading, in Nishiii's hand. Longer notes are written a little smaller.
+   Style the note through these classes, not through #hello: web/lovenotes.js sets them. */
+.hello.lovenote { margin-top: 5px; color: var(--foam); font: 400 18px/1.34 "Nothing You Could Do", "Lora", Georgia, serif; text-wrap: pretty; overflow-wrap: break-word; }
+.hello.lovenote.len-s { font-size: 20px; }
+.hello.lovenote.len-l { font-size: 16.5px; }
+.hello.lovenote.len-xl { font-size: 15.5px; }
+.hello.lovenote-wait { visibility: hidden; }                 /* its space is kept; the words are on their way */
+.lovenote-mark { display: block; margin-bottom: 3px; color: var(--glass); font: 500 11.5px/1.4 "Poppins", system-ui, sans-serif; }
+.hello.lovenote .sig { font: inherit; color: var(--glass); margin-left: 8px; white-space: nowrap; }
+.hello.lovenote .sig::before { content: "\2014\00a0"; }
+@keyframes lovenote-in { from { opacity: 0; } to { opacity: 1; } }
+.hello.lovenote-in { animation: lovenote-in 420ms ease-out both; }
+@media (prefers-reduced-motion: reduce) { .hello.lovenote-in { animation: none; } }
+/* The editor in Settings: one quiet line until someone opens it. */
+.lovenotes-edit > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 44px; color: var(--mist); font-size: 14px; }
+.lovenotes-edit > summary::-webkit-details-marker { display: none; }
+.lovenotes-edit > summary::after { content: "Show"; color: var(--glass); font-size: 13px; }
+.lovenotes-edit[open] > summary::after { content: "Hide"; }
+.lovenotes-edit[open] { display: grid; gap: 12px; }
+.lovenotes-acts { display: flex; gap: 12px; }
