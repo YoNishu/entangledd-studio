@@ -28,7 +28,19 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The quick way: unpack the copy of ffmpeg and Pillow that an earlier run kept (a few seconds instead of
+      # 20 to 45). With no copy to unpack, this step installs them itself and makes a copy. If it ever hangs,
+      # it is stopped after four minutes and the long way below takes over.
+      - name: Get ffmpeg and Pillow ready
+        id: tools
+        uses: ./.github/actions/render-tools
+        continue-on-error: true
+        timeout-minutes: 4
+
+      # The long way, exactly as it was always done. Only runs if the step above failed for any reason at all,
+      # so a reel is never lost to it.
       - name: Install ffmpeg and Pillow
+        if: ${{ steps.tools.outcome != 'success' }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
@@ -41,3 +53,12 @@ jobs:
           APP_URL: ${{ inputs.app_url }}
           RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
         run: bash render/run_job.sh
+
+      # Last, so the reel never waits for it: keep the fresh copy of the tools for the next run.
+      - name: Keep the tools for next time
+        if: ${{ !cancelled() && steps.tools.outputs.save == 'yes' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/render-tools
+          key: ${{ steps.tools.outputs.key }}

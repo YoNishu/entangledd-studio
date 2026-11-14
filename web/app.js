@@ -149,14 +149,36 @@
 
   function render() {
     drawBackground(ctx);
-    drawText(ctx);
+    if (textReady) drawText(ctx);            // never flash the words in a stand-in typeface while the real one loads
     if (panelOpen() || dragging) drawSelection(ctx);
   }
 
+  // The picture is redrawn only when something on it has changed (or a video is playing), and never while it
+  // can't be seen. Drawing a full-size canvas sixty times a second for nothing drains the battery and makes
+  // the other sections feel heavy.
+  let textReady = false, fontsSeen = 0, lastDrawn = "", settleUntil = 0;
+  const redraw = () => { lastDrawn = ""; };
+  if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener("loadingdone", () => { fontsSeen++; });
+  const onScreen = () => !document.hidden && !$("view-create").hidden && $("lock").hidden;
+  function pictureKey() {
+    const bg = state.bg, el = bg && bg.el;
+    return JSON.stringify([state.blocks, state.selected, state.shadow, W, H, panelOpen(), dragging, textReady, fontsSeen,
+      bg ? [bg.url, el.videoWidth || el.naturalWidth || 0, el.readyState || 0, el.currentTime || 0] : 0]);
+  }
   function loop() {
-    render();
+    if (onScreen()) {
+      const bg = state.bg, playing = !!bg && bg.kind === "video" && !bg.el.paused && !bg.el.ended;
+      const key = pictureKey(), now = performance.now();
+      // A video's picture can arrive a moment after the video says it has one (a paused clip, a first frame):
+      // with a video behind the words, keep drawing for half a second after anything changed.
+      if (key !== lastDrawn && bg && bg.kind === "video") settleUntil = now + 500;
+      if (playing || key !== lastDrawn || now < settleUntil) { render(); lastDrawn = key; }
+    } else redraw();                         // start afresh when it comes back into view
     requestAnimationFrame(loop);
   }
+  // Words are only ever saved in their real typeface: wait for any font that is still on its way.
+  const fontsFor = () => Promise.all(state.blocks.filter((b) => b.text.trim())
+    .map((b) => document.fonts.load(fontOf(b), "Entangledd").catch(() => {})));
 
   // Off-screen copies for saving: the full picture, or the text alone on transparency.
   function compose(textOnly) {
@@ -177,6 +199,7 @@
     return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
   };
   function checkContrast() {
+    if (!onScreen()) return;                 // nothing to warn about while the picture can't be seen
     const warn = $("warn");
     let worst = null;
     try {
@@ -217,7 +240,8 @@
   function setShape(shape) {
     state.shape = shape === "post" ? "post" : "reel";
     H = state.shape === "post" ? 1350 : 1920;
-    canvas.height = H;
+    canvas.height = H;                       // (this also wipes the canvas)
+    redraw();
     probe.height = Math.round(probe.width * H / W);
     document.querySelectorAll("#shape button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.shape === state.shape)));
     fitCanvas();
@@ -627,6 +651,7 @@
   const toBlob = (c, type, q) => new Promise((res) => c.toBlob(res, type, q));
 
   $("save-img").addEventListener("click", async () => {
+    await fontsFor();
     const blob = await toBlob(compose(false), "image/jpeg", 0.92);
     const file = new File([blob], "ds-studio.jpg", { type: "image/jpeg" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -638,7 +663,7 @@
   });
 
   // ---------- server: passcode and reels ----------
-  const TOKEN_KEY = "entangledd.token.v1", FACEID_KEY = "entangledd.faceid.v1";
+  const TOKEN_KEY = "entangledd.token.v1", FACEID_KEY = "entangledd.faceid.v1", STATUS_KEY = "entangledd.status.v1";
   const server = { on: false, reels: false, ai: false, stock: false, instagram: false, locked: false, token: "" };
   const store = {
     get: (k) => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } },
@@ -669,13 +694,42 @@
     $("passcode").value = "";
     if (face) $("faceid-unlock").focus(); else $("passcode").focus();
   }
-  function unlocked(token) {
+  // What the server offers (reels, Nishiii, backgrounds, Instagram). It is also remembered on the phone,
+  // so the next open can begin at once instead of waiting to be told again.
+  function syncServer() {
+    syncReelPane();
+    $("stock").disabled = !server.stock;
+    $("stock-note").hidden = server.stock;
+    $("reword-open").hidden = !server.ai;
+    $("tune-search").disabled = false;
+    $("check-open").hidden = !server.ai;
+    $("queue-add").hidden = !server.instagram;
+    $("post-open").hidden = !server.instagram;
+  }
+  function applyStatus(st, remember) {
+    server.on = true; server.reels = !!st.reels; server.ai = !!st.ai; server.stock = !!st.stock; server.instagram = !!st.instagram;
+    if (remember !== false) store.set(STATUS_KEY, JSON.stringify({ reels: server.reels, ai: server.ai, stock: server.stock, instagram: server.instagram }));
+    syncServer();
+  }
+  // Tells the rest of the app (studio.js and the add-on sections) that it is open and unlocked. Their scripts
+  // load after this one, so the first signal waits until the page has finished loading them.
+  let announced = false;                     // whether the rest of the app has been told it may begin
+  let statusKnown = Promise.resolve();       // settles once /api/status has answered, or failed
+  function announceReady() {
+    announced = true;
+    const go = () => document.dispatchEvent(new CustomEvent("studio:ready"));
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", go, { once: true });
+    else go();
+  }
+  async function unlocked(token, st) {
     server.token = token;
     if (!faceIdOn()) store.set(TOKEN_KEY, token);
     $("lock").hidden = true;
     $("lock-error").hidden = true;
     server.locked = false;
-    document.dispatchEvent(new CustomEvent("studio:ready"));
+    announced = true;
+    if (st) applyStatus(st); else await statusKnown;      // an older server doesn't send it along with the sign-in
+    announceReady();
   }
   function lockError(e) {
     $("lock-error").textContent = e.message === "Failed to fetch" ? "You seem to be offline. Check your internet and try again." : e.message;
@@ -691,7 +745,7 @@
   $("lock").addEventListener("submit", async (e) => {
     e.preventDefault();
     $("lock-error").hidden = true;
-    try { unlocked((await postJson("login", { passcode: $("passcode").value })).token); }
+    try { const r = await postJson("login", { passcode: $("passcode").value }); unlocked(r.token, r.status); }
     catch (e2) { lockError(e2); }
   });
 
@@ -701,24 +755,55 @@
     dec: (str) => Uint8Array.from(atob(str.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)),
   };
   const faceIdName = /iPhone|iPad/.test(navigator.userAgent) ? "Face ID" : "your device's screen lock";
-  async function faceIdUnlock() {
+  // The challenge is asked for the instant the page starts (the small script at the top of index.html), so by
+  // the time Face ID is wanted it is usually already here. Later tries ask for a fresh one.
+  const freshChallenge = () => postJson("passkey/challenge");
+  // After a try that didn't unlock, the next challenge is fetched straight away, so a tap on the button goes to
+  // Face ID with no wait in between. (One is good for five minutes; one older than three is not used.)
+  let ahead = null;                          // { at, promise }
+  function fetchAhead() { ahead = { at: Date.now(), promise: freshChallenge().catch(() => null) }; }
+  function nextChallenge() {
+    const early = window.__challenge || (ahead && Date.now() - ahead.at < 3 * 60 * 1000 ? ahead.promise : null);
+    window.__challenge = null; ahead = null;
+    return early ? early.then((ch) => (ch && ch.challenge ? ch : freshChallenge()), freshChallenge) : freshChallenge();
+  }
+  // auto = the app is asking by itself (on opening, or on coming back after a while), not because of a tap.
+  // One try at a time. The app never starts a second try of its own while one is going on. A tap always gets a
+  // fresh try: an iPhone can leave a try the app started by itself hanging with nothing on screen, and the
+  // button must still work then, so the hanging one is given up first.
+  let prompting = null;                      // the try going on right now, if any: { stop, answered }
+  async function faceIdUnlock(auto) {
+    if (prompting) {
+      if (auto || prompting.answered) return;  // (once the phone has answered, the sign-in is on its way: nothing to give up)
+      prompting.stop.abort();
+    }
+    const mine = prompting = { stop: new AbortController(), answered: false };
     $("lock-error").hidden = true;
     try {
-      const ch = await postJson("passkey/challenge");
+      const ch = await nextChallenge();
+      if (prompting !== mine) return;
       const got = await navigator.credentials.get({ publicKey: {
         challenge: b64u.dec(ch.challenge), userVerification: "required", timeout: 60000,
         allowCredentials: [{ type: "public-key", id: b64u.dec(store.get(FACEID_KEY)), transports: ["internal"] }],
         hints: ["client-device"],
-      } });
+      }, signal: mine.stop.signal });
+      if (prompting !== mine) return;
+      mine.answered = true;
       const r = got.response;
-      unlocked((await postJson("passkey/login", { challengeId: ch.id, credentialId: b64u.enc(got.rawId),
-        authenticatorData: b64u.enc(r.authenticatorData), clientDataJSON: b64u.enc(r.clientDataJSON), signature: b64u.enc(r.signature) })).token);
+      const res = await postJson("passkey/login", { challengeId: ch.id, credentialId: b64u.enc(got.rawId),
+        authenticatorData: b64u.enc(r.authenticatorData), clientDataJSON: b64u.enc(r.clientDataJSON), signature: b64u.enc(r.signature) });
+      unlocked(res.token, res.status);
     } catch (e) {
-      // NotAllowedError is what a cancelled or timed-out Face ID prompt looks like.
-      lockError(e.name === "NotAllowedError" ? new Error("Face ID was cancelled. Try again, or use the passcode.") : e);
-    }
+      if (prompting !== mine) return;        // given up for a newer try, which speaks for itself
+      // NotAllowedError is what a cancelled, timed-out or refused Face ID prompt looks like. When the app asked by
+      // itself there is nothing to explain: the button is right there for another try.
+      const quiet = e.name === "NotAllowedError" || e.name === "AbortError";
+      if (!quiet) lockError(e);
+      else if (!auto) lockError(new Error("Face ID was cancelled. Try again, or use the passcode."));
+      if (server.locked && faceIdOn() && navigator.onLine !== false) fetchAhead();
+    } finally { if (prompting === mine) prompting = null; }
   }
-  $("faceid-unlock").addEventListener("click", faceIdUnlock);
+  $("faceid-unlock").addEventListener("click", () => faceIdUnlock(false));
 
   async function faceIdEnable() {
     if (!window.PublicKeyCredential) throw new Error("Face ID isn't available in this browser.");
@@ -756,29 +841,29 @@
   let hiddenAt = 0;
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) { hiddenAt = Date.now(); return; }
-    if (faceIdOn() && server.token && hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000) { server.token = ""; server.locked = true; showLock(); }
+    if (faceIdOn() && server.token && hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000) {
+      server.token = ""; server.locked = true; showLock();
+      if (window.PublicKeyCredential) faceIdUnlock(true);
+    }
   });
 
   async function connect() {
+    const asked = server.token;                  // the sign-in this answer will be about
+    let st = null;
     try {
-      const res = await fetch("/api/status", { headers: { Authorization: "Bearer " + server.token } });
-      if (!res.ok) return;                       // no server behind this copy of the app
-      const st = await res.json();
-      server.on = true; server.reels = !!st.reels; server.ai = !!st.ai; server.stock = !!st.stock; server.instagram = !!st.instagram;
-      server.locked = !!(st.configured && !st.signedIn);
-      if (server.locked) showLock();
+      const res = await fetch("/api/status", { headers: { Authorization: "Bearer " + asked } });
+      if (res.ok) st = await res.json();         // not ok: no server behind this copy of the app
     } catch (e) { /* offline or static hosting: the composer still works */ }
-    finally {
-      syncReelPane();
-      $("stock").disabled = !server.stock;
-      $("stock-note").hidden = server.stock;
-      $("reword-open").hidden = !server.ai;
-      $("tune-search").disabled = false;
-      $("check-open").hidden = !server.ai;
-      $("queue-add").hidden = !server.instagram;
-      $("post-open").hidden = !server.instagram;
-      if (!server.locked) document.dispatchEvent(new CustomEvent("studio:ready"));
+    if (st) applyStatus(st); else syncServer();
+    if (server.token !== asked) return;          // she unlocked while this was on its way: nothing more to decide
+    if (st && st.configured && !st.signedIn) {
+      server.locked = true;
+      if ($("lock").hidden) showLock();          // (with the Face ID lock on, it is already showing)
+      return;
     }
+    // No lock is needed: already signed in, no passcode set up, or no server in reach.
+    if (server.locked) { server.locked = false; $("lock").hidden = true; }
+    if (!announced) announceReady();
   }
 
   let reel = null;   // { id, blob } once a reel is finished
@@ -799,6 +884,16 @@
     if (pct == null) $("bar").removeAttribute("value"); else $("bar").value = pct;
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Like sleep, but ends early when she comes back to the app (a phone pauses timers while the app is away).
+  const sleepOrReturn = (ms) => new Promise((r) => {
+    const done = () => { clearTimeout(timer); document.removeEventListener("visibilitychange", back); r(); };
+    const back = () => { if (!document.hidden) done(); };
+    const timer = setTimeout(done, ms);
+    document.addEventListener("visibilitychange", back);
+  });
+  // How long to wait before asking again whether the reel is ready. Nothing can be ready in the first seconds;
+  // after that it is asked often, so the reel shows up almost the moment it is done; a slow one is asked about less.
+  const reelCheckEvery = (waited) => (waited < 12000 ? 3000 : waited < 90000 ? 1500 : waited < 240000 ? 3000 : 5000);
 
   // What is on the canvas right now, in the few words Insights compares posts by.
   function madeWith() {
@@ -821,6 +916,7 @@
         drawBackground(c.getContext("2d"));
         bg = await toBlob(c, "image/jpeg", 0.93); bgName = "background.jpg";
       }
+      await fontsFor();
       const overlay = await toBlob(compose(true), "image/png");
 
       progress("Sending the background…", 0);
@@ -844,9 +940,10 @@
       }
       await api(`jobs/${job.id}/start`, { method: "POST" });
 
-      progress("Creating your reel. This usually takes a minute or two. Keep the app open until it's ready.", null);
+      progress("Creating your reel. This takes about a minute. Keep the app open until it's ready.", null);
+      const asked = Date.now();
       for (;;) {
-        await sleep(4000);
+        await sleepOrReturn(reelCheckEvery(Date.now() - asked));
         const st = await (await api(`jobs/${job.id}`)).json();
         if (st.state === "done") break;
         if (st.state === "failed") throw new Error(st.error || "The reel couldn't be created. Try again.");
@@ -906,7 +1003,7 @@
     currentReel: () => reel, madeWith, loadMusic,
     musicState: () => (state.music ? { title: state.music.title, start: state.music.start, volume: state.music.el.volume, time: state.music.el.currentTime, playing: !state.music.el.paused } : null),
     shape: () => state.shape,
-    pictureBlob: () => toBlob(compose(false), "image/jpeg", 0.92),
+    pictureBlob: async () => { await fontsFor(); return toBlob(compose(false), "image/jpeg", 0.92); },
     quoteText: () => state.blocks.map((b) => b.text.trim()).filter(Boolean).join("\n"),
     quoteOnly: () => state.blocks.filter((b) => b.role !== "author").map((b) => b.text.trim()).filter(Boolean).join("\n"),
     author: () => state.author,
@@ -916,8 +1013,21 @@
 
   // ---------- start ----------
   async function start() {
-    try { await Promise.all(FONTS.filter((f) => !f.extra).map((f) => document.fonts.load(f.css(40), "Entangledd"))); } catch (e) { /* falls back to system fonts */ }
-    FONTS.filter((f) => f.extra).forEach((f) => document.fonts.load(f.css(40), "Entangledd").catch(() => {}));   // the canvas redraws itself as each arrives
+    // Unlocking and the server come first and wait for nothing; the fonts and the composer get ready alongside.
+    if (faceIdOn() && window.PublicKeyCredential) {
+      server.locked = true; showLock();
+      faceIdUnlock(true);                        // Face ID asks by itself: no tap needed
+    } else if (server.token) {
+      // Already signed in on this phone: begin with what the server said last time, and let it correct that if needed.
+      try {
+        const last = JSON.parse(store.get(STATUS_KEY) || "null");
+        if (last) { applyStatus(last, false); announceReady(); }
+      } catch (e) { /* nothing remembered: wait for the server */ }
+    }
+    statusKnown = connect();
+    const coreFonts = Promise.all(FONTS.filter((f) => !f.extra).map((f) => document.fonts.load(f.css(40), "Entangledd"))).catch(() => {});
+    Promise.race([coreFonts, sleep(4000)]).then(() => { textReady = true; });      // system fonts if they never arrive
+    coreFonts.then(() => FONTS.filter((f) => f.extra).forEach((f) => document.fonts.load(f.css(40), "Entangledd").catch(() => {})));   // the canvas redraws itself as each arrives
     if (!loadDraft()) applyStyle("sea");
     else select(state.blocks[0].id);
     document.querySelectorAll("#styles button").forEach((b) =>
@@ -926,7 +1036,6 @@
     setShape(state.shape);
     syncBackgroundPane();
     if (window.matchMedia("(min-width: 900px)").matches) showTab("text");
-    connect();
     setInterval(checkContrast, 700);
     loop();
   }

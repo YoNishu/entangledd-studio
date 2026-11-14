@@ -13,6 +13,16 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-180.png">
 <link rel="manifest" href="manifest.webmanifest">
+<script>
+// With the Face ID lock on, ask the server for its one-time challenge before anything else loads (this sits
+// above the stylesheet on purpose: a script below it would wait for it), so Face ID can begin the moment the app appears. (app.js picks this up.)
+try {
+  if (localStorage.getItem("entangledd.faceid.v1") && window.PublicKeyCredential) {
+    window.__challenge = fetch("/api/passkey/challenge", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+  }
+} catch (e) { /* no storage: the app asks later instead */ }
+</script>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>

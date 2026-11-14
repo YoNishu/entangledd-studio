@@ -33,6 +33,8 @@ class MemoryBucket {
       text: async () => o.data.toString(), arrayBuffer: async () => o.data };
   }
   async put(key, body, opts = {}) {
+    // "Only if nothing is stored under this name yet" (If-None-Match: *), answered the way real storage answers it.
+    if (opts.onlyIf && typeof opts.onlyIf.get === "function" && opts.onlyIf.get("If-None-Match") === "*" && this.objects.has(key)) return null;
     this.objects.set(key, { data: await this.#bytes(body), uploaded: new Date(), httpMetadata: opts.httpMetadata || {} });
   }
   async get(key, opts = {}) {
