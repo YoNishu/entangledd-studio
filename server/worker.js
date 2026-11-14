@@ -461,9 +461,9 @@ function shuffle(a) {
 
 async function generateSuggestions(env, count) {
   const date = todayIST();
-  const [lib, history, day, taste, insp] = await Promise.all([
+  const [lib, history, day, taste, insp, ranker] = await Promise.all([
     loadDoc(env, "library", emptyLibrary()), loadDoc(env, "history", []), loadDoc(env, `suggestions/${date}`, []),
-    tasteBrief(env), loadDoc(env, "inspirations", []),
+    tasteBrief(env), loadDoc(env, "inspirations", []), scorer.ranker(env, kit),
   ]);
   const seen = new Set([...history, ...day].map((x) => norm(x.text)));
   const fresh = [];
@@ -477,8 +477,11 @@ async function generateSuggestions(env, count) {
 
   const want = count - fresh.length;
   if (want > 0) {
+    // Once the scorer is live (see scorer.js), Nishiii is asked for more quotes than needed, so there is
+    // something to choose from. Until then "ranker" is empty and everything here is as it always was.
+    const ask = ranker ? ranker.ask(want) : want;
     const brief = {
-      count: want,
+      count: ask,
       books: (lib.books || []).map((b) => ({ title: b.title, author: b.author })),
       films: (lib.screen || []).filter((x) => x.kind === "film").map((x) => x.title),
       series: (lib.screen || []).filter((x) => x.kind === "series").map((x) => x.title),
@@ -491,16 +494,18 @@ async function generateSuggestions(env, count) {
       lovedElsewhere: shuffle(insp.flatMap((i) => [i.quote, ...(i.top || []).map((t) => t.quote)]).filter(Boolean)).slice(0, 15),
     };
     const answer = parseJson(await claude(env, {
-      system: SUGGEST_SYSTEM, maxTokens: 3000,
-      messages: [{ role: "user", content: `Suggest ${want} quotes. Reader details as JSON:\n${JSON.stringify(brief)}` }],
+      system: SUGGEST_SYSTEM, maxTokens: ranker ? 4500 : 3000,
+      messages: [{ role: "user", content: `Suggest ${ask} quotes. Reader details as JSON:\n${JSON.stringify(brief)}` }],
     }));
+    const pool = [];
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
       if (!text || seen.has(norm(text))) continue;
-      fresh.push(cleanSuggestion(s, text));
+      pool.push(cleanSuggestion(s, text));
       seen.add(norm(text));
-      if (fresh.length >= count) break;
+      if (pool.length >= ask) break;
     }
+    fresh.push(...(ranker ? ranker.choose(pool, want, fresh) : pool));
   }
   const items = fresh.map((f) => ({ id: crypto.randomUUID(), state: "new", ...f }));
   await saveDoc(env, `suggestions/${date}`, [...day, ...items]);
@@ -519,9 +524,9 @@ async function suggestFrom(env, b, already) {
   const date = todayIST();
   const count = Math.min(8, Math.max(1, Number(b.count) || 5));
   const about = oneLine(b.about, 120);
-  const [lib, history, day, taste, insp] = await Promise.all([
+  const [lib, history, day, taste, insp, ranker] = await Promise.all([
     loadDoc(env, "library", emptyLibrary()), loadDoc(env, "history", []), loadDoc(env, `suggestions/${date}`, []),
-    tasteBrief(env), loadDoc(env, "inspirations", []),
+    tasteBrief(env), loadDoc(env, "inspirations", []), scorer.ranker(env, kit),
   ]);
   const ids = new Set((Array.isArray(b.sources) ? b.sources : []).map(String));
   const books = (lib.books || []).filter((x) => ids.has(x.id));
@@ -555,8 +560,9 @@ async function suggestFrom(env, b, already) {
   const want = count - fresh.length;
   if (want > 0 && fromWorks && (otherWorks || !fresh.length)) {
     const fallback = !otherWorks ? withText : [];      // the text gave nothing usable: fall back to memory for those books
+    const ask = ranker ? ranker.ask(want) : want;      // more than needed once the scorer is live, as for Today's five
     const brief = {
-      count: want,
+      count: ask,
       only: others.length || screen.length || fallback.length ? [...[...others, ...fallback].map((x) => ({ type: "book", title: x.title, author: x.author })), ...screen.map((x) => ({ type: x.kind, title: x.title }))] : undefined,
       inTheSpiritOf: pages.length ? pages.map((x) => ({ page: x.handle ? "@" + x.handle : "saved reel", look: x.style || "",
         linesSheLoved: [x.quote, ...(x.top || []).map((t) => t.quote)].filter(Boolean).slice(0, 6) })) : undefined,
@@ -564,15 +570,17 @@ async function suggestFrom(env, b, already) {
       avoid: [...history, ...day, ...already].slice(-120).map((x) => x.text),
       taste: taste || undefined,
     };
-    const answer = parseJson(await claude(env, { system: SUGGEST_SYSTEM, maxTokens: 2500,
-      messages: [{ role: "user", content: `Suggest ${want} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] }));
+    const answer = parseJson(await claude(env, { system: SUGGEST_SYSTEM, maxTokens: ranker ? 4000 : 2500,
+      messages: [{ role: "user", content: `Suggest ${ask} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] }));
+    const pool = [];
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
       if (!text || seen.has(norm(text))) continue;
-      fresh.push(cleanSuggestion(s, text));
+      pool.push(cleanSuggestion(s, text));
       seen.add(norm(text));
-      if (fresh.length >= count) break;
+      if (pool.length >= ask) break;
     }
+    fresh.push(...(ranker ? ranker.choose(pool, want, fresh) : pool));
   }
   if (!fresh.length) throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
   const now = Date.now();
@@ -2059,7 +2067,8 @@ async function tasteRoutes(request, env, parts) {
     // "all": also erase the record of picks, skips and rewording requests, and her notes.
     const scope = new URL(request.url).searchParams.get("scope");
     if (scope === "all") {
-      await env.MEDIA.delete(["data/taste.json", "data/history.json", "data/rewords.json"]);
+      // The scorer's own record of picks and passes goes too, so its count starts again from nothing.
+      await Promise.all([env.MEDIA.delete(["data/taste.json", "data/history.json", "data/rewords.json"]), scorer.forget(env, kit)]);
       return out(emptyTaste());
     }
     if (scope !== "profile") return fail(400, "Say what to forget.");
