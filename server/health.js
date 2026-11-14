@@ -499,7 +499,8 @@ export async function checkAll(env, kit, { fromTimer = false } = {}) {
   const now = Date.now();
   // A record of its own that can't be read must not stop the checks for good: the check starts again from nothing.
   const [old, notes, stamps, ig, today] = await Promise.all([
-    readOwn(env, kit, "health", null), readOwn(env, kit, "healthnotes", {}), kit.loadDoc(env, "jobstamps", {}),
+    readOwn(env, kit, "health", null), readOwn(env, kit, "healthnotes", {}),
+    fromTimer ? {} : kit.loadDoc(env, "jobstamps", {}),      // a check the timer itself makes needs no proof that the timer runs
     kit.igReady(env) ? kit.loadIg(env) : null,
     env.MEDIA.head(`data/suggestions/${kit.todayIST()}.json`),
   ]);

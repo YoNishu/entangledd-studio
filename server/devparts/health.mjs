@@ -29,6 +29,7 @@ const fine = () => ({
   pageMake: "",         // the Page token made from a renewed sign-in: "" = good | fewer (can't post) | stale (old dates) | none (Page not listed)
   appSecret: "ok",      // "refused": Meta turns down the app's own ID and secret
   graphBusy: "",        // "yes": Meta is briefly unavailable
+  graphEcho: "",        // "yes": Meta turns down a music search with words that repeat the token it was sent
   // GitHub
   github: "ok",         // ok | 401 | 403 | 404 | off (workflow disabled) | busy
   githubEnds: "",       // days until the token ends ("" = it has no end date)
@@ -100,6 +101,11 @@ function graph(req, res, url) {
     if (mode.appSecret !== "ok" || token !== "dev-app|dev-secret") return err(400, 190, "Invalid OAuth access token signature.");
     return send(res, 200, { data: debug(q.get("input_token") || "") });
   }
+  // A token pasted wrongly (anything starting with MALFORMED): Meta's refusal repeats it, as the real one does.
+  if (p === "/oauth/access_token" && String(q.get("fb_exchange_token")).startsWith("MALFORMED")) {
+    return err(400, 190, `Malformed access token ${q.get("fb_exchange_token")}`);
+  }
+  if (p === "/ig_audio" && mode.graphEcho === "yes") return err(400, 100, `Unsupported get request with access token ${token}`);
   // Asking for a fresh sign-in with one that is already long-lived (the first connection, with a SHORT token, is built in).
   if (p === "/oauth/access_token" && String(q.get("fb_exchange_token")).startsWith("LONG")) {
     if (q.get("client_id") !== "dev-app" || q.get("client_secret") !== "dev-secret") return err(400, 101, "Error validating application. Invalid application secret.");
