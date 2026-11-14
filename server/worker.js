@@ -858,7 +858,7 @@ async function stockRoutes(request, env, parts) {
     if (!res) return fail(502, `That one couldn't be fetched from ${info.name}${last ? ` (status ${last})` : ""}. Pick a different one.`);
     const size = Number(res.headers.get("Content-Length") || 0);
     if (size > 250 * 1024 * 1024) return fail(413, "That file is too large. Pick a different one.");
-    const headers = { "Content-Type": type || "application/octet-stream", "Cache-Control": "no-store" };
+    const headers = { "Content-Type": type || "application/octet-stream", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
     if (size) headers["Content-Length"] = String(size);
     return new Response(res.body, { headers });
   }
@@ -985,7 +985,7 @@ async function musicRoutes(request, env, parts, url) {
     if (!/^audio\/|octet-stream|^video\/mp4/i.test(type)) return fail(502, "That track isn't a sound file the app can use. Pick a different one.");
     const size = Number(res.headers.get("Content-Length") || 0);
     if (size > MAX_MUSIC_BYTES) return fail(413, "That track is too large. Pick a different one.");
-    const headers = { "Content-Type": /^audio\//i.test(type) ? type : "audio/mpeg", "Cache-Control": "no-store" };
+    const headers = { "Content-Type": /^audio\//i.test(type) ? type : "audio/mpeg", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
     if (size) headers["Content-Length"] = String(size);
     return new Response(res.body, { headers });
   }
