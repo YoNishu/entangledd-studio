@@ -546,11 +546,11 @@
     const blob = await toBlob(compose(false), "image/jpeg", 0.92);
     const file = new File([blob], "entangledd.jpg", { type: "image/jpeg" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file] }); $("done").textContent = "Image shared."; $("done").hidden = false; return; }
+      try { await navigator.share({ files: [file] }); $("done").textContent = "Picture shared."; $("done").hidden = false; return; }
       catch (e) { if (e.name === "AbortError") return; }
     }
     download(blob, "entangledd.jpg");
-    $("done").textContent = "Image saved to your downloads."; $("done").hidden = false;
+    $("done").textContent = "Picture saved to your downloads."; $("done").hidden = false;
   });
 
   // ---------- server: passcode and reels ----------
@@ -569,7 +569,7 @@
     const res = await fetch("/api/" + path, { ...opts, headers: { ...(opts.headers || {}), Authorization: "Bearer " + server.token } });
     if (res.status === 401) { showLock(); throw new Error("Enter the passcode to continue."); }
     if (!res.ok) {
-      let msg = "The server didn't respond as expected. Try again.";
+      let msg = "Something went wrong on our side. Try again.";
       try { msg = (await res.json()).error || msg; } catch (e) { /* keep the generic message */ }
       throw new Error(msg);
     }
@@ -594,7 +594,7 @@
     document.dispatchEvent(new CustomEvent("studio:ready"));
   }
   function lockError(e) {
-    $("lock-error").textContent = e.message === "Failed to fetch" ? "No connection. Check the internet and try again." : e.message;
+    $("lock-error").textContent = e.message === "Failed to fetch" ? "You seem to be offline. Check your internet and try again." : e.message;
     $("lock-error").hidden = false;
   }
   async function postJson(path, data, auth) {
@@ -637,7 +637,7 @@
   $("faceid-unlock").addEventListener("click", faceIdUnlock);
 
   async function faceIdEnable() {
-    if (!window.PublicKeyCredential) throw new Error("This browser can't use Face ID for websites.");
+    if (!window.PublicKeyCredential) throw new Error("Face ID isn't available in this browser.");
     const ch = await postJson("passkey/challenge");
     const made = await navigator.credentials.create({ publicKey: {
       rp: { name: "Entangledd Studio" },
@@ -648,7 +648,7 @@
       timeout: 60000, attestation: "none",
     } });
     const r = made.response;
-    if (!r.getPublicKey || !r.getPublicKey()) throw new Error("This device didn't share a key the app can use.");
+    if (!r.getPublicKey || !r.getPublicKey()) throw new Error("Face ID couldn't be set up on this device.");
     const id = b64u.enc(made.rawId);
     await postJson("passkey/register", { challengeId: ch.id, credentialId: id, publicKey: b64u.enc(r.getPublicKey()),
       alg: r.getPublicKeyAlgorithm(), clientDataJSON: b64u.enc(r.clientDataJSON),
@@ -701,7 +701,7 @@
     const ready = server.on && server.reels;
     $("make-reel").disabled = !ready;
     $("reel-note").hidden = ready;
-    $("reel-note").textContent = "Reels need the app's server, which isn't fully set up yet. Images can still be saved.";
+    $("reel-note").textContent = "Reels aren't set up yet. You can still save pictures.";
     if (mode) {
       $("pane-save").classList.toggle("busy", mode !== "setup");   // hides "Save as a picture" while a reel is being made or shown
       $("reel-setup").hidden = mode !== "setup" || state.shape === "post";
@@ -745,12 +745,12 @@
       await api(`jobs/${job.id}/overlay`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: overlay });
       await api(`jobs/${job.id}/start`, { method: "POST" });
 
-      progress("Creating the reel. This usually takes one to two minutes; you can keep this open.", null);
+      progress("Creating your reel. This usually takes a minute or two. Keep the app open until it's ready.", null);
       for (;;) {
         await sleep(4000);
         const st = await (await api(`jobs/${job.id}`)).json();
         if (st.state === "done") break;
-        if (st.state === "failed") throw new Error(st.error || "The reel could not be put together.");
+        if (st.state === "failed") throw new Error(st.error || "The reel couldn't be created. Try again.");
       }
       progress("Fetching the finished reel…", null);
       const blob = await (await api(`jobs/${job.id}/reel`)).blob();
@@ -760,7 +760,7 @@
       syncReelPane("result");
     } catch (e) {
       syncReelPane("setup");
-      $("done").textContent = e.message === "Failed to fetch" ? "The connection dropped. Check the internet and try again." : e.message;
+      $("done").textContent = e.message === "Failed to fetch" ? "The connection dropped. Check your internet and try again." : e.message;
       $("done").hidden = false;
     }
   }

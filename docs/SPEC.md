@@ -42,7 +42,7 @@ weekly report, comment reply drafts.
 | 1 | Reel renderer and GitHub workflows | Done |
 | 2 | Composer: photo/video background, styles, drag and pinch, image export | Done |
 | 3 | Server: passcode, reels created from the phone | Done, live |
-| 4 | Quotes: Today's suggestions, Library, page scan, rewording, free footage (Pixabay) | Done, live |
+| 4 | Quotes: Today's suggestions, Library, page scan, rewording, background search for free photos and videos (Pixabay) | Done, live |
 | 5 | Instagram: connect, captions, music, tap to post reels | Done, live; first real posts made |
 | 6 | Post results: reach, views, likes, comments, saves, shares; deleted posts drop off | Built against a stand-in; first run on real posts pending |
 | 7 | Inspiration: accounts (top posts), reel links, screenshots read by Claude | Built against a stand-in; first real run pending |
@@ -83,7 +83,7 @@ only to understand her taste and are never suggested back.
 - Small, still text: it takes up a small patch of the frame and does not animate.
 - Styles: Sea (cream serif, centred), Horizon (small lowercase serif), Whisper (italic sans,
   staggered lines, free placement).
-- Backgrounds: her own photos and videos from the iPhone, or free stock footage found in-app.
+- Backgrounds: her own photos and videos from the iPhone, or free photos and videos found with the in-app background search.
 - The app draws the text layer; the renderer only lays it over the background, so the preview
   and the finished reel always match.
 

@@ -15,7 +15,7 @@
   const send = (path, method, data) => getJson(path, {
     method, headers: { "Content-Type": "application/json" }, body: data ? JSON.stringify(data) : undefined,
   });
-  const friendly = (e) => (e.message === "Failed to fetch" ? "No connection. Check the internet and try again." : e.message);
+  const friendly = (e) => (e.message === "Failed to fetch" ? "You seem to be offline. Check your internet and try again." : e.message);
   const day = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   const compact = (n) => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n || 0);
 
@@ -139,7 +139,7 @@
     }));
     skip.addEventListener("click", () => {
       mark("rejected"); node.remove();
-      if (base === "suggestions" && !date && !$("suggestions").children.length) $("today-note").textContent = "That's all five for today. For more, ask Nishiii in the Nishiii section.";
+      if (base === "suggestions" && !date && !$("suggestions").children.length) $("today-note").textContent = "That's all five for today. Want more? Ask in the Nishiii section.";
       if (base === "asked" && !$("asked-list").children.length) askedNote("Nothing here now. Ask for more whenever you like.");
     });
     return node;
@@ -151,12 +151,12 @@
     $("today-weekday").textContent = d.toLocaleDateString(undefined, { weekday: "long" });
     $("today-date").textContent = d.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
     $("suggestions").replaceChildren(...data.items.map((i) => card(i)));
-    $("today-note").textContent = data.items.length ? "Five quotes Nishiii chose for you today." : "That's all five for today. For more, ask Nishiii in the Nishiii section.";
+    $("today-note").textContent = data.items.length ? "Five quotes Nishiii chose for you today." : "That's all five for today. Want more? Ask in the Nishiii section.";
   }
 
   async function loadToday(force) {
     if (!S.server.ai) {
-      $("today-note").textContent = "Daily quotes switch on once Nishiii is connected on the server. You can still write your own text in Create.";
+      $("today-note").textContent = "Daily quotes aren't switched on yet. You can still write your own words in Create.";
       return;
     }
     if (todayBusy) return;
@@ -259,7 +259,7 @@
       $("ask-sheet").hidden = true;
       $("view-nishiii").scrollTo({ top: 0 });
     } catch (e) { $("ask-status").textContent = friendly(e); }
-    finally { btn.disabled = false; btn.textContent = "Get 5 quotes"; }
+    finally { btn.disabled = false; btn.textContent = "Get five quotes"; }
   });
 
   // ---------- Library: her quotes and books ----------
@@ -302,7 +302,7 @@
   }
 
   async function loadLibrary() {
-    if (!S.server.on) { note("The library needs the app's server, which this copy isn't connected to."); return; }
+    if (!S.server.on) { note("Your Library isn't available right now."); return; }
     try { renderLibrary(await getJson("library")); note(""); } catch (e) { note(friendly(e)); }
     try { renderInspirations(await getJson("inspirations")); } catch (e) { inspNote(friendly(e)); }
   }
@@ -334,7 +334,7 @@
     const file = $("scan").files[0];
     $("scan").value = "";
     if (!file) return;
-    if (!S.server.ai) { note("Scanning switches on once Nishiii is connected on the server."); return; }
+    if (!S.server.ai) { note("Scanning isn't switched on yet."); return; }
     $("scan-results").replaceChildren(el("p", { className: "note", textContent: "Reading the page…" }));
     try {
       const { passages } = await send("scan", "POST", { image: await shrink(file) });
@@ -453,7 +453,7 @@
       : [el("p", { className: "empty", textContent: "Nothing here yet. Add a reel you wish you'd made." })]));
   }
   async function addScreenshot(file, forId) {
-    if (!S.server.ai) { inspNote("Reading screenshots switches on once Nishiii is connected on the server."); return; }
+    if (!S.server.ai) { inspNote("Reading screenshots isn't switched on yet."); return; }
     inspNote("Reading the screenshot…");
     try { renderInspirations(await send("inspirations", "POST", { image: await shrink(file), forId })); inspNote(""); }
     catch (e) { inspNote(friendly(e)); }
@@ -586,34 +586,65 @@
     } catch (err) { $("look-note").textContent = friendly(err); }
   });
 
-  // ---------- Free footage ----------
+  // ---------- Background search: free photos and videos ----------
   const stock = { kind: "video", q: "", page: 1 };
   const status = (msg) => { $("stock-status").textContent = msg; };
 
+  // Fetches the chosen photo or video. The server tries each of its addresses; if every one is refused there,
+  // the phone asks the library directly, which libraries that turn servers away usually allow.
+  async function fetchFromLibrary(item) {
+    const all = item.files && item.files.length ? item.files : [item.file];
+    try {
+      return await (await S.api("stock/file?url=" + encodeURIComponent(all[0]) + all.slice(1).map((u) => "&alt=" + encodeURIComponent(u)).join(""))).blob();
+    } catch (first) {
+      if (item.kind === "video") throw first;
+      for (const u of all) {
+        try {
+          const res = await fetch(u, { mode: "cors", credentials: "omit", referrerPolicy: "no-referrer" });
+          if (res.ok && (res.headers.get("Content-Type") || "").startsWith("image/")) return await res.blob();
+        } catch (e) { /* try the next address */ }
+      }
+      throw first;
+    }
+  }
+
   function thumb(item) {
-    const b = el("button", { type: "button" },
-      el("img", { src: item.thumb, alt: `${item.kind === "video" ? "Video" : "Photo"} by ${item.credit || "a contributor"}`, loading: "lazy" }),
+    const picture = el("img", { src: item.thumb, alt: `${item.kind === "video" ? "Video" : "Photo"} by ${item.credit || "a contributor"}`, loading: "lazy" });
+    // If one address for the small picture fails to load, the next is tried.
+    const spare = (item.thumbs || []).slice(1);
+    picture.addEventListener("error", () => { if (spare.length) picture.src = spare.shift(); });
+    const b = el("button", { type: "button" }, picture,
       el("span", { textContent: [item.seconds ? item.seconds + " s" : "", item.credit].filter(Boolean).join(", ") }));
     b.addEventListener("click", async () => {
       if (b.getAttribute("aria-busy") === "true") return;
       b.setAttribute("aria-busy", "true");
+      // Picks are numbered too: tapping another one, or starting a new search, drops the one still on its way.
+      const mine = ++pickNo;
+      fetching = true;
       status(item.kind === "video" ? "Fetching the video. Large clips take a little while…" : "Fetching the photo…");
       try {
-        const blob = await (await S.api("stock/file?url=" + encodeURIComponent(item.file))).blob();
+        const blob = await fetchFromLibrary(item);
+        if (mine !== pickNo) return;
         const video = item.kind === "video";
         await S.loadBackground(new File([blob], `stock-${item.id}.${video ? "mp4" : "jpg"}`, { type: video ? "video/mp4" : "image/jpeg" }));
         $("stock-sheet").hidden = true;
         status("");
-      } catch (e) { status(friendly(e)); }
-      finally { b.removeAttribute("aria-busy"); }
+      } catch (e) { if (mine === pickNo) status(friendly(e)); }
+      finally { b.removeAttribute("aria-busy"); if (mine === pickNo) fetching = false; }
     });
     return b;
   }
 
+  let searchNo = 0, pickNo = 0, fetching = false;
   async function search(append) {
-    status("Searching…");
+    if (!append) { pickNo += 1; fetching = false; }
+    // Each search is numbered, so a slow answer to an earlier search (videos, say, after switching to photos)
+    // can't replace the results of the one on screen.
+    const mine = ++searchNo;
+    if (!fetching) status("Searching…");
     try {
       const data = await getJson(`stock?kind=${stock.kind}&page=${stock.page}&q=${encodeURIComponent(stock.q)}`);
+      if (mine !== searchNo) return;
       const nodes = data.items.map(thumb);
       if (append) $("stock-grid").append(...nodes); else $("stock-grid").replaceChildren(...nodes);
       $("stock-more").hidden = !data.more;
@@ -621,8 +652,8 @@
         $("stock-provider").textContent = data.provider.name; $("stock-provider").href = data.provider.url;
         $("stock-credit").hidden = false;
       }
-      status(data.items.length || append ? "" : "Nothing found. Try different words.");
-    } catch (e) { status(friendly(e)); }
+      if (!fetching) status(data.items.length || append ? "" : "Nothing found. Try different words.");
+    } catch (e) { if (mine === searchNo && !fetching) status(friendly(e)); }
   }
   const newSearch = () => { stock.q = $("stock-q").value.trim(); stock.page = 1; search(false); };
   $("stock").addEventListener("click", () => { $("stock-sheet").hidden = false; if (!$("stock-grid").children.length) newSearch(); });
@@ -645,9 +676,9 @@
     const on = !!(ig && ig.connected);
     $("ig-connect").hidden = on;
     $("ig-disconnect").hidden = !on;
-    if (!S.server.instagram) { $("ig-status").textContent = "Posting switches on once the Meta app's ID and secret are added on the server."; $("ig-connect").hidden = true; return; }
+    if (!S.server.instagram) { $("ig-status").textContent = "Posting isn't set up yet. (Setup: the Meta app's ID and secret are missing.)"; $("ig-connect").hidden = true; return; }
     $("ig-status").textContent = on
-      ? `Connected as @${ig.username}${ig.page ? ` through the Facebook Page "${ig.page}"` : ""}. Music search works until ${day(ig.musicUntil)}; after that, connect again. Posting keeps working.`
+      ? `Connected as @${ig.username}${ig.page ? ` through the Facebook Page "${ig.page}"` : ""}. Music search works until ${day(ig.musicUntil)}. After that, connect again here; posting keeps working either way.`
       : "Not connected yet.";
   }
 
@@ -693,7 +724,7 @@
     else if (w.measured < 6) kids.push(el("p", { className: "src", textContent: `Best times to post show up here after six posts have numbers. So far: ${w.measured}.` }));
     if (w.themes.length) kids.push(el("p", { className: "src", textContent: `Themes that travel furthest: ${w.themes.map((t) => `${t.name} (${compact(t.reach)})`).join(", ")}.` }));
     card.replaceChildren(...kids);
-    $("queue-note").textContent = w.times.length ? `Each one posts when you tap it. Your posts have done best in the ${w.times[0].name.toLowerCase()} so far.` : "Each one posts when you tap it. Finished reels are kept for a week.";
+    $("queue-note").textContent = w.times.length ? `Nothing here posts by itself: each one waits for your tap. Your posts have done best in the ${w.times[0].name.toLowerCase()} so far.` : "Nothing here posts by itself: each one waits for your tap. Finished reels are kept for a week.";
   }
 
   // Reels made earlier and kept to post later.
@@ -705,7 +736,7 @@
       try { renderQueue((await send("queue/" + q.id, "DELETE")).queue); } catch (e) { $("posts-note").textContent = friendly(e); }
     });
     return el("article", { className: "card" }, el("p", { className: "q", textContent: q.quote || "A reel" }), chip("wait", "Made, not posted"),
-      el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that it has to be created again.` }), el("div", { className: "acts" }, go, drop));
+      el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that you'd need to create it again.` }), el("div", { className: "acts" }, go, drop));
   }
   function renderQueue(queue) {
     $("queue-wrap").hidden = !queue.length;
@@ -778,7 +809,7 @@
     return ig;
   }
   async function loadPosts() {
-    if (!S.server.instagram) { $("posts-note").textContent = "Posting switches on once Instagram is set up on the server."; $("list-posts").replaceChildren(); return; }
+    if (!S.server.instagram) { $("posts-note").textContent = "Posting to Instagram isn't set up yet."; $("list-posts").replaceChildren(); return; }
     await loadIg();
     $("posts-note").textContent = "Checking Instagram for the latest numbers…";
     try {
@@ -788,7 +819,7 @@
       getJson("report").then(renderWeek).catch(() => { $("week-card").hidden = true; });
       getJson("queue").then((r) => renderQueue(r.queue)).catch(() => {});
       $("posts-note").textContent = !(ig && ig.connected) ? "Instagram isn't connected. Connect it in Settings, at the top right."
-        : posts.length ? "Posts you delete on Instagram disappear from here the next time this opens." : "Nothing posted from the app yet.";
+        : posts.length ? "If you delete a post on Instagram, it disappears from here the next time you open Posts." : "Nothing posted from the app yet.";
     } catch (e) { $("posts-note").textContent = friendly(e); }
   }
 
@@ -797,9 +828,9 @@
     const f = S.faceId, btn = $("faceid-toggle");
     btn.hidden = !f.supported() || !S.server.on;
     btn.textContent = f.on() ? "Turn the lock off on this device" : `Lock the app with ${f.name}`;
-    $("faceid-status").textContent = msg || (!f.supported() ? "This browser can't use Face ID for websites."
-      : f.on() ? `On. The app asks for ${f.name} each time it is opened, and again after five minutes away. The passcode still works as a fallback.`
-      : `Off. The passcode was asked once and this device stays signed in. Turn this on to ask for ${f.name} every time.`);
+    $("faceid-status").textContent = msg || (!f.supported() ? "Face ID isn't available in this browser."
+      : f.on() ? `On. You'll be asked for ${f.name} each time you open the app, and again after five minutes away. The passcode still works too.`
+      : `Off. This device stays signed in after the passcode. Turn this on to be asked for ${f.name} every time.`);
   }
   $("faceid-toggle").addEventListener("click", async () => {
     const btn = $("faceid-toggle");
@@ -822,7 +853,7 @@
   $("settings").addEventListener("click", (e) => { if (e.target === $("settings")) $("settings").hidden = true; });
   $("sign-out").addEventListener("click", async () => {
     if (!(await confirmDialog({ title: "Sign out on this device?", yes: "Sign out",
-      body: "The app will ask for the passcode the next time it is opened here. Nothing is deleted." }))) return;
+      body: "You'll need the passcode the next time you open the app here. Nothing is deleted." }))) return;
     $("settings").hidden = true;
     S.signOut();
   });
@@ -835,11 +866,11 @@
   });
   $("ig-disconnect").addEventListener("click", async () => {
     if (!(await confirmDialog({ title: "Disconnect Instagram?", yes: "Disconnect",
-      body: "The app will stop being able to post, read numbers or search music until you paste a new token here. Nothing on Instagram is deleted." }))) return;
+      body: "You won't be able to post, see your numbers or search music until Instagram is connected again here. Nothing on Instagram is deleted." }))) return;
     try { ig = await send("instagram", "DELETE"); renderIg(); } catch (err) { $("ig-status").textContent = friendly(err); }
   });
 
-  // ---------- Nishiii: her picture of what Dhruuu likes ----------
+  // ---------- Nishiii: what has been learned about Dhruuu's taste ----------
   let canForget = { profile: false, all: false };
   function renderTaste(t) {
     canForget = t.canForget || canForget;
@@ -847,7 +878,7 @@
     $("taste-card").hidden = !p;
     if (p) {
       $("taste-summary").textContent = p.summary;
-      const groups = [["Drawn to", p.loves], ["Passes over", p.avoids], ["Wording", p.voice], ["Look", p.look], ["What has worked on your page", p.performs]];
+      const groups = [["What you're drawn to", p.loves], ["What you pass over", p.avoids], ["Wording you like", p.voice], ["The look you like", p.look], ["What has worked on your page", p.performs]];
       $("taste-lists").replaceChildren(...groups.filter(([, list]) => list && list.length).flatMap(([name, list]) =>
         [el("h3", { textContent: name }), el("ul", {}, ...list.map((x) => el("li", { textContent: x })))]));
       $("taste-note").textContent = `Last updated ${day(t.updatedAt)}, from ${t.evidence} things you've picked, skipped, reworded, saved, posted or added. It updates itself every morning.`;
@@ -865,7 +896,7 @@
   async function loadTaste() {
     $("ask-open").hidden = !S.server.ai;
     loadAsked();
-    if (!S.server.ai) { $("taste-note").textContent = "This switches on once Nishiii is connected on the server."; return; }
+    if (!S.server.ai) { $("taste-note").textContent = "This isn't switched on yet."; return; }
     try { renderTaste(await getJson("taste")); } catch (e) { $("taste-note").textContent = friendly(e); }
   }
   $("taste-refresh").addEventListener("click", async () => {
@@ -957,7 +988,7 @@
       const { items } = await getJson("instagram/audio?q=" + encodeURIComponent($("music-q").value.trim()));
       $("music-list").replaceChildren(...items.map(musicRow));
       $("music-note").textContent = items.length
-        ? "Music is added by Instagram when the reel is posted, so it can't be previewed on the reel here."
+        ? "Instagram adds the music when the reel is posted, so you can't hear it on the reel here."
         : "No music found for that. Try other words.";
     } catch (e) { $("music-note").textContent = friendly(e); }
   }

@@ -19,7 +19,7 @@ Cloudflare or GitHub: `node server/dev.mjs`, then open http://localhost:8787 (pa
 
 It also keeps her library (own quotes, books, accounts), asks Claude for the day's quote
 suggestions, rewords quotes, reads quotes off a photographed page, and searches Pixabay (or Pexels) for free
-footage. It connects to Instagram, writes captions, searches Instagram's music and posts reels
+photos and videos to use as backgrounds. It connects to Instagram, writes captions, searches Instagram's music and posts reels
 after a tap. It reads how posts did, studies reels and accounts she loves, and keeps a taste
 profile that steers every suggestion. It runs Nishiii's chat, posts carousels, copies quotes out of
 free book texts (Project Gutenberg), imports highlights, checks who said a quote, sums up the

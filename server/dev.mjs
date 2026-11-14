@@ -245,8 +245,9 @@ function pretendClaude(req) {
     return { status: 200, body: { content: [{ type: "text", text: JSON.stringify(out) }] } };
   }
   if (system.startsWith("You write a short weekly note")) {
-    const n = JSON.parse(req.messages[0].content);
-    return { status: 200, body: { content: [{ type: "text", text: `A pretend note: ${n.thisWeek.posts} posts reached ${n.thisWeek.reach} people this week.` }] } };
+    const n = JSON.parse(req.messages[0].content.split("\n\nReminder:")[0]);
+    const to = system.includes("Speak to her directly") ? "Your" : "Her";
+    return { status: 200, body: { content: [{ type: "text", text: `A pretend note: ${to} ${n.thisWeek.posts} posts reached ${n.thisWeek.reach} people this week.` }] } };
   }
   if (system.startsWith("You draft a reply to an Instagram comment")) {
     const c = req.messages[0].content;
@@ -278,15 +279,15 @@ function pretendClaude(req) {
       }
     }
     text = "Here are the quotes:\n```json\n" + JSON.stringify(items) + "\n```";
-  } else if (system.startsWith("You are Nishiii")) {
+  } else if (system.startsWith("You are Nishiii, the assistant")) {
     const first = req.messages[0].content;
     const original = (first.match(/Original quote:\n([\s\S]*?)\nAuthor:/) || [])[1] || "";
     const short = original.split(/\s+/).slice(0, 5).join(" ") + ".";
     text = JSON.stringify({ reply: "Shortened it. This is no longer the author's exact words.", quote: short, altered: true });
-  } else if (system.startsWith("You keep a living profile")) {
-    const ev = JSON.parse(req.messages[0].content.split("Recent evidence:\n")[1]);
+  } else if (system.startsWith("You are Nishiii. You keep a living profile")) {
+    const ev = JSON.parse(req.messages[0].content.split("Recent evidence:\n")[1].split("\n\nReminder:")[0]);
     text = JSON.stringify({
-      summary: `She leans towards short Stoic lines about the mind. Built from ${ev.picked.length} picks, ${ev.skipped.length} skips, ${ev.rewordRequests.length} rewording requests, ${ev.posted.length} posts and ${ev.loved.length} loved items.`,
+      summary: `${!system.includes("Speak to her directly") || (process.env.SLIPS && !req.messages[0].content.includes("Reminder:")) ? "She leans" : "You lean"} towards short Stoic lines about the mind. Built from ${ev.picked.length} picks, ${ev.skipped.length} skips, ${ev.rewordRequests.length} rewording requests, ${ev.posted.length} posts and ${ev.loved.length} loved items.`,
       loves: ["calm lines about the mind", "Stoic authors"], avoids: ["long quotes"], voice: ["short", "lowercase is fine"],
       look: ev.loved.some((l) => l.look) ? ["small centred serif on sea footage"] : [], performs: ev.posted.length ? [`posts average ${Math.round(ev.posted.reduce((a, p) => a + (p.reach || 0), 0) / ev.posted.length)} reach`] : [] });
   } else if (system.startsWith("You look at a screenshot")) {
@@ -312,8 +313,14 @@ function pretendPixabay(url) {
         : { large: { url: "", width: 0, height: 0, size: 0, thumbnail: "" }, medium: rendition(1920, 1080, "sea.mp4?wide"), small: rendition(1280, 720, "sea.mp4?ws") } });
     return { total: 3, totalHits: 3, hits: [hit(11, false), hit(12, true), hit(13, true)] };
   }
+  if (process.env.PHOTOS === "plain") {      // only the documented addresses, and they work
+    return { total: 2, totalHits: 2, hits: [1, 2].map((n) => ({ id: n, pageURL: "https://pixabay.com/photos/id-" + n, user: "Sample Shooter " + n,
+      webformatURL: `${media}/sky.jpg`, largeImageURL: `${media}/sky.jpg` })) };
+  }
+  const cdn = process.env.PHOTOS === "allrefused" ? "refused" : "sky";
   return { total: 2, totalHits: 2, hits: [1, 2].map((n) => ({ id: n, pageURL: "https://pixabay.com/photos/id-" + n, user: "Sample Shooter " + n,
-    webformatURL: `${media}/sky.jpg`, largeImageURL: `${media}/sky.jpg` })) };
+    previewURL: `${media}/cdn/${cdn}${n}_150.jpg`,
+    webformatURL: `${media}/refused_640.jpg`, largeImageURL: `${media}/refused_1280.jpg` })) };
 }
 function pretendPexels(url) {
   const media = `http://localhost:${PORT}/__media`;
@@ -350,6 +357,12 @@ http.createServer(async (req, res) => {
       runRenderJob(body.inputs || {});
       res.writeHead(204).end();
       return;
+    }
+    if (url.pathname === "/__seed_old_taste") {
+      // A profile as it was written before Nishiii spoke to her directly.
+      await env.MEDIA.put("data/taste.json", JSON.stringify({ profile: { summary: "She leans towards short lines. Her page does best with sea imagery.",
+        loves: ["calm lines"], avoids: [], voice: ["she prefers lowercase"], look: [], performs: [] }, notes: [{ id: "n1", text: "no hustle quotes", at: 1 }], updatedAt: 1, evidence: 1 }));
+      res.writeHead(204).end(); return;
     }
     if (url.pathname === "/__seed_history") {
       // Fills the previous days with pretend suggestions, so the "earlier this week" list can be tried.
@@ -406,12 +419,27 @@ http.createServer(async (req, res) => {
     }
     if (url.pathname.startsWith("/__pixabay/")) {
       if (url.searchParams.get("key") !== env.PIXABAY_API_KEY) { res.writeHead(400).end("[ERROR 400] Invalid or missing API key"); return; }
+      if (process.env.SLOW_VIDEOS && url.pathname.endsWith("/videos/")) await new Promise((r) => setTimeout(r, 1800));   // video searches answer late
       res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(pretendPixabay(url)));
       return;
     }
     if (url.pathname.startsWith("/__pexels/")) {
       if (req.headers.authorization !== env.PEXELS_API_KEY) { res.writeHead(401).end("{}"); return; }
       res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(pretendPexels(url)));
+      return;
+    }
+    if (url.pathname.startsWith("/__media/") && /refused/.test(url.pathname)) {
+      // What a library's bot protection sends a server it doesn't like.
+      res.writeHead(403, { "Content-Type": "text/html" }).end("<html>error code: 1010</html>");
+      return;
+    }
+    if (url.pathname.startsWith("/__media/cdn/") && process.env.PHOTOS === "serverrefused" && /EntangleddStudio/.test(req.headers["user-agent"] || "")) {
+      res.writeHead(403, { "Content-Type": "text/html" }).end("<html>error code: 1010</html>");   // servers refused, phones allowed
+      return;
+    }
+    if (url.pathname.startsWith("/__media/cdn/") && MEDIA_DIR) {
+      const data = await readFile(path.join(MEDIA_DIR, "sky.jpg"));
+      res.writeHead(200, { "Content-Type": "image/jpeg", "Content-Length": data.length, "Access-Control-Allow-Origin": "*" }).end(data);
       return;
     }
     if (url.pathname.startsWith("/__media/") && MEDIA_DIR) {

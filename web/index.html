@@ -50,7 +50,7 @@
   <p class="note" id="library-note" role="status" hidden></p>
 
   <h2>Your own quotes</h2>
-  <p class="note">Lines you wrote or copied down. They show up in Today's quotes word for word.</p>
+  <p class="note">Lines you wrote or copied down. Nishiii includes them in your daily five, word for word.</p>
   <form class="add" id="add-quote">
     <label class="stack"><span>Quote</span><textarea id="q-text" rows="3" required></textarea></label>
     <label class="stack"><span>Who said it (leave empty if it's yours)</span><input id="q-author" type="text"></label>
@@ -66,11 +66,11 @@
     Import highlights from a file
     <input type="file" id="import" accept=".txt,.html,.htm,text/plain,text/html">
   </label>
-  <p class="note">Takes a Kindle highlights file ("My Clippings.txt", or the notebook the Kindle app emails you), or any text file with one quote per paragraph.</p>
+  <p class="note">Works with a Kindle highlights file ("My Clippings.txt", or the notebook the Kindle app emails you) and with any text file that has one quote per paragraph.</p>
   <ul class="list" id="list-quotes"></ul>
 
   <h2>Books you've read</h2>
-  <p class="note">Nishiii looks for lines from these when choosing the day's quotes. For older books that are free to read online, lines are copied from the book's own text, so the wording is exact.</p>
+  <p class="note">Nishiii picks lines from these for your daily five. When an older book is free to read online, its lines are copied straight from the text, so the wording is exact.</p>
   <form class="add row2" id="add-book">
     <label class="stack"><span>Title</span><input id="b-title" type="text" required></label>
     <label class="stack"><span>Author</span><input id="b-author" type="text"></label>
@@ -79,7 +79,7 @@
   <ul class="list" id="list-books"></ul>
 
   <h2>Films and series</h2>
-  <p class="note">Nishiii draws on lines from these too.</p>
+  <p class="note">Nishiii picks lines from these too.</p>
   <form class="add row2" id="add-screen">
     <label class="stack"><span>Title</span><input id="s-title" type="text" required></label>
     <label class="stack"><span>Kind</span><select id="s-kind"><option value="film">Film</option><option value="series">Series</option></select></label>
@@ -88,7 +88,7 @@
   <ul class="list" id="list-screen"></ul>
 
   <h2>Reels and pages you love</h2>
-  <p class="note">Paste a link to a reel or post, or an account's username. For any reel, a screenshot works best: Nishiii reads the words and notes the look.</p>
+  <p class="note">Paste a link to a reel or post, or an account's username. For a reel, a screenshot works best: Nishiii reads the words and notes the look you liked.</p>
   <form class="add row2" id="add-inspiration">
     <label class="stack"><span>Link or username</span><input id="i-input" type="text" autocapitalize="none" autocorrect="off" placeholder="instagram.com/reel/… or @username" required></label>
     <button class="btn primary" type="submit">Add</button>
@@ -131,7 +131,7 @@
   <button class="btn" id="taste-refresh">Update now</button>
 
   <h2>Tell Nishiii directly</h2>
-  <p class="note">Anything you write here is always followed, such as "no quotes about hustle" or "I love lines about the sea".</p>
+  <p class="note">Nishiii always follows what you write here. For example: "no quotes about hustle" or "I love lines about the sea".</p>
   <form class="add" id="add-note">
     <label class="stack"><span>Note</span><input id="note-text" type="text" required></label>
     <button class="btn primary" type="submit">Add note</button>
@@ -139,7 +139,7 @@
   <ul class="list" id="list-notes"></ul>
 
   <h2>Make Nishiii forget</h2>
-  <p class="note">Each of these asks you to confirm first. Your Library, the reels you added and your posts are never touched here; remove those in their own sections.</p>
+  <p class="note">You'll be asked to confirm before anything is erased. Your Library, the reels you added and your posts are never touched here; remove those in their own sections.</p>
   <button class="btn" id="forget-profile">Forget the profile</button>
   <button class="btn quiet" id="forget-all">Forget everything and start fresh</button>
 </section>
@@ -163,8 +163,8 @@
         Choose photo or video
         <input type="file" id="file" accept="image/*,video/*">
       </label>
-      <button class="btn" id="stock" disabled>Find free footage</button>
-      <p class="note" id="stock-note">Free footage search turns on once its key is added on the server.</p>
+      <button class="btn" id="stock" disabled>Search photos and videos</button>
+      <p class="note" id="stock-note">Photo and video search isn't set up yet.</p>
       <button class="btn quiet" id="clear-bg" hidden>Remove background</button>
       <div id="video-opts" hidden>
         <label class="check"><input type="checkbox" id="mute" checked> Mute the video's own sound</label>
@@ -200,7 +200,7 @@
         </div>
       </div>
       <label class="check"><input type="checkbox" id="lower"> Show in lowercase</label>
-      <label class="check"><input type="checkbox" id="shadow"> Soft shadow behind text</label>
+      <label class="check"><input type="checkbox" id="shadow"> Soft shadow behind the text</label>
     </div>
 
     <div class="pane" id="pane-style" role="tabpanel" aria-labelledby="tab-style" hidden>
@@ -216,17 +216,17 @@
         <span>Your saved looks</span>
         <ul class="list looks" id="looks"></ul>
         <form class="inline" id="look-form">
-          <label class="stack"><span>Save the look on the canvas as</span><input id="look-name" type="text" maxlength="30" placeholder="A name, such as Evening sea" required></label>
+          <label class="stack"><span>Name for the look on the canvas</span><input id="look-name" type="text" maxlength="30" placeholder="A name, such as Evening sea" required></label>
           <button class="btn" type="submit">Save look</button>
         </form>
-        <p class="note" id="look-note" role="status">A look keeps the font, size, colour and where each line sits. Tap one to put the current words in it.</p>
+        <p class="note" id="look-note" role="status">A look remembers the font, size, colour and where each line sits. Tap one to apply it to the words on the canvas.</p>
       </div>
     </div>
 
     <div class="pane" id="pane-save" role="tabpanel" aria-labelledby="tab-save" hidden>
       <div id="save-image">
         <button class="btn" id="save-img">Save as a picture</button>
-        <p class="note">Saves this exactly as shown, as a still image.</p>
+        <p class="note">Saves exactly what you see, as a still picture.</p>
       </div>
       <div id="carousel" hidden>
         <button class="btn primary" id="slide-add">Add this picture to the carousel</button>
@@ -242,7 +242,7 @@
         </label>
         <label class="check"><input type="checkbox" id="fade"> Fade the text in</label>
         <button class="btn primary" id="make-reel">Create reel</button>
-        <p class="note">Takes one to two minutes. When it's ready you can save it to your phone or post it to Instagram.</p>
+        <p class="note">This takes a minute or two. Then you can post it to Instagram, keep it for later, or save it to your phone.</p>
         <p class="note" id="reel-note" hidden></p>
       </div>
       <div id="reel-progress" hidden>
@@ -284,7 +284,7 @@
       <div><p class="tag">Original</p><p class="q small" id="reword-original"></p></div>
       <div id="reword-new" hidden><p class="tag">Reworded</p><p class="q" id="reword-quote"></p></div>
     </div>
-    <p class="flag" id="reword-flag" hidden>Reworded, so these are no longer the author's exact words. The author's name will be left off.</p>
+    <p class="flag" id="reword-flag" hidden>These are no longer the author's exact words, so the author's name will be left off.</p>
     <div class="log" id="reword-log" aria-live="polite"></div>
     <div class="chips" id="reword-chips">
       <button type="button">Make it shorter</button>
@@ -313,9 +313,9 @@
       <label class="stack"><span>Kind</span><select id="ask-new-kind"><option value="book">Book</option><option value="film">Film</option><option value="series">Series</option></select></label>
       <button class="btn" type="submit">Add</button>
     </form>
-    <label class="stack"><span>About (optional), such as "letting go" or "the sea"</span><input id="ask-about" type="text"></label>
+    <label class="stack"><span>What should they be about? Optional. For example "letting go" or "the sea"</span><input id="ask-about" type="text"></label>
     <p class="status" id="ask-status" role="status"></p>
-    <button class="btn primary" id="ask-go">Get 5 quotes</button>
+    <button class="btn primary" id="ask-go">Get five quotes</button>
   </div>
 </div>
 
@@ -344,7 +344,7 @@
     <h3>Instagram connection</h3>
     <p class="note" id="ig-status" role="status"></p>
     <form class="add" id="ig-connect" hidden>
-      <p class="note">Paste a user access token from Meta's Graph API Explorer. The app swaps it for a long-lasting one and keeps that on the server.</p>
+      <p class="note">This step is for whoever set the app up. Paste a user access token from Meta's Graph API Explorer; the app exchanges it for a long-lasting one and stores it safely.</p>
       <label class="stack"><span>Access token</span><input id="ig-token" type="password" autocomplete="off" required></label>
       <button class="btn primary" type="submit">Connect Instagram</button>
     </form>
@@ -361,7 +361,7 @@
       <h2 id="chat-title">Chat with Nishiii</h2>
       <button class="btn quiet close" id="chat-close">Close</button>
     </header>
-    <p class="note" id="chat-intro">Ask for quotes, have one put in Create, or ask how your posts did. Creating the reel and posting stay your tap.</p>
+    <p class="note" id="chat-intro">Ask me for quotes, have one placed in Create, or ask how your posts are doing. I never post for you: creating the reel and posting always wait for your tap.</p>
     <div class="log" id="chat-log" aria-live="polite"></div>
     <div class="chips" id="chat-chips">
       <button type="button">What should I post today?</button>
@@ -398,7 +398,7 @@
 
       <div id="post-music">
       <h3>Music</h3>
-      <p class="note" id="music-note">Music is added by Instagram when the reel is posted, so it can't be previewed on the reel here.</p>
+      <p class="note" id="music-note">Instagram adds the music when the reel is posted, so you can't hear it on the reel here.</p>
       <form class="ask" id="music-form">
         <label class="stack"><span>Search Instagram's music</span><input id="music-q" type="search" placeholder="Leave empty for trending"></label>
         <button class="btn" type="submit">Search</button>
@@ -421,21 +421,21 @@
 <div class="sheet" id="stock-sheet" role="dialog" aria-modal="true" aria-labelledby="stock-title" hidden>
   <div class="sheet-body">
     <header class="sheet-head">
-      <h2 id="stock-title">Free footage</h2>
+      <h2 id="stock-title">Find a background</h2>
       <button class="btn quiet close" id="stock-close">Close</button>
     </header>
     <form class="ask" id="stock-form">
       <label class="stack"><span>Search for</span><input id="stock-q" type="search" value="ocean waves" required></label>
       <button class="btn" type="submit">Search</button>
     </form>
-    <div class="seg two" id="stock-kind" role="group" aria-label="Kind of footage">
+    <div class="seg two" id="stock-kind" role="group" aria-label="Photos or videos">
       <button type="button" data-kind="video" aria-pressed="true">Videos</button>
       <button type="button" data-kind="photo" aria-pressed="false">Photos</button>
     </div>
     <p class="note" id="stock-status" role="status"></p>
     <div class="grid" id="stock-grid"></div>
     <button class="btn" id="stock-more" hidden>Show more</button>
-    <p class="note" id="stock-credit" hidden>Photos and videos provided by <a id="stock-provider" href="#" target="_blank" rel="noopener"></a>. Free to use; tap a result to use it as the background.</p>
+    <p class="note" id="stock-credit" hidden>Photos and videos from <a id="stock-provider" href="#" target="_blank" rel="noopener"></a>, free to use. Tap one to make it your background.</p>
   </div>
 </div>
 
