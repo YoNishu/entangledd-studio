@@ -1329,6 +1329,7 @@
     } finally { chatBusy = false; $("chat-send").disabled = false; }
   }
   $("chat-open").addEventListener("click", () => { $("chat").hidden = false; $("chat-input").focus(); });
+  $("nishiii-chat").addEventListener("click", () => $("chat-open").click());   // the same chat, by name, in the Nishiii section
   $("chat-close").addEventListener("click", () => { $("chat").hidden = true; });
   $("chat").addEventListener("click", (e) => { if (e.target === $("chat")) $("chat").hidden = true; });
   $("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sayToNishiii($("chat-input").value); });
@@ -1340,6 +1341,7 @@
     if (started) { if (current === "today") loadToday(true); return; }
     started = true;
     $("chat-open").hidden = !S.server.ai;
+    $("nishiii-chat").hidden = !S.server.ai;
     loadLooks();
     show(S.server.ai ? "today" : "create");
   });

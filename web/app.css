@@ -126,8 +126,7 @@ button, summary, .btn { -webkit-user-select: none; user-select: none; -webkit-to
 .bar { flex: none; padding: 0 var(--side) 8px; }
 .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; }
 .wordmark { margin: 0; line-height: 0; color: var(--foam); flex: 1 1 auto; min-width: 0; }
-.wordmark svg { display: block; width: 100%; max-width: 176px; height: auto; overflow: visible; }
-.bar:has(.hello:not([hidden])) .wordmark svg { max-width: 232px; }        /* on Today the name stands taller */
+.wordmark svg { display: block; width: 100%; max-width: 216px; height: auto; overflow: visible; }
 /* The heart where the apostrophe goes. It beats twice when the app opens, then keeps still. */
 .wm-heart { fill: var(--rose); transform-box: fill-box; transform-origin: 50% 60%; animation: beat 0.95s 0.45s 1 both; }
 @keyframes beat {
@@ -141,11 +140,7 @@ button, summary, .btn { -webkit-user-select: none; user-select: none; -webkit-to
   display: inline-flex; align-items: center; justify-content: center; background: var(--ctl); color: var(--mist); font-size: 0; cursor: pointer;
 }
 .iconbtn::before { width: 22px; height: 22px; }
-.chatbtn {
-  display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 16px 0 12px; border: 0; border-radius: 999px;
-  background: var(--ctl); color: var(--foam); font: 500 13px var(--ui); cursor: pointer;
-}
-.iconbtn:active, .chatbtn:active { background: var(--swell); }
+.iconbtn:active { background: var(--swell); }
 
 /* Nishiii's note, in his hand: the line under the name on Today. Room for two lines is kept so little moves when
    the note arrives. The small line above it and his signature are rose, like the heart. */
