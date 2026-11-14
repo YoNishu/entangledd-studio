@@ -370,7 +370,7 @@
         ["Reach", (r) => r.reach], ["Views", (r) => r.views], ["Likes", (r) => r.likes], ["Comments", (r) => r.comments], ["Saves", (r) => r.saved], ["Shares", (r) => r.shares],
         ["Engagement %", (r) => r.rate], ["Watch time (s)", (r) => r.watch], ["Left in first 3 s (%)", (r) => r.skip], ["Background", (r) => r.background], ["Music", (r) => r.music], ["Link", (r) => r.permalink]];
       const text = [cols.map(([n]) => n).join(","), ...all.posts.map((r) => cols.map(([, f]) => safe(f(r))).join(","))].join("\r\n");
-      const file = new File(["﻿" + text], "entangledd-insights.csv", { type: "text/csv" });
+      const file = new File(["﻿" + text], "ds-studio-insights.csv", { type: "text/csv" });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === "AbortError") return; }
       }

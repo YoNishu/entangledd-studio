@@ -550,7 +550,7 @@
     const m = state.music;
     $("tune-opts").hidden = !m;
     $("tune-clear").hidden = !m;
-    $("tune-file-label").textContent = !m ? "Choose your own music" : m.from === "own" ? "Choose a different file" : "Use your own music instead";
+    $("tune-file-label").textContent = !m ? "Your own music" : m.from === "own" ? "A different file" : "Your own instead";
     $("tab-music").textContent = m ? "Music ♪" : "Music";
     $("tune-state").hidden = !!m;
     if (!m) return;
@@ -628,12 +628,12 @@
 
   $("save-img").addEventListener("click", async () => {
     const blob = await toBlob(compose(false), "image/jpeg", 0.92);
-    const file = new File([blob], "entangledd.jpg", { type: "image/jpeg" });
+    const file = new File([blob], "ds-studio.jpg", { type: "image/jpeg" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file] }); $("done").textContent = "Picture shared."; $("done").hidden = false; return; }
       catch (e) { if (e.name === "AbortError") return; }
     }
-    download(blob, "entangledd.jpg");
+    download(blob, "ds-studio.jpg");
     $("done").textContent = "Picture saved to your downloads."; $("done").hidden = false;
   });
 
@@ -724,8 +724,8 @@
     if (!window.PublicKeyCredential) throw new Error("Face ID isn't available in this browser.");
     const ch = await postJson("passkey/challenge");
     const made = await navigator.credentials.create({ publicKey: {
-      rp: { name: "Entangledd Studio" },
-      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "Entangledd Studio", displayName: "Entangledd Studio" },
+      rp: { name: "D's Studio" },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "D's Studio", displayName: "D's Studio" },
       challenge: b64u.dec(ch.challenge), pubKeyCredParams: [{ type: "public-key", alg: -7 }],
       authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "preferred" },
       hints: ["client-device"],      // asks for this device's own lock; a page can't pick where the phone stores the key
@@ -867,12 +867,12 @@
   $("again").addEventListener("click", () => { $("result").pause(); syncReelPane("setup"); $("done").hidden = true; });
   $("save-reel").addEventListener("click", async () => {
     if (!reel) return;
-    const file = new File([reel.blob], "entangledd-reel.mp4", { type: "video/mp4" });
+    const file = new File([reel.blob], "ds-studio-reel.mp4", { type: "video/mp4" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file] }); $("done").textContent = "Reel shared."; $("done").hidden = false; return; }
       catch (e) { if (e.name === "AbortError") return; }
     }
-    download(reel.blob, "entangledd-reel.mp4");
+    download(reel.blob, "ds-studio-reel.mp4");
     $("done").textContent = "Reel saved to your downloads."; $("done").hidden = false;
   });
 
