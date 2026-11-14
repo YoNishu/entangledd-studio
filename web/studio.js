@@ -117,6 +117,7 @@
       item.author ? el("p", { className: "by", textContent: "— " + item.author }) : null,
       el("p", { className: "src", textContent: sourceLine(item.source) }),
       item.askedFor ? chip("info", `From: ${item.askedFor}`) : null,
+      item.wild ? Object.assign(chip("info", "Something different"), { id: "wild-" + item.id }) : null,   // the scorer's wildcard (server/scorer.js)
       item.fromText ? chip("ok", "Copied word for word from the book's text")
         : item.verify ? chip("bad", "Check the wording and author before posting") : null,
       fateLine(item),
@@ -1105,8 +1106,10 @@
       return;
     }
     if (!(await confirmDialog(ask))) return;
-    try { renderTaste(await send("taste?scope=" + scope, "DELETE")); $("taste-note").textContent = done; }
-    catch (e) { $("taste-note").textContent = friendly(e); }
+    try {
+      renderTaste(await send("taste?scope=" + scope, "DELETE")); $("taste-note").textContent = done;
+      document.dispatchEvent(new CustomEvent("studio:forgot", { detail: scope }));   // "profile" or "all" was just erased
+    } catch (e) { $("taste-note").textContent = friendly(e); }
   }
   $("forget-profile").addEventListener("click", () => forget("profile", {
     title: "Forget the profile?",

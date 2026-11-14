@@ -424,7 +424,10 @@ a.btn { text-decoration: none; }
 
 
 /* ---- scorer: status in the Nishiii section ---- */
-/* (scorer styles go here) */
+#scorer-slot { margin: 10px 0 4px; }
+#scorer-slot .note { margin: 0 0 6px; }
+.scorer-bar { height: 3px; border-radius: 2px; background: var(--swell); overflow: hidden; }
+.scorer-bar > span { display: block; height: 100%; background: var(--glass); transition: width 0.4s ease; }
 
 
 
