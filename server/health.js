@@ -200,7 +200,7 @@ async function checkInstagram(env, kit, ctx) {
   }
   if (!user.valid || userUntil <= Date.now()) {
     return { title, state: "soon", daysLeft: 0, action: "reconnect", fix: RECONNECT,
-      brief: "Instagram's music search has stopped (posting still works)",
+      brief: "the music search has stopped (posting still works)",
       line: `${who} Posting and numbers work. Instagram's music search has stopped until Instagram is connected again.${without}` };
   }
   if (userUntil >= NEVER) return { title, state: "ok", brief: "", line: `${who} The sign-in has no end date.${without}` };
@@ -208,7 +208,7 @@ async function checkInstagram(env, kit, ctx) {
   if (days <= WARN_DAYS) {
     const why = ig.renewNote ? ` The app tried to renew it itself: ${ig.renewNote}` : "";
     return { title, state: "soon", daysLeft: Math.max(days, 0), action: "reconnect", fix: RECONNECT,
-      brief: `Instagram's music search stops ${inDays(days)} unless Instagram is connected again (posting keeps working)`,
+      brief: `the music search stops ${inDays(days)} unless Instagram is connected again (posting keeps working)`,
       line: `${who} Instagram's music search stops on ${dayIST(userUntil)} (${inDays(days)}) unless Instagram is connected again. Posting keeps working.${why}${without}` };
   }
   const renews = ig.renewedAt
@@ -220,8 +220,8 @@ async function checkInstagram(env, kit, ctx) {
 // ---------------------------------------------------------------- the reel maker (GitHub)
 
 const NEW_GITHUB_KEY = (env) => [
-  "On github.com: your photo, Settings, Developer settings, Personal access tokens, Fine-grained tokens.",
-  `Open the token made for D's Studio and tap Regenerate token (or make a new one for the repository ${env.GITHUB_REPO} with the permission Actions: Read and write). For Expiration choose No expiration, so this never comes back.`,
+  "On github.com: your photo, Settings, Developer settings, Personal access tokens. Open the token made for D's Studio (under Fine-grained tokens, or under Tokens (classic)).",
+  `Tap Regenerate token and, for Expiration, choose No expiration, so this never comes back. (If you make a new one instead: give it the repository ${env.GITHUB_REPO} and the permission Actions: Read and write.)`,
   "Copy the token. " + inCloudflare("GITHUB_TOKEN"),
 ];
 // GitHub writes the end date like "2027-02-03 10:20:30 UTC" (or with "+0000").
