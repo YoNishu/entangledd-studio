@@ -1,8 +1,400 @@
 /* Little notes from Nishiii, shown one at a time.
 
+   Each time she opens the app, the line under the heading on Today is one note. A note that is
+   about a particular day comes first on that day of the year; on other days the notes take
+   turns, and none comes back until all have been shown.
+
+   The notes are private: they live only in the app's storage and are sent only to a signed-in
+   phone. They can also arrive as "sealed deliveries" (server/sealed.js): text locked with the
+   app's own public key, so it can travel through the public repo unread (see server/sealbox.js).
+
    This file is one of the app's add-on sections (see SECTIONS in worker.js).
    Handlers are called as handler(request, env, parts, kit); jobs as run(env, kit). */
 
-export const open = {};     // paths anyone may call: /api/<name>
-export const routes = {};   // paths that need sign-in: /api/<name>
-export const jobs = [];      // { name, everyHours, run }
+import { SEALED } from "./sealed.js";
+import { makeKeys, seal, unseal, tidyKey, keyCheck, sha256Hex } from "./sealbox.js";
+
+const MAX_NOTES = 60, MAX_CHARS = 280;
+const DOC = "lovenotes";     // the notes, and whose turn it is
+const KEY_DOC = "sealkey";   // the app's own key pair for sealed deliveries; the private half is never sent anywhere
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const tidy = (v) => String(v ?? "").replace(/\s+/g, " ").trim();
+const count = (s) => [...s].length;
+
+// "YYYY-MM-DD" for a day that exists on the calendar, as { y, mo, d }; otherwise null.
+function realDate(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!m) return null;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  const t = new Date(Date.UTC(y, mo - 1, d));
+  if (y < 1900 || y > 2200 || t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d) return null;
+  return { y, mo, d };
+}
+const leapYear = (y) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+
+// Is today this note's day of the year? Only from the note's own year onward.
+// A note about 29 February keeps its day on the 28th in years that have no 29th.
+function onThisDay(note, today) {
+  const n = realDate(note.date);
+  if (!n || n.y > today.y) return false;
+  if (n.mo === today.mo && n.d === today.d) return true;
+  return n.mo === 2 && n.d === 29 && today.mo === 2 && today.d === 28 && !leapYear(today.y);
+}
+function markerFor(note, today) {
+  const years = today.y - realDate(note.date).y;
+  return years === 0 ? "Today" : years === 1 ? "1 year ago today" : `${years} years ago today`;
+}
+
+const blank = () => ({ notes: [], bag: [], upNext: null, last: null, turn: null, sealed: [] });
+const listOf = (v) => (Array.isArray(v) ? v : []);
+// The stored document. Anything in it that isn't in the expected shape is left out, so one
+// damaged entry can't stop the notes.
+async function load(env, kit) {
+  let doc;
+  try { doc = await kit.loadDoc(env, DOC, null); }
+  catch (e) {
+    // Said in our own words and nothing else: the storage's own error can quote the text it could
+    // not read, and no note may reach a log. The stored document is left alone.
+    console.error("little notes: the notes could not be read just now");
+    throw new kit.UserError(503, "The notes couldn't be read just now. Try again in a minute.");
+  }
+  const state = { ...blank(), ...(doc && typeof doc === "object" && !Array.isArray(doc) ? doc : {}) };
+  state.notes = listOf(state.notes).filter((n) => n && typeof n.id === "string" && typeof n.text === "string");
+  state.bag = listOf(state.bag);
+  state.sealed = listOf(state.sealed).filter((d) => d && typeof d.hash === "string");
+  return state;
+}
+const save = (env, kit, state) => kit.saveDoc(env, DOC, state);
+function newId(state) {
+  for (;;) {
+    const id = crypto.randomUUID().slice(0, 8);
+    if (!state.notes.some((n) => n.id === id)) return id;
+  }
+}
+
+// ---------- whose turn it is ----------
+// bag     the notes not yet shown in this round (and not already lined up)
+// upNext  the note lined up for the next ordinary opening. It is chosen one opening ahead so the
+//         phone can keep exactly the right space for it and nothing moves when it arrives.
+// turn    on a note's own day: which of that day's notes was shown last, so they take turns
+
+// Takes one note out of the bag at random, starting a new round when the bag is empty.
+// "avoid" keeps a new round from opening with the note that was shown last.
+function draw(state, avoid) {
+  if (!state.bag.length) state.bag = state.notes.map((n) => n.id);
+  if (!state.bag.length) return null;
+  const choices = state.bag.filter((id) => id !== avoid);
+  const pool = choices.length ? choices : state.bag;
+  const id = pool[Math.floor(Math.random() * pool.length)];
+  state.bag = state.bag.filter((b) => b !== id);
+  return id;
+}
+
+// The notes whose own day this is, oldest first, so on a shared day the earlier memory greets her first.
+const notesOfTheDay = (notes, today) => notes.filter((n) => onThisDay(n, today))
+  .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+// Of those, the one whose turn it is on that day.
+function turnOf(state, special, dayText) {
+  const last = state.turn && state.turn.day === dayText ? state.turn.last : null;
+  return special[(special.findIndex((n) => n.id === last) + 1) % special.length];
+}
+
+// Picks the note for this opening and lines up the one after it. Changes state; returns the note or null.
+function choose(state, today, dayText) {
+  const notes = state.notes;
+  if (!notes.length) { Object.assign(state, { bag: [], upNext: null, last: null, turn: null }); return null; }
+  const byId = (id) => notes.find((n) => n.id === id) || null;
+  if (!byId(state.upNext)) state.upNext = null;
+  state.bag = [...new Set(state.bag)].filter((id) => byId(id) && id !== state.upNext);
+
+  const special = notesOfTheDay(notes, today);
+  let shown;
+  if (special.length) {
+    shown = turnOf(state, special, dayText);
+    state.turn = { day: dayText, last: shown.id };
+    if (state.upNext === shown.id) state.upNext = null;
+  } else {
+    state.turn = null;
+    shown = byId(state.upNext) || byId(draw(state, state.last));
+    state.upNext = null;
+  }
+  state.last = shown.id;
+  if (!state.upNext) state.upNext = draw(state, shown.id);
+  // A note shown on its own day has had its turn in this round too (also when the round began just now).
+  if (special.length) state.bag = state.bag.filter((id) => id !== shown.id);
+  return shown;
+}
+
+// ---------- sealed deliveries ----------
+// The deliveries this version of the app was deployed with. (The local stand-in server swaps the
+// list through setDeliveries to act out a new deploy.) Anything in the file that isn't text is ignored.
+const boxesIn = (list) => listOf(list).filter((box) => typeof box === "string");
+const deliveries = { list: boxesIn(SEALED) };
+const seen = new Map();      // delivery hash → opened fine (true) or not (false), as storage had it when this running copy last looked
+const hashes = new Map();    // delivery text → its hash
+async function hashOf(box) {
+  if (!hashes.has(box)) hashes.set(box, await sha256Hex(box));
+  return hashes.get(box);
+}
+
+const PER_PASS = 4;          // deliveries opened in one request or one job run (each takes under a millisecond of computing); any others wait their turn
+const MAX_BOX = 200000;      // characters. A full set of the longest notes, sealed, is well under this.
+const RETRY_MS = 60 * 1000;  // after something went wrong, the timed job and the open key address leave it alone this long
+let retryAt = 0;
+
+const NOT_OPENED = "This delivery couldn't be opened: it was sealed for a different key, or it was changed on the way.";
+const NOT_NOTES = "This delivery opened, but what was inside isn't a usable list of notes.";
+
+// What a delivery must hold: { mode: "add" | "replace", notes: [{ text, date? }, ...] }, every note
+// within the limits. Returns the notes, checked, or null if anything at all is off.
+function checkedDelivery(inside) {
+  if (!inside || typeof inside !== "object" || !["add", "replace"].includes(inside.mode)) return null;
+  if (!Array.isArray(inside.notes) || !inside.notes.length || inside.notes.length > MAX_NOTES) return null;
+  const notes = [];
+  for (const item of inside.notes) {
+    const date = item && item.date != null ? item.date : "";
+    if (!item || typeof item.text !== "string" || typeof date !== "string") return null;
+    const text = tidy(item.text);
+    if (!text || count(text) > MAX_CHARS || (date && !realDate(date))) return null;
+    notes.push({ text, date });
+  }
+  return { mode: inside.mode, notes };
+}
+
+// Opens one delivery and checks all of it. Nothing inside is looked at until the seal has proved
+// it is whole, and nothing is used unless every note is right. Never throws: a delivery that
+// can't be used is described instead.
+async function readDelivery(keys, box) {
+  let inside;
+  try {
+    if (!keys || box.length > MAX_BOX) throw new Error("not one this app could have been sent");
+    inside = JSON.parse(await unseal(keys, box));
+  } catch (e) { return { ok: false, why: NOT_OPENED }; }
+  try {
+    const checked = checkedDelivery(inside);
+    return checked ? { ok: true, ...checked } : { ok: false, why: NOT_NOTES };
+  } catch (e) { return { ok: false, why: NOT_NOTES }; }
+}
+
+// Puts checked notes in. "replace" starts again with only these; "add" leaves out a note whose words are already there.
+function merge(state, { mode, notes }) {
+  if (mode === "replace") Object.assign(state, { notes: [], bag: [], upNext: null, last: null, turn: null });
+  let added = 0, skipped = 0;
+  for (const n of notes) {
+    if (state.notes.length >= MAX_NOTES || state.notes.some((have) => have.text === n.text)) { skipped++; continue; }
+    const note = { id: newId(state), text: n.text, ...(n.date ? { date: n.date } : {}), added: Date.now() };
+    state.notes.push(note);
+    state.bag.push(note.id);
+    added++;
+  }
+  return { mode, added, skipped };
+}
+
+// Brings in the deliveries the stored notes have not met: in order, each one once whatever the
+// outcome, remembered by its hash, at most PER_PASS in one go. Works on a copy and saves it, so
+// the notes are never left half changed. Returns the notes to carry on with, and for every
+// delivery now on record whether it opened fine.
+async function bringIn(env, kit, state) {
+  const met = [], fresh = [];
+  for (const box of deliveries.list) {
+    const hash = await hashOf(box), done = state.sealed.find((d) => d.hash === hash);
+    if (done) met.push([hash, !!done.ok]);
+    else if (fresh.length < PER_PASS && !fresh.some((f) => f.hash === hash)) fresh.push({ hash, box });
+  }
+  if (!fresh.length) return { state, met };
+  const keys = await kit.loadDoc(env, KEY_DOC, null);
+  const next = structuredClone(state);
+  for (const { hash, box } of fresh) {
+    const read = await readDelivery(keys, box);
+    const result = read.ok ? { ok: true, ...merge(next, read) } : read;
+    next.sealed.push({ hash, at: Date.now(), ...result });
+    met.push([hash, result.ok]);
+  }
+  await save(env, kit, next);
+  return { state: next, met };
+}
+
+// The stored notes, with any new delivery brought in first. A delivery counts as dealt with only
+// once storage holds the outcome. If something goes wrong on the way (storage briefly unreachable,
+// say) the notes come back as they were, and the delivery is tried again later.
+async function loadAll(env, kit) {
+  const state = await load(env, kit);
+  if (!deliveries.list.length) return state;
+  try {
+    const out = await bringIn(env, kit, state);
+    for (const [hash, ok] of out.met) seen.set(hash, ok);
+    return out.state;
+  } catch (e) {
+    retryAt = Date.now() + RETRY_MS;
+    console.error("little notes: a delivery could not be brought in just now");
+    return state;
+  }
+}
+async function allSeen() {
+  for (const box of deliveries.list) if (!seen.has(await hashOf(box))) return false;
+  return true;
+}
+// For the timed job and the open key address: makes sure every delivery has been dealt with.
+// Touches storage only if this running copy hasn't seen one of them. Never throws.
+async function catchUp(env, kit) {
+  if (!deliveries.list.length || Date.now() < retryAt || (await allSeen())) return;
+  try { await loadAll(env, kit); }
+  catch (e) { retryAt = Date.now() + RETRY_MS; }     // already noted in the log by load()
+}
+
+// ---------- the app's own key pair ----------
+const KEY_FRESH_MS = 5 * 60 * 1000;
+let known = { answer: null, at: 0 };     // the public half as last read from storage: { key, groups, check }
+let keyRetryAt = 0;
+
+// Makes the key pair, on the very first call only. The pair is tried out before it is kept, so a
+// key this server could not open a delivery with is never handed out. Storage is asked to keep it
+// only if no key is there yet, and what storage holds is then read back: when two first calls
+// come at once, both hand out the pair that was stored first.
+async function makeAndKeepKeys(env, kit) {
+  const made = { v: 1, created: Date.now(), ...(await makeKeys()) };
+  if ((await unseal(made, await seal(made.publicHex, "a first try"))) !== "a first try") throw new Error("the new key pair failed its own test");
+  try {
+    await env.MEDIA.put(`data/${KEY_DOC}.json`, JSON.stringify(made),     // the same place kit.saveDoc would use
+      { httpMetadata: { contentType: "application/json" }, onlyIf: new Headers({ "If-None-Match": "*" }) });
+  } catch (e) { /* storage that can't take a condition: dealt with just below */ }
+  let doc = await kit.loadDoc(env, KEY_DOC, null);
+  if (!doc) {                               // the write with a condition was refused outright: keep the pair the plain way
+    await kit.saveDoc(env, KEY_DOC, made);
+    doc = await kit.loadDoc(env, KEY_DOC, null);
+  }
+  return doc;
+}
+
+// The public half, ready to hand out. Only ever what storage holds; the private half stays there.
+async function publicKey(env, kit) {
+  if (known.answer && Date.now() - known.at < KEY_FRESH_MS) return known.answer;
+  const stored = await kit.loadDoc(env, KEY_DOC, null);
+  const doc = stored || (await makeAndKeepKeys(env, kit));
+  const key = tidyKey(doc && doc.publicHex);            // throws if the stored document is damaged
+  const answer = { key, groups: key.match(/.{1,10}/g).join(" "), check: await keyCheck(key) };
+  if (stored) known = { answer, at: Date.now() };       // a pair made just now is read from storage once more before it is remembered
+  return answer;
+}
+
+// GET /api/seal-key (open): the public key to seal a delivery with, and how past deliveries went (numbers only).
+// Anyone may call this, so it does next to nothing: the key is read from storage once every few
+// minutes, a delivery is opened once ever, and after a failure it waits before trying again.
+async function sealKey(request, env, parts, kit) {
+  if (request.method !== "GET" || parts.length > 1) return kit.fail(404, "Not found.");
+  if (!env.MEDIA) return kit.fail(503, "The app's storage isn't set up yet.");
+  const notReady = () => kit.fail(503, "The app's key isn't ready just now. Try again in a minute.");
+  if (Date.now() < keyRetryAt) return notReady();
+  let answer;
+  try { answer = await publicKey(env, kit); }
+  catch (e) {
+    keyRetryAt = Date.now() + RETRY_MS;
+    console.error("little notes: the app's key could not be read or made");
+    return notReady();
+  }
+  await catchUp(env, kit);
+  const counts = { applied: 0, failed: 0, waiting: 0 };
+  for (const hash of new Set(await Promise.all(deliveries.list.map(hashOf)))) {
+    counts[!seen.has(hash) ? "waiting" : seen.get(hash) ? "applied" : "failed"]++;
+  }
+  return kit.json({ ...answer, deliveries: counts });
+}
+
+// ---------- the notes themselves (signed in) ----------
+const forEditor = (state) => ({
+  notes: state.notes.map(({ id, text, date }) => ({ id, text, date: date || "" })),
+  max: MAX_NOTES, maxLength: MAX_CHARS,
+  deliveries: state.sealed.map(({ at, ok, mode, added, skipped, why }) => ({ at, ok, mode, added, skipped, why })),
+});
+
+// What she typed, checked. Throws a plain message when it can't be used.
+function checked(kit, input, state, selfId) {
+  const given = input && typeof input === "object" ? input : {};
+  const text = typeof given.text === "string" ? tidy(given.text) : "", date = given.date == null ? "" : given.date;
+  if (!text) throw new kit.UserError(400, "Write the note first.");
+  if (count(text) > MAX_CHARS) throw new kit.UserError(400, `Keep a note to ${MAX_CHARS} characters. This one has ${count(text)}.`);
+  if (date !== "" && (typeof date !== "string" || !realDate(date))) throw new kit.UserError(400, "That date doesn't look right. Pick it again, or leave it empty.");
+  if (state.notes.some((n) => n.text === text && n.id !== selfId)) throw new kit.UserError(400, "That note is already there.");
+  return { text, date };
+}
+
+async function nextNote(request, env, kit) {
+  const asked = new URL(request.url).searchParams.get("today");
+  if (asked && !realDate(asked)) return kit.fail(400, "That date doesn't look right.");
+  // Her phone's calendar decides the day, so a note's own day begins at her midnight.
+  // A phone whose date is far from the server's is not believed; India's date is used instead.
+  const serverDay = kit.todayIST();
+  const day = asked && Math.abs(Date.parse(asked) - Date.parse(serverDay)) <= 2 * DAY_MS ? asked : serverDay;
+  const today = realDate(day);
+  const state = await loadAll(env, kit);
+  const note = choose(state, today, day);
+  if (!note) return kit.json({});
+  await save(env, kit, state);
+  // What the next opening will show, so the phone can keep exactly the right space for it:
+  // "then" on an ordinary day, and "soon" for each of the next few days that is some note's own day.
+  const after = state.notes.find((n) => n.id === state.upNext);
+  const soon = [];
+  for (let i = 0; i < 3; i++) {
+    const dayText = new Date(Date.parse(day) + i * DAY_MS).toISOString().slice(0, 10), d = realDate(dayText);
+    const special = notesOfTheDay(state.notes, d);
+    if (!special.length) continue;
+    const n = turnOf(state, special, dayText);
+    soon.push({ day: dayText, text: n.text, marker: markerFor(n, d) });
+  }
+  return kit.json({ id: note.id, text: note.text, marker: onThisDay(note, today) ? markerFor(note, today) : "",
+    then: after ? after.text : "", soon });
+}
+
+async function notes(request, env, parts, kit) {
+  const id = parts[1] || "", method = request.method;
+  if (parts.length > 2) return kit.fail(404, "Not found.");
+  if (id === "next") return method === "GET" ? nextNote(request, env, kit) : kit.fail(404, "Not found.");
+  const state = await loadAll(env, kit);
+
+  if (!id && method === "GET") return kit.json(forEditor(state));
+  if (!id && method === "POST") {
+    if (state.notes.length >= MAX_NOTES) return kit.fail(400, `There's room for ${MAX_NOTES} notes. Remove one to add another.`);
+    const { text, date } = checked(kit, await kit.body(request), state, "");
+    const note = { id: newId(state), text, ...(date ? { date } : {}), added: Date.now() };
+    state.notes.push(note);
+    state.bag.push(note.id);                       // it joins the round that is already going
+    await save(env, kit, state);
+    return kit.json({ ...forEditor(state), note: { id: note.id, text, date } });
+  }
+  const note = state.notes.find((n) => n.id === id);
+  if (id && method === "PUT") {
+    if (!note) return kit.fail(404, "That note isn't there any more.");
+    const { text, date } = checked(kit, await kit.body(request), state, id);
+    note.text = text;
+    if (date) note.date = date; else delete note.date;
+    await save(env, kit, state);
+    return kit.json({ ...forEditor(state), note: { id, text, date } });
+  }
+  if (id && method === "DELETE") {
+    if (!note) return kit.fail(404, "That note isn't there any more.");
+    state.notes = state.notes.filter((n) => n.id !== id);
+    state.bag = state.bag.filter((b) => b !== id);
+    if (state.upNext === id) state.upNext = null;
+    if (state.last === id) state.last = null;
+    await save(env, kit, state);
+    return kit.json(forEditor(state));
+  }
+  return kit.fail(404, "Not found.");
+}
+
+export const open = { "seal-key": sealKey };   // paths anyone may call: /api/<name>
+export const routes = { lovenotes: notes };     // paths that need sign-in: /api/<name>
+
+// Timed job: bring in a new delivery even if nobody opens the app. With no deliveries there is no
+// job at all; with deliveries already dealt with, a run ends without touching storage.
+const DELIVERY_JOB = { name: "lovenotes-deliveries", everyHours: 1, run: (env, kit) => catchUp(env, kit) };
+export let jobs = deliveries.list.length ? [DELIVERY_JOB] : [];   // { name, everyHours, run }
+
+// For the local stand-in server only: act out "a new version was deployed with these deliveries".
+export function setDeliveries(list) {
+  deliveries.list = boxesIn(list);
+  seen.clear();
+  retryAt = 0;
+  jobs = deliveries.list.length ? [DELIVERY_JOB] : [];
+}
