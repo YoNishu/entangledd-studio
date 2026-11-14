@@ -52,7 +52,8 @@
       K.el("p", { className: "main", textContent: item.title }),
       K.el("p", { className: "sub", textContent: item.line }));
     if (item.action === "reconnect") {
-      const again = K.el("button", { className: "btn", id: "health-reconnect", type: "button", textContent: "Connect again" });
+      // (One line at most had this button before the probes; each keeps an id of its own.)
+      const again = K.el("button", { className: "btn", id: item.id === "instagram" ? "health-reconnect" : `health-reconnect-${item.id}`, type: "button", textContent: "Connect again" });
       again.addEventListener("click", showConnect);
       text.append(again);
     }

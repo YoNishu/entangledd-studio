@@ -160,6 +160,8 @@ async function readFeed(env, kit, ctx) {
   ctx.newest = mine ? String(mine.mediaId) : ctx.feed && ctx.feed[0] ? String(ctx.feed[0].id) : "";
 }
 const notConnected = (title) => ({ title, state: "off", brief: "", line: "Instagram isn't connected." });
+// A permission that was there and has gone is the Instagram line's to report, with the steps. Said once, not twice.
+const missing = (ctx, title, alarm) => (ctx.igTrouble ? { title, state: "off", brief: "", line: "Off until the Instagram line above is seen to." } : alarm);
 
 function probeFeed(env, kit, ctx) {
   const title = "Your posts on Instagram";
@@ -182,12 +184,12 @@ async function probeNumbers(env, kit, ctx) {
   const MISSING = { title, state: "attention", fix: NEED("instagram_manage_insights"), action: "reconnect",
     brief: "the permission to read post numbers is missing",
     line: "Instagram doesn't let the app read how posts did: the connection lacks that permission. Posts and Insights show no new numbers." };
-  if (ctx.scopes.length && !ctx.scopes.includes("instagram_manage_insights")) return MISSING;
+  if (ctx.scopes.length && !ctx.scopes.includes("instagram_manage_insights")) return missing(ctx, title, MISSING);
   if (!ctx.newest) return { title, state: "ok", brief: "", line: "Ready. Nothing has been posted yet, so there are no numbers to read." };
   try {
     await inTime(kit.graphAny(env, ctx.ig, "GET", `/${ctx.newest}/insights`, { metric: "reach,likes,comments,saved,shares" }), "Instagram");
   } catch (e) {
-    if (e instanceof kit.UserError && e.denied) return MISSING;
+    if (e instanceof kit.UserError && e.denied) return missing(ctx, title, MISSING);
     if (e instanceof kit.UserError && e.gone) return { title, state: "ok", brief: "", line: "Ready. The newest post has been removed on Instagram, so there was nothing to read today." };
     throw notNow(e, kit, "Instagram");
   }
@@ -200,12 +202,12 @@ async function probeComments(env, kit, ctx) {
   const MISSING = { title, state: "soon", fix: NEED("instagram_manage_comments"), action: "reconnect",
     brief: "the permission for comments is missing, so comments can't be read or answered",
     line: "Reading and answering comments is off: the Instagram connection was made without that permission. Everything else works." };
-  if (ctx.scopes.length && !ctx.scopes.includes("instagram_manage_comments")) return MISSING;
+  if (ctx.scopes.length && !ctx.scopes.includes("instagram_manage_comments")) return missing(ctx, title, MISSING);
   if (!ctx.newest) return { title, state: "ok", brief: "", line: "Ready. Nothing has been posted yet, so there are no comments to read." };
   try {
     await inTime(kit.graphAny(env, ctx.ig, "GET", `/${ctx.newest}/comments`, { fields: "id", limit: "1" }), "Instagram");
   } catch (e) {
-    if (e instanceof kit.UserError && e.denied) return MISSING;
+    if (e instanceof kit.UserError && e.denied) return missing(ctx, title, MISSING);
     if (e instanceof kit.UserError && e.gone) return { title, state: "ok", brief: "", line: "Ready. The newest post has been removed on Instagram, so there was nothing to read today." };
     throw notNow(e, kit, "Instagram");
   }
@@ -288,6 +290,7 @@ export const PARTS = {
       [ctx.ig, ctx.posts, ctx.upkeep] = await Promise.all([
         connected ? kit.loadIg(env) : null, connected ? kit.loadDoc(env, "posts", []) : [], upkeepState(env, kit)]);
       ctx.scopes = Array.isArray(ctx.old?.scopes) ? ctx.old.scopes : [];
+      ctx.igTrouble = (ctx.old?.items || []).some((i) => i.id === "instagram" && i.state === "attention");
       await readFeed(env, kit, ctx);
     } },
 };
