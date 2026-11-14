@@ -112,6 +112,11 @@ only to understand her taste and are never suggested back.
   cities, ages) need 100 followers. Watch time and "left in the first 3 seconds" exist for reels only.
 - Not included: when followers are online (Instagram's format for it isn't documented clearly
   enough to trust), story numbers, and comparisons against other accounts.
+- "Add a song in Instagram" hands the finished reel to the Instagram app through the phone's share
+  menu, with the caption copied, so she can use Instagram's full song library and post from
+  there. The app keeps a note of what was handed over for 72 hours; the server looks for a new
+  reel on her page (every few minutes, and whenever Posts or Insights opens) and links it, so it
+  is tracked like any other post. Which song she picked can't be read back from Instagram.
 - Music has three routes. Her own file or a free track becomes part of the reel (mixed in when
   the reel is rendered, with a short fade in and out, looping if the track is shorter than the
   reel). Instagram's own music is still chosen at posting, and only for reels with no music of

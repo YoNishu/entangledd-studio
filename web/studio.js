@@ -766,7 +766,7 @@
     const label = { processing: ["info", "Being processed by Instagram"], published: ["ok", "Posted"], failed: ["bad", "Didn't post"] };
     const [kind, words] = label[p.state] || ["gone", p.state];
     const kids = [el("p", { className: "q", textContent: p.quote || p.caption || "Reel" }), chip(kind, words)];
-    kids.push(el("p", { className: "src", textContent: `${p.kind === "carousel" ? `Carousel of ${p.slides}` : "Reel"}, ${day(p.published || p.created)}${p.music ? `, music: ${p.music}` : ""}` }));
+    kids.push(el("p", { className: "src", textContent: `${p.kind === "carousel" ? `Carousel of ${p.slides}` : "Reel"}, ${day(p.published || p.created)}${p.via === "instagram" ? ", finished in Instagram" : p.music ? `, music: ${p.music}` : ""}` }));
     if (p.error) kids.push(el("p", { className: "flag", textContent: p.error }));
     const m = p.metrics;
     if (m && Object.keys(m).length) {
@@ -818,13 +818,115 @@
     drop.addEventListener("click", async () => {
       try { renderQueue((await send("queue/" + q.id, "DELETE")).queue); } catch (e) { $("posts-note").textContent = friendly(e); }
     });
+    const song = el("button", { className: "btn", type: "button", textContent: "Add a song in Instagram" });
+    song.addEventListener("click", () => openHandoff(q));
     return el("article", { className: "card" }, el("p", { className: "q", textContent: q.quote || "A reel" }), chip("wait", "Made, not posted"),
-      el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that you'd need to create it again.` }), el("div", { className: "acts" }, go, drop));
+      el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that you'd need to create it again.` }), el("div", { className: "acts tall" }, go, song, drop));
   }
+  const showPostedHead = () => { $("posted-head").hidden = $("queue-wrap").hidden && $("handoff-wrap").hidden; };
   function renderQueue(queue) {
     $("queue-wrap").hidden = !queue.length;
     $("list-queue").replaceChildren(...queue.map(queueCard));
+    showPostedHead();
   }
+
+  // ---------- Finishing a reel in Instagram itself (for its full song library) ----------
+  // The reel is handed to the Instagram app through the phone's share menu. The app notes what was handed over,
+  // and the server looks for the new reel on the page and links it up, so Posts and Insights still follow it.
+  let handing = null;      // { jobId, blob (or null while it is being fetched), about: {...} }
+  const handStatus = (msg) => { $("handoff-status").textContent = msg; };
+  function handoffCard(h) {
+    const look = el("button", { className: "btn", type: "button", textContent: "Look for it now" });
+    look.addEventListener("click", async () => {
+      look.disabled = true; look.textContent = "Looking…";
+      try {
+        const r = await send("handoffs/check", "POST", {});
+        if (r.linked) loadPosts();
+        else { look.textContent = "Not on Instagram yet"; setTimeout(() => { look.disabled = false; look.textContent = "Look for it now"; }, 4000); }
+      } catch (e) { look.disabled = false; look.textContent = "Look for it now"; $("posts-note").textContent = friendly(e); }
+    });
+    const drop = el("button", { className: "btn quiet", type: "button", textContent: "I didn't post it" });
+    drop.addEventListener("click", async () => {
+      try { renderHandoffs((await send("handoffs/" + h.id, "DELETE")).handoffs); } catch (e) { $("posts-note").textContent = friendly(e); }
+    });
+    return el("article", { className: "card" }, el("p", { className: "q", textContent: h.quote || "A reel" }), chip("info", "Waiting for you to post it in Instagram"),
+      el("p", { className: "src", textContent: `The app keeps looking for it until ${day(h.until)}.` }), el("div", { className: "acts tall" }, look, drop));
+  }
+  function renderHandoffs(list) {
+    $("handoff-wrap").hidden = !list.length;
+    $("list-handoffs").replaceChildren(...list.map(handoffCard));
+    showPostedHead();
+  }
+  async function openHandoff(fromQueue) {
+    const reel = fromQueue ? null : S.currentReel();
+    if (!fromQueue && !reel) return;
+    const made = fromQueue ? fromQueue.made : reel.made;
+    handing = fromQueue
+      ? { jobId: fromQueue.jobId, blob: null, about: { quote: fromQueue.quote, author: fromQueue.author, theme: fromQueue.theme, tone: fromQueue.tone, source: fromQueue.source, suggestionId: fromQueue.suggestionId, made } }
+      : { jobId: reel.id, blob: reel.blob, about: { quote: S.quoteText(), ...onCanvas, made } };
+    // A free track that asks for credit keeps its credit line in the caption here too.
+    const credit = (made && made.musicCredit) || "";
+    $("handoff-caption").value = credit;
+    $("handoff-write").hidden = !S.server.ai;
+    $("handoff-copy").hidden = true;
+    $("handoff-go").disabled = !handing.blob;
+    handStatus(handing.blob ? "" : "Fetching the reel…");
+    $("handoff-sheet").hidden = false;
+    if (!handing.blob) {
+      // A reel from the waiting list is fetched first, so that the tap on the button below can open the share menu at once.
+      const mine = handing;
+      try {
+        const blob = await (await S.api(`jobs/${mine.jobId}/reel`)).blob();
+        if (handing !== mine) return;
+        mine.blob = blob; $("handoff-go").disabled = false; handStatus("");
+      } catch (e) { if (handing === mine) handStatus(friendly(e)); }
+    }
+  }
+  $("handoff-open").addEventListener("click", () => openHandoff(null));
+  const closeHandoff = () => { $("handoff-sheet").hidden = true; };
+  $("handoff-close").addEventListener("click", closeHandoff);
+  $("handoff-sheet").addEventListener("click", (e) => { if (e.target === $("handoff-sheet")) closeHandoff(); });
+  $("handoff-write").addEventListener("click", async () => {
+    const btn = $("handoff-write");
+    btn.disabled = true; btn.textContent = "Writing…";
+    try {
+      const r = await send("caption", "POST", { quote: handing.about.quote, author: handing.about.author });
+      const credit = (handing.about.made && handing.about.made.musicCredit) || "";
+      $("handoff-caption").value = [r.caption, r.hashtags.join(" "), credit].filter(Boolean).join("\n\n");
+    } catch (e) { handStatus(friendly(e)); }
+    finally { btn.disabled = false; btn.textContent = "Write a caption with Nishiii"; }
+  });
+  const copyCaption = () => {
+    const text = $("handoff-caption").value.trim();
+    if (!text || !navigator.clipboard) return Promise.resolve(false);
+    return navigator.clipboard.writeText(text).then(() => true, () => false);
+  };
+  $("handoff-copy").addEventListener("click", async () => { handStatus((await copyCaption()) ? "Caption copied." : "The caption couldn't be copied. Press and hold the text above to copy it."); });
+  $("handoff-go").addEventListener("click", async () => {
+    if (!handing || !handing.blob) return;
+    const mine = handing, caption = $("handoff-caption").value.trim();
+    const file = new File([mine.blob], "entangledd-reel.mp4", { type: "video/mp4" });
+    const copying = copyCaption();          // started first, and not waited for, so the share menu still opens on this tap
+    let shared = false;
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); shared = true; }
+      catch (e) { if (e.name === "AbortError") { handStatus("Nothing was shared. Tap the button to try again."); return; } }
+    }
+    if (!shared) {
+      // No share menu here (a computer, or an older phone): save the reel instead, to pick from inside Instagram.
+      const a = el("a", { href: URL.createObjectURL(file), download: file.name });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }
+    const copied = await copying;
+    $("handoff-copy").hidden = !caption;
+    try {
+      await send("handoffs", "POST", { jobId: mine.jobId, caption, ...mine.about });
+      const found = S.server.instagram ? "Once it's posted there, it appears in Posts by itself within a few minutes." : "Connect Instagram in Settings so the app can find the post afterwards.";
+      handStatus(`${shared ? "Handed over." : "The reel was saved to this device. Open Instagram, start a new reel and pick it."} ${caption ? (copied ? "Your caption is copied, ready to paste. " : "Copy your caption with the button above. ") : ""}${found}`);
+      if (!$("view-posts").hidden) loadPosts();
+    } catch (e) { handStatus(friendly(e)); }
+  });
   function resetQueueButton() { $("queue-add").disabled = false; $("queue-add").textContent = "Keep it to post later"; }
   $("queue-add").addEventListener("click", async () => {
     const reel = S.currentReel();
@@ -901,6 +1003,7 @@
       // After the list, so the week's numbers include what was just refreshed from Instagram.
       getJson("report").then(renderWeek).catch(() => { $("week-card").hidden = true; });
       getJson("queue").then((r) => renderQueue(r.queue)).catch(() => {});
+      getJson("handoffs").then((r) => renderHandoffs(r.handoffs)).catch(() => {});
       $("posts-note").textContent = !(ig && ig.connected) ? "Instagram isn't connected. Connect it in Settings, at the top right."
         : posts.length ? "If you delete a post on Instagram, it disappears from here the next time you open Posts." : "Nothing posted from the app yet.";
     } catch (e) { $("posts-note").textContent = friendly(e); }

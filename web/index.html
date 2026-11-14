@@ -105,12 +105,17 @@
 <section class="page" id="view-posts" hidden>
   <h2>Posts</h2>
   <article class="card week" id="week-card" hidden></article>
+  <div id="handoff-wrap" hidden>
+    <h2>Being finished in Instagram</h2>
+    <p class="note">Reels you took into Instagram to add a song. Once you post one there, it moves down to Posted by itself, usually within a few minutes.</p>
+    <div class="cards" id="list-handoffs"></div>
+  </div>
   <div id="queue-wrap" hidden>
     <h2>Waiting to be posted</h2>
     <p class="note" id="queue-note"></p>
     <div class="cards" id="list-queue"></div>
-    <h2>Posted</h2>
   </div>
+  <h2 id="posted-head" hidden>Posted</h2>
   <p class="note" id="posts-note" role="status"></p>
   <div class="cards" id="list-posts"></div>
 
@@ -226,7 +231,7 @@
       <button class="btn" id="tune-search" disabled>Search free music</button>
       <button class="btn quiet" id="tune-clear" hidden>Remove music</button>
       <p class="note" id="tune-say" role="status"></p>
-      <p class="note">Music is added to reels, not to pictures. A song you don't own the rights to can be muted by Instagram when it's part of the video, so for a popular song leave this empty and add it from Instagram when you post.</p>
+      <p class="note">Music is added to reels, not to pictures. A song you don't own the rights to can be muted by Instagram when it's part of the video. For a popular song, leave this empty and tap "Add a song in Instagram" once the reel is made.</p>
     </div>
 
     <div class="pane" id="pane-text" role="tabpanel" aria-labelledby="tab-text" hidden>
@@ -310,6 +315,7 @@
       <div id="reel-result" hidden>
         <p class="status">Your reel is ready.</p>
         <button class="btn primary" id="post-open" hidden>Post to Instagram</button>
+        <button class="btn" id="handoff-open">Add a song in Instagram</button>
         <button class="btn" id="queue-add" hidden>Keep it to post later</button>
         <button class="btn" id="save-reel">Save to phone</button>
         <video id="result" controls playsinline loop></video>
@@ -374,6 +380,26 @@
     <label class="stack"><span>What should they be about? Optional. For example "letting go" or "the sea"</span><input id="ask-about" type="text"></label>
     <p class="status" id="ask-status" role="status"></p>
     <button class="btn primary" id="ask-go">Get five quotes</button>
+  </div>
+</div>
+
+<div class="sheet" id="handoff-sheet" role="dialog" aria-modal="true" aria-labelledby="handoff-title" hidden>
+  <div class="sheet-body">
+    <header class="sheet-head">
+      <h2 id="handoff-title">Finish in Instagram</h2>
+      <button class="btn quiet close" id="handoff-close">Close</button>
+    </header>
+    <p class="note">For when you want a song from Instagram's own library. The reel opens in Instagram's editor, you add the song and post it there, and the app then finds the post by itself and tracks it like any other.</p>
+    <label class="stack"><span>Caption, copied for you to paste in Instagram</span><textarea id="handoff-caption" rows="4"></textarea></label>
+    <button class="btn" id="handoff-write" hidden>Write a caption with Nishiii</button>
+    <ol class="steps">
+      <li>Tap "Share to Instagram" below. Your caption is copied and the phone's share menu opens.</li>
+      <li>Choose Instagram, then Reel.</li>
+      <li>In Instagram, tap the music note to pick a song, paste the caption, and share.</li>
+    </ol>
+    <button class="btn primary" id="handoff-go">Share to Instagram</button>
+    <button class="btn quiet" id="handoff-copy" hidden>Copy the caption again</button>
+    <p class="status" id="handoff-status" role="status"></p>
   </div>
 </div>
 

@@ -1064,7 +1064,7 @@ async function publicReel(request, env, parts) {
 }
 
 const publicPost = (p) => ({ id: p.id, state: p.state, error: p.error, caption: p.caption, quote: p.quote, author: p.author,
-  music: p.music, created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null,
+  music: p.music, via: p.via || "app", created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null,
   kind: p.kind || "reel", slides: p.slides || 0 });
 const tokenFor = (ig, post) => (post.tokenKind === "user" ? ig.userToken : ig.pageToken);
 
@@ -1115,9 +1115,10 @@ async function postRoutes(request, env, parts) {
   if (parts.length === 1 && method === "GET") {
     // Opening the list is when numbers are refreshed and posts deleted on Instagram are noticed.
     if (ig) {
+      const linked = await adoptFromInstagram(env, ig, posts);
       const removed = await checkRemoved(env, ig, posts);
       const updated = await refreshInsights(env, ig, posts, { max: 6 });
-      if (removed || updated) await saveDoc(env, "posts", posts);
+      if (linked || removed || updated) await saveDoc(env, "posts", posts.slice(-500));
     }
     return json({ posts: posts.filter((p) => p.state !== "removed").slice(-50).reverse().map(publicPost) });
   }
@@ -1614,7 +1615,8 @@ async function insightRoutes(request, env, parts) {
   if (ig) {
     // Bring the numbers up to date first, so everything below agrees with Instagram.
     // (Posts that were deleted on Instagram are noticed when the Posts section opens.)
-    if (await refreshInsights(env, ig, posts, { max: 8 })) await saveDoc(env, "posts", posts);
+    const linked = await adoptFromInstagram(env, ig, posts);
+    if ((await refreshInsights(env, ig, posts, { max: 8 })) || linked) await saveDoc(env, "posts", posts.slice(-500));
     acct = await snapshotAccount(env, ig);
     const followers = acct.days.length ? acct.days[acct.days.length - 1].followers : 0;
     [page, people] = await Promise.all([
@@ -1683,6 +1685,93 @@ async function queueRoutes(request, env, parts) {
   if (request.method === "DELETE" && parts[1]) {
     queue = queue.filter((q) => q.id !== parts[1]);
     await saveDoc(env, "queue", queue);
+    return out();
+  }
+  return fail(404, "Not found.");
+}
+
+// ---------- finishing a reel in Instagram itself, and finding it afterwards ----------
+// When she wants a song from Instagram's full library, the app hands the finished reel to the Instagram app.
+// The post is then made there, not here, so the app keeps a note of what was handed over and looks for a new
+// reel on her page. When one appears it is linked to the note, and from then on it is tracked like any other post.
+const HANDOFF_HOURS = 72;
+const squash = (t) => String(t || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+async function loadHandoffs(env) {
+  const all = await loadDoc(env, "handoffs", []);
+  const live = all.filter((h) => Date.now() - h.at < HANDOFF_HOURS * 3600 * 1000);
+  if (live.length !== all.length) await saveDoc(env, "handoffs", live);
+  return live;
+}
+
+// Looks at the newest things on her page for reels the app doesn't know, and links them to what was handed over.
+// Returns how many were linked. "posts" is changed in place; the caller saves it.
+async function adoptFromInstagram(env, ig, posts) {
+  const handoffs = await loadHandoffs(env);
+  if (!handoffs.length) return 0;
+  let media;
+  try {
+    media = (await graphAny(env, ig, "GET", `/${ig.igId}/media`, { fields: "id,caption,media_type,media_product_type,permalink,timestamp", limit: "15" })).data || [];
+  } catch (e) { if (!(e instanceof UserError)) throw e; return 0; }
+  const known = new Set(posts.map((p) => String(p.mediaId || "")));
+  const fresh = media.map((m) => ({ ...m, at: Date.parse(m.timestamp) || 0 }))
+    .filter((m) => !known.has(String(m.id)) && m.at && (m.media_product_type === "REELS" || m.media_type === "VIDEO"))
+    .sort((a, b) => a.at - b.at);
+  let linked = 0;
+  let left = [...handoffs];
+  const fits = (h, m) => {
+    const words = squash(h.caption).slice(0, 40), quote = squash(h.quote).slice(0, 40), said = squash(m.caption);
+    return (words.length >= 12 && said.includes(words)) || (quote.length >= 12 && said.includes(quote));
+  };
+  for (const m of fresh) {
+    // Only hand-overs made before this reel was posted can be its source. If the caption she copied (or the quote)
+    // is in the reel's caption, that settles it; otherwise it is the reel she handed over most recently.
+    const before = left.filter((h) => h.at - 60000 < m.at);
+    const h = before.find((x) => fits(x, m)) || before.sort((a, b) => b.at - a.at)[0];
+    if (!h) continue;
+    left = left.filter((x) => x !== h);
+    posts.push({ id: crypto.randomUUID(), jobId: h.jobId, via: "instagram", state: "published", error: null, caption: lines(m.caption, 2200),
+      // Which song she chose can't be read from Instagram, only that it was finished there.
+      music: h.made && h.made.music ? null : "chosen in Instagram",
+      quote: h.quote, author: h.author, theme: h.theme, tone: h.tone, source: h.source, suggestionId: h.suggestionId, made: h.made || null,
+      mediaId: String(m.id), tokenKind: "page", created: h.at, published: m.at, permalink: oneLine(m.permalink, 300) });
+    linked += 1;
+  }
+  if (linked) {
+    await saveDoc(env, "handoffs", left);
+    const queue = await loadDoc(env, "queue", []);
+    const jobs = new Set(handoffs.filter((h) => !left.includes(h)).map((h) => h.jobId));
+    if (queue.some((q) => jobs.has(q.jobId))) await saveDoc(env, "queue", queue.filter((q) => !jobs.has(q.jobId)));
+  }
+  return linked;
+}
+
+async function handoffRoutes(request, env, parts) {
+  let handoffs = await loadHandoffs(env);
+  const out = () => json({ handoffs: handoffs.map((h) => ({ id: h.id, quote: h.quote, at: h.at, until: h.at + HANDOFF_HOURS * 3600 * 1000 })) });
+  if (request.method === "GET") return out();
+  if (request.method === "POST" && parts[1] === "check") {
+    // "Look now": the same search that also runs by itself every few minutes.
+    const ig = igReady(env) ? await loadIg(env) : null;
+    if (!ig) return fail(409, "Connect Instagram first, in Settings.");
+    const posts = await loadDoc(env, "posts", []);
+    const linked = await adoptFromInstagram(env, ig, posts);
+    if (linked) await saveDoc(env, "posts", posts.slice(-500));
+    handoffs = await loadHandoffs(env);
+    return json({ linked, handoffs: handoffs.map((h) => ({ id: h.id, quote: h.quote, at: h.at, until: h.at + HANDOFF_HOURS * 3600 * 1000 })) });
+  }
+  if (request.method === "POST" && parts.length === 1) {
+    const b = await body(request);
+    if (!UUID.test(b.jobId || "")) return fail(400, "Create the reel first.");
+    handoffs = handoffs.filter((h) => h.jobId !== b.jobId).slice(-11);
+    handoffs.push({ id: crypto.randomUUID(), jobId: b.jobId, at: Date.now(), caption: lines(b.caption, 2200), quote: lines(b.quote, 600), author: oneLine(b.author, 80),
+      theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20), source: oneLine(b.source, 20), suggestionId: UUID.test(b.suggestionId || "") ? b.suggestionId : "", made: cleanMade(b.made) });
+    await saveDoc(env, "handoffs", handoffs);
+    return out();
+  }
+  if (request.method === "DELETE" && parts[1]) {
+    handoffs = handoffs.filter((h) => h.id !== parts[1]);
+    await saveDoc(env, "handoffs", handoffs);
     return out();
   }
   return fail(404, "Not found.");
@@ -2300,7 +2389,7 @@ async function route(request, env, parts) {
     if (!isRenderer(request, env)) return fail(401, "Not allowed.");
     return renderRoutes(request, env, parts);
   }
-  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat", "slides", "check", "report", "looks", "queue", "insights", "music"].includes(parts[0])) {
+  if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat", "slides", "check", "report", "looks", "queue", "insights", "music", "handoffs"].includes(parts[0])) {
     if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
     if (parts[0] === "jobs") return appRoutes(request, env, parts);
     if (parts[0] === "stock") return stockRoutes(request, env, parts);
@@ -2320,6 +2409,7 @@ async function route(request, env, parts) {
     if (parts[0] === "looks") return lookRoutes(request, env, parts);
     if (parts[0] === "queue") return queueRoutes(request, env, parts);
     if (parts[0] === "insights") return insightRoutes(request, env, parts);
+    if (parts[0] === "handoffs") return handoffRoutes(request, env, parts);
     if (parts[0] === "slides" && request.method === "PUT") return putSlide(request, env);
     if (parts[0] === "edit" && request.method === "POST") return editQuote(request, env);
     if (parts[0] === "scan" && request.method === "POST") return scanPage(request, env);
@@ -2370,12 +2460,15 @@ export default {
     ctx.waitUntil((async () => {
       const posts = await loadDoc(env, "posts", []);
       const waiting = posts.filter((p) => p.state === "processing");
-      if (!waiting.length) return;
-      const ig = await loadIg(env);
+      const handed = await loadDoc(env, "handoffs", []);
+      if (!waiting.length && !handed.length) return;
+      const ig = igReady(env) ? await loadIg(env) : null;
       if (!ig) return;
       let changed = false;
       for (const p of waiting) changed = (await advancePost(env, ig, p)) || changed;
-      if (changed) await saveDoc(env, "posts", posts);
+      // A reel she took into Instagram to finish there: has it been posted yet?
+      if (handed.length) changed = (await adoptFromInstagram(env, ig, posts)) > 0 || changed;
+      if (changed) await saveDoc(env, "posts", posts.slice(-500));
     })().catch((e) => console.error("finishing posts failed", e)));
   },
 };

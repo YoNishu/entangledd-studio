@@ -198,6 +198,14 @@ async function pretendGraph(method, url, form) {
   if (p === "/17890" && /followers_count/.test(q.get("fields") || "") && !/business_discovery/.test(q.get("fields") || "")) {
     return { status: 200, body: { followers_count: Number(process.env.FOLLOWERS || 64), media_count: 18, id: "17890" } };
   }
+  if (p === "/17890/media" && method === "GET") {
+    return { status: 200, body: { data: [...outsidePosts].reverse() } };
+  }
+  if (/^\/OUT\d+$/.test(p)) return { status: 200, body: { id: p.slice(1), permalink: `https://www.instagram.com/reel/${p.slice(1)}/` } };
+  if (/^\/OUT\d+\/insights$/.test(p)) {
+    const val = { reach: 8800, views: 15100, likes: 640, comments: 12, saved: 210, shares: 95, total_interactions: 957, ig_reels_avg_watch_time: 5100, ig_reels_video_view_total_time: 2200000, reels_skip_rate: 0.33, reposts: 2 };
+    return { status: 200, body: { data: q.get("metric").split(",").filter((n) => n in val).map((name) => ({ name, period: "lifetime", values: [{ value: val[name] }] })) } };
+  }
   if (p === "/17890/insights") {
     const metric = q.get("metric"), breakdown = q.get("breakdown");
     if (metric === "follower_demographics") {
@@ -228,6 +236,7 @@ async function pretendGraph(method, url, form) {
   return err("Unsupported request.");
 }
 const openverseLog = [];
+const outsidePosts = [];     // reels "posted from the Instagram app itself", added by /__posted_in_instagram
 const MEDIA_DIR = process.env.DEV_MEDIA || "";   // folder holding sea.mp4 and sky.jpg for the pretend Pexels
 
 const CANNED = [
@@ -430,6 +439,13 @@ http.createServer(async (req, res) => {
       const posts = JSON.parse(await (await env.MEDIA.get("data/posts.json")).text());
       for (const post of posts) { post.insightsAt = 0; post.metrics = null; }
       await env.MEDIA.put("data/posts.json", JSON.stringify(posts));
+      res.writeHead(204).end(); return;
+    }
+    if (url.pathname === "/__posted_in_instagram") {
+      // Pretends she posted a reel from the Instagram app: ?caption=...&ago=seconds&type=REELS|FEED
+      const n = outsidePosts.length + 1, ago = Number(url.searchParams.get("ago") || 0);
+      outsidePosts.push({ id: "OUT" + n, caption: url.searchParams.get("caption") || "", media_type: url.searchParams.get("type") === "FEED" ? "IMAGE" : "VIDEO",
+        media_product_type: url.searchParams.get("type") || "REELS", permalink: `https://www.instagram.com/reel/OUT${n}/`, timestamp: new Date(Date.now() - ago * 1000).toISOString() });
       res.writeHead(204).end(); return;
     }
     if (url.pathname === "/__seed_insights") {
