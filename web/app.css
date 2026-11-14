@@ -467,6 +467,10 @@ progress::-moz-progress-bar { background: var(--glass); }
 .week p { margin: 0; }
 .week h2 { margin: 0; font-size: 18px; }
 .week .q { font-size: 15px; line-height: 1.45; }
+/* the two rows that close the card are quiet and sit on the text's left edge: more about the week, and the way to Insights */
+.week > details.more { margin: -2px 0 -6px; }
+.week > .btn.quiet { justify-content: flex-start; min-height: 44px; padding: 0; margin-bottom: -10px; color: var(--glass); font-size: 13px; }
+.week > .btn.quiet::before { width: 17px; height: 17px; }
 
 /* ---------- sheets ---------- */
 .sheet { position: fixed; inset: 0; z-index: 8; background: rgba(4, 12, 17, 0.72); display: flex; align-items: flex-end; justify-content: center; animation: fade 0.15s ease-out; }
