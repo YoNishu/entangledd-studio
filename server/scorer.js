@@ -497,7 +497,12 @@ async function refresh(env, kit, opts = {}) {
     log = { ...emptyLog(), since: forgot, back: "done" };
     prev = null;
   }
-  log.rows = log.rows.filter((r) => r && typeof r.i === "string" && typeof r.g === "string" && r.g && Number.isFinite(r.t));
+  // A time that cannot be real (not a number, or later than tomorrow) is never let in, from this record or from the
+  // app's lists: a single one would outweigh every real choice in the counts, or stop this run and every later one.
+  const real = (t) => Number.isFinite(t) && t > 0 && t <= now + 2 * DAY_MS;
+  log.rows = log.rows.filter((r) => r && typeof r.i === "string" && typeof r.g === "string" && r.g && real(r.t));
+  for (const r of log.rows) if (r.u && !real(r.u)) r.u = now;
+  if (!real(log.histAt)) log.histAt = 0;
   const since = log.since || 0, sinceDay = since ? istDate(since) : "";
   // Days already folded into the running counts: nothing at or before this time is taken in again.
   const horizon = log.fold && Number.isFinite(log.fold.upTo) ? log.fold.upTo : 0;
@@ -505,7 +510,7 @@ async function refresh(env, kit, opts = {}) {
   const byId = new Map(log.rows.map((r) => [r.i, r]));
   const touched = new Set(), dropped = new Set();
   const upsert = (item, g, t) => {
-    if (!item || typeof item.id !== "string" || !item.text) return;
+    if (!item || typeof item.id !== "string" || !item.text || !real(t)) return;
     const stated = item.state === "used" ? 1 : item.state === "rejected" ? 2 : 0;
     let r = byId.get(item.id);
     if (!r) {
@@ -562,7 +567,7 @@ async function refresh(env, kit, opts = {}) {
   for (const r of log.rows) { if (!byKey.has(r.x)) byKey.set(r.x, []); byKey.get(r.x).push(r); }
   const from = Math.max(log.histAt || 0, since);
   for (const h of Array.isArray(history) ? history : []) {
-    if (!h || !h.text || !(h.at > from) || !["used", "rejected"].includes(h.action)) continue;
+    if (!h || !h.text || !real(h.at) || !(h.at > from) || !["used", "rejected"].includes(h.action)) continue;
     const s = h.action === "used" ? 1 : 2, d = describe(h);
     if (touched.has(d.x)) continue;              // still on a list: the list itself is the truth
     const same = (byKey.get(d.x) || []).filter((r) => !dropped.has(r.i)).sort((a, b) => b.t - a.t)[0];
@@ -570,14 +575,14 @@ async function refresh(env, kit, opts = {}) {
     const r = { i: "h" + d.x, g: "h" + d.x, t: h.at, s, u: h.at, ...d };
     log.rows.push(r); byId.set(r.i, r); byKey.set(d.x, [r]);
   }
-  log.histAt = Math.max(log.histAt || 0, lastAt(history));
+  log.histAt = (Array.isArray(history) ? history : []).reduce((m, h) => (h && real(h.at) && h.at > m ? h.at : m), log.histAt || 0);
 
   // Posts made from a suggestion: a pick, even where the list never said "used". Every post is looked at on each
   // full run (a reel finished in Instagram is filed under the time she handed it over, so there is no "newest so far"
   // to go by); the mark "p" on the row keeps a post from being counted twice, and keeps the pick from being undone.
   if (posts) {
     for (const p of Array.isArray(posts) ? posts : []) {
-      if (!p || !p.suggestionId || !p.quote || !(p.created > since) || !["published", "processing"].includes(p.state)) continue;
+      if (!p || !p.suggestionId || !p.quote || !real(p.created) || !(p.created > since) || !["published", "processing"].includes(p.state)) continue;
       const r = byId.get(p.suggestionId);
       if (r) { if (!r.p) { r.p = 1; if (r.s === 0) { r.s = 1; r.u = now; } } continue; }
       if (p.created <= horizon) continue;
