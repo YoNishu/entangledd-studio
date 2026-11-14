@@ -1,0 +1,37 @@
+name: Render tools
+description: >
+  Gets ffmpeg and Pillow ready for the reel renderer. When a copy saved by an earlier run is there, it is
+  unpacked in a few seconds. Otherwise they are installed the long way (about 45 seconds), exactly as
+  before, and a copy is saved for next time. The copy is the very same files the install puts on the
+  machine, so the reel comes out the same either way.
+outputs:
+  source:
+    description: "cache (unpacked from a saved copy) or install (installed afresh)"
+    value: ${{ steps.tools.outputs.source }}
+  restored:
+    description: "yes when a saved copy was found, whether or not it could be used"
+    value: ${{ steps.tools.outputs.restored }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    # The saved copy belongs to one version of GitHub's machine image. When GitHub brings out a new image,
+    # the newest older copy is tried first, and a fresh one is saved under the new image's name.
+    - id: key
+      shell: bash
+      run: |
+        echo "os=${ImageOS:-linux}" >> "$GITHUB_OUTPUT"
+        echo "image=${ImageOS:-linux}-${ImageVersion:-0}" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache@v5
+      continue-on-error: true            # if saving or fetching the copy ever fails, carry on the long way
+      with:
+        path: ~/render-tools
+        key: render-tools-v1-py312-${{ steps.key.outputs.image }}
+        restore-keys: |
+          render-tools-v1-py312-${{ steps.key.outputs.os }}-
+    - id: tools
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/tools.sh"
