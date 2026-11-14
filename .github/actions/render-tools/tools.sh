@@ -2,17 +2,19 @@
 # Gets ffmpeg and Pillow ready for the reel renderer.
 #
 #   Quick way: unpack the copy an earlier run saved in ~/render-tools (a few seconds).
-#   Long way (what every run did until now): apt-get install ffmpeg, pip install pillow (about 45 seconds),
-#     then save every file that install put on the machine, so the next run can take the quick way.
+#   Long way (what every run did until now): apt-get install ffmpeg, pip install pillow (20 to 45 seconds),
+#     then put a copy of what that install added to the machine in ~/render-tools, for the next run.
 #
-# If the quick way fails for any reason at all, the long way is used. The saved copy is the same files apt
-# installs, so the renderer's ffmpeg is the same program either way and the reel comes out the same.
+# If the quick way fails for any reason at all, the long way is used. The saved copy is the very files apt
+# installs on this same machine image, so the renderer's ffmpeg is the same program either way and the reel
+# comes out the same.
 set -uo pipefail
 
 TOOLS="${RENDER_TOOLS_DIR:-$HOME/render-tools}"
 SNAP="$TOOLS/apt-files.tar"
 PY="$TOOLS/py"
-SCAN="${RENDER_TOOLS_SCAN:-/usr /etc}"            # where an install puts files (tests point this elsewhere)
+# Folders where packages make links while they set themselves up (links their own file lists don't mention).
+SCAN="${RENDER_TOOLS_SCAN:-/etc/alternatives /usr/bin /usr/sbin /usr/lib/$(uname -m)-linux-gnu}"
 PIP="${RENDER_TOOLS_PIP:-python3 -m pip}"
 SUDO=""
 if [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
@@ -34,34 +36,58 @@ works() {
   return $ok
 }
 
-# The long way, as it has always been done, followed by saving a copy of what it installed.
+# Every package on the machine with its version, one per line.
+packages() { dpkg-query -W -f='${binary:Package} ${Version}\n' 2>/dev/null | LC_ALL=C sort; }
+
+# Puts a copy of everything the install added into $SNAP: every file of every package that is new or newer than
+# before, plus the links made in the library and program folders while those packages set themselves up.
+save_copy() {  # save_copy MARKER PACKAGES_BEFORE
+  local list="$TOOLS/files.list" new status
+  new="$(packages | LC_ALL=C comm -13 "$2" - | cut -d' ' -f1)"
+  {
+    if [ -n "$new" ]; then
+      # shellcheck disable=SC2086
+      dpkg-query -L $new 2>/dev/null | while IFS= read -r f; do
+        if [ -L "$f" ] || [ -f "$f" ]; then printf '%s\0' "$f"; fi     # files and links only, never folders
+      done
+    fi
+    # shellcheck disable=SC2086
+    $SUDO find $SCAN -xdev \( -type f -o -type l \) -cnewer "$1" ! -name ld.so.cache -print0 2>/dev/null
+  } | LC_ALL=C sort -zu > "$list"
+  grep -qz '/bin/ffmpeg$' "$list" || { rm -f "$list"; return 1; }
+  $SUDO tar --null --no-recursion -T "$list" -cf - 2>/dev/null > "$SNAP.part"
+  status=$?                                  # 1 only means a file changed while it was being read
+  rm -f "$list"
+  # The copy must read back whole and have ffmpeg in it. (No pipe into "grep -q" here: it would stop reading
+  # early and make a good copy look broken.)
+  local names
+  if [ "$status" -le 1 ] && names="$(tar -tf "$SNAP.part" 2>/dev/null)" && grep -q 'bin/ffmpeg$' <<< "$names"; then
+    mv "$SNAP.part" "$SNAP"
+    return 0
+  fi
+  rm -f "$SNAP" "$SNAP.part"
+  return 1
+}
+
+# The long way, as it has always been done, followed by keeping a copy of what it installed.
 install_afresh() {
   rm -rf "$TOOLS"; mkdir -p "$TOOLS"
-  local marker; marker="$(mktemp)"; sleep 1
+  local marker before
+  marker="$(mktemp)"; before="$(mktemp)"; packages > "$before"; sleep 1
   $SUDO apt-get update -qq || say "apt-get update had trouble; trying the install anyway"
   $SUDO apt-get install -y -qq ffmpeg || return 1
   # Pillow goes into the saved folder so it travels with the copy; if that is refused, install it the old way.
   $PIP install --quiet --target "$PY" pillow || $PIP install --quiet pillow || return 1
-
-  # Save every file the install put on (or changed on) the machine. Looking at what changed, rather than asking
-  # the package manager, also catches links that packages create while setting themselves up.
-  local list="$TOOLS/files.list"
-  # shellcheck disable=SC2086
-  if find $SCAN -xdev \( -type f -o -type l \) -cnewer "$marker" ! -name ld.so.cache -print0 > "$list" 2>/dev/null \
-     && grep -qz '/bin/ffmpeg$' "$list" \
-     && $SUDO tar --null -T "$list" -cf - 2>/dev/null > "$SNAP.part" \
-     && [ -s "$SNAP.part" ]; then
-    mv "$SNAP.part" "$SNAP"
-    say "saved a copy for next time ($(du -sh "$TOOLS" 2>/dev/null | cut -f1))"
+  if save_copy "$marker" "$before"; then
+    say "kept a copy for next time ($(du -sh "$TOOLS" 2>/dev/null | cut -f1))"
   else
-    rm -f "$SNAP" "$SNAP.part"
-    say "couldn't save a copy for next time; the next run will install again"
+    say "couldn't keep a copy for next time; the next run will install again"
   fi
-  rm -f "$list" "$marker"
+  rm -f "$marker" "$before"
   return 0
 }
 
-source="install"; restored="no"
+source="install"; restored="no"; save="no"
 if [ -s "$SNAP" ]; then
   restored="yes"
   if $SUDO tar -xf "$SNAP" -C / >/dev/null 2>&1 && { $SUDO ldconfig >/dev/null 2>&1 || true; } && works; then
@@ -72,12 +98,19 @@ if [ -s "$SNAP" ]; then
 fi
 if [ "$source" != "cache" ]; then
   if ! install_afresh; then say "ffmpeg or Pillow could not be installed"; exit 1; fi
-  works || say "warning: the quick self-test did not pass after a fresh install (continuing; the render will tell)"
+  if works; then
+    if [ -s "$SNAP" ]; then save="yes"; fi   # only a copy of tools that work is worth passing on
+  else
+    rm -f "$SNAP"
+    say "warning: the quick self-test did not pass after a fresh install (continuing; the render will tell)"
+  fi
 fi
 
 if [ -d "$PY" ] && [ -n "${GITHUB_ENV:-}" ]; then echo "PYTHONPATH=$PY${PYTHONPATH:+:$PYTHONPATH}" >> "$GITHUB_ENV"; fi
-if [ -n "${GITHUB_OUTPUT:-}" ]; then { echo "source=$source"; echo "restored=$restored"; } >> "$GITHUB_OUTPUT"; fi
+if [ -n "${GITHUB_OUTPUT:-}" ]; then { echo "source=$source"; echo "restored=$restored"; echo "save=$save"; } >> "$GITHUB_OUTPUT"; fi
 filters="$(ffmpeg -hide_banner -filters 2>/dev/null || true)"
-hdr="yes"; { echo "$filters" | grep -q " zscale " && echo "$filters" | grep -q " tonemap "; } || hdr="NO"
-say "ready from $source in $(( $(date +%s) - started )) s | $(ffmpeg -version 2>/dev/null | head -1 | cut -d' ' -f1-3) | HDR filters: $hdr"
+hdr="yes"; { grep -q " zscale " <<< "$filters" && grep -q " tonemap " <<< "$filters"; } || hdr="NO"
+line="ready from $source in $(( $(date +%s) - started )) s | $(ffmpeg -version 2>/dev/null | head -1 | cut -d' ' -f1-3) | HDR filters: $hdr"
+say "$line"
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then echo "Render tools: $line" >> "$GITHUB_STEP_SUMMARY"; fi
 exit 0
