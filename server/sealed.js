@@ -1,4 +1,6 @@
 /* Sealed deliveries for the little notes: text that only the app's own server can open.
    Written by tools/seal.mjs. Safe to keep in a public repo: every entry is locked with a key
    whose private half never leaves the app's storage (see server/sealbox.js). */
-export const SEALED = [];
+export const SEALED = [
+  "AQQKy+3ybjHCPW/5GeIfv7kI+iigheAB1pCu0pRGwTD1JPoBjJEl1k0DcskivT6BG1w9J9nkSUIvzuQGEQNWARfU3v218u28BIR5nE7JINneUELQcjM1d03InfntjCVeNow5ocWOs1za5ERMBJKmB+hkH5/oGd961r0UahqJfQA6+KibBLN/XEirBlBw1IHPwb5TwQgcsRhsRQz/SgiM94nyt+Ev0UqbOAOFNg/LIgwLsjVp+8DPiOpiAeJpdKx2fMxJmAKrgi3cjjlx/V5EukaQ4VEJ4mRBfwYHyC0ADMh5gmlQ0kWZrqauKv/TUL9/nmIzTXTcZ/CAiSS8mm/BFA7adaGWOk5t45KUMiKC/vpjZ+TFpxsp7O2Glez0huRVBr+1bIZKxgYtN9yLsdcVDSuAt4JhiWAHOzfTfjQXof5CAARoZbi+p4DPda1KftmchQrVnFkgAHrRLDix5+2SJJ1ZjT77OQm4l9Ec2NRtec0MQUs0EIgBoVjvCl0KhUTTU3uY2bijtkDB2Xn4DMLc9AWts/acvv5PQqC1ZJp8u8Y8orIjwl2U0i521U8woYzWhb2YOKZbny/n9+/7mqyKi/m+XJlcII0PGdtOdNwX8nHrTl2pSBROPxgtgeVI+A9vsPADqc49ghX73SFAou3ON7x5yx1ZK18upaY8m4VESJSgYrnkCBAZOcY7HvN0hMJa6r4Sx6XKd7TwTkvtJ15yQgd1xtzauvZFvp4ZET2AHxCo7y+im4JmgweHo4f4zx5tuReNsGb7MAaHYKidzVOf3AdYwrM8dqk/GTu3GXzXfaqACHqZXk+53Pt+hw+1aMmkb2QfjJgJ0TcMCRlOCRiUHeTbTQoNfvZlj58h13HElVggeXEvkP5D3YfQNd6aHDXPp5xQqexMAKF/PhoY6kn86R6Y/lDDfMlwgqAhCCT6g3dUHfrk4LvM/pO74qxZBx7KjFHy+3dlRQK7ad1lUh6ckxLbs9rV/tQsmoF628bu47n4wbdCKudGjRUzRow5WdboaT4svlR3//wSq4aNr8ie94sCWFIWJXAx0UKhZXhs6i/gH6TcMZoaaQCI5SpZV6lyUeE5jNJrzM0D/eQBGmyXsU6Oee3iH2WLvQwSmQYpEMDYTCfnzG9CbNllZsVrz9nZ9J03+ognsHCLuFY+KP+TNCX3/Roh",
+];
