@@ -13,19 +13,20 @@
    - For each thing a quote can be (its theme, tone, where it is from, its author, its length, who it
      speaks to, whether its wording is certain) it counts how often she picks that, compared with how
      often she picks anything. Recent choices count more; a value seen only a few times moves little.
-   - Before it may rank anything it needs 50 picks AND proof on her own past choices: going day by
-     day, would what it knew before that day began have put the quote she picked above the ones she
-     passed, clearly more often than chance? If it stops being that good it goes back to learning.
+   - It counts from her very first pick or skip: the engine (server/engine.js) uses these counts from the first
+     day, with a weight that grows with the number of choices behind them. It is still tested on her own past
+     choices: going day by day, would what it knew before that day began have put the quote she picked above
+     the ones she passed, clearly more often than chance? Proven, it is "live" and the engine trusts it more;
+     clearly worse than chance, it is "resting" and the engine all but ignores it until it recovers.
      "Knew before" is taken strictly: a day's list (or an asked-for batch) is learned from only once
      nothing in it can change by itself and her last choice in it has been made, and only for the
      days that begin after that. Her own lines are left out of this test, since it never ranks them.
-   - Once live, Nishiii is asked for about twice as many quotes. The best matches are kept, never
-     more than two on one theme or by one author, plus one "wildcard" so her taste can keep growing.
-     They are shown in Nishiii's own order, as before, so her habits of the eye can't flatter the scorer.
+   - choose() and ranker() below are the older way of ranking, kept for callers that still use them; the day's
+     quotes are now ranked by the engine.
    - A smaller second voice: themes and tones that did better than the posts around them on her
      own page get a small lift. Her picks stay the main voice. */
 
-export const START_AT = 50;                 // picks needed before it may go live
+import * as tags from "./tags.js";
 
 const DAY_MS = 24 * 3600 * 1000, IST_MS = 5.5 * 3600 * 1000;
 const HALF_LIFE_MS = 60 * DAY_MS;           // a choice from two months ago counts half as much as today's
@@ -35,6 +36,7 @@ const MIN_DAYS = 20, WINDOW = 60;           // tested days needed, and how many 
 const GO_MEAN = 0.56, GO_Z = 2.5;           // to go live: right this often, and this sure it isn't luck
 const STOP_MEAN = 0.52, STOP_Z = 1.0;       // to step back: lower bars, so it doesn't flip back and forth
 const RECENT = 10, GO_RECENT = 0.56, STOP_RECENT = 0.4;  // and the last ten tested days on their own: a sudden change of taste shows here first
+const WORSE_DAYS = 10, WORSE_MEAN = 0.42, WORSE_Z = -2;  // the safety net: this many tested days, clearly worse than chance
 const LOOKBACK_DAYS = 7, BACKFILL_PER_RUN = 2, DAILY = 5;
 const MAX_ASK = 12, SAME_THEME = 2, SAME_AUTHOR = 2;
 const AUDIENCE_MIN_POSTS = 3, AUDIENCE_CAP = 0.5;
@@ -49,7 +51,7 @@ const FEATURES = [
   ["len", 1, 6], ["voice", 0.7, 6], ["sure", 0.5, 6],
 ];
 const VALUE = {
-  theme: (r) => r.th, tone: (r) => r.to, kind: (r) => r.k, work: (r) => r.w, author: (r) => r.a,
+  theme: (r) => tags.theme(r.th), tone: (r) => tags.tone(r.to), kind: (r) => r.k, work: (r) => r.w, author: (r) => r.a,
   len: (r) => (!r.n ? "" : r.n <= 10 ? "short" : r.n <= 25 ? "medium" : "long"),
   voice: (r) => r.v,
   sure: (r) => (r.k === "own" || r.c == null || r.c < 0 ? "" : r.c ? "check" : "exact"),
@@ -248,10 +250,13 @@ export function judge(days) {
     recent: days.length >= RECENT ? avg(days.slice(-RECENT)) : mean };
 }
 export function nextState(prev, picks, ev) {
-  if (picks < START_AT) return "learning";
   if (prev === "live") return ev.days < MIN_DAYS || ev.mean < STOP_MEAN || ev.z < STOP_Z || ev.recent < STOP_RECENT ? "learning" : "live";
   return ev.days >= MIN_DAYS && ev.mean >= GO_MEAN && ev.z >= GO_Z && ev.recent >= GO_RECENT ? "live" : "learning";
 }
+
+// The safety net: over enough tested days it put the quote she passed above the one she picked clearly more
+// often than chance would. Then its guesses are worse than none, and the engine leaves them out until they recover.
+export const worse = (ev) => !!ev && ev.days >= WORSE_DAYS && ev.mean <= WORSE_MEAN && ev.z <= WORSE_Z;
 
 // Where it stands after a count: "live" or "learning", with the test result that decided it. Once it has stepped
 // back, what it got right (or wrong) before that no longer speaks for it: from then on it is judged only on the
@@ -259,7 +264,7 @@ export function nextState(prev, picks, ev) {
 export function decide(prev, res, now) {
   const wasLive = !!prev && prev.state === "live", back = (prev && Number(prev.back)) || 0;
   const ev = judge(back ? res.days.filter((_, n) => res.starts[n] >= back) : res.days);
-  const state = nextState(wasLive ? "live" : "learning", res.picks, ev);
+  const state = worse(ev) ? "resting" : nextState(wasLive ? "live" : "learning", res.picks, ev);
   return { state, ev, back: wasLive && state !== "live" ? now : back };
 }
 
@@ -373,11 +378,30 @@ export function lately(c) {
 
 // What she sees in the Nishiii section. One line.
 export function statusOf(m) {
-  const picks = (m && m.picks) || 0, live = !!m && m.state === "live";
-  const line = live ? `Now ranking your daily quotes by what you pick.${m.lately ? ` Lately: ${m.lately}.` : ""}`
-    : picks < START_AT ? `Learning from your picks: ${picks} of ${START_AT}.`
-    : `Still learning from your picks: ${picks} so far, and no clear pattern yet.`;
-  return { state: live ? "live" : "learning", picks, need: START_AT, line, progress: live ? 1 : Math.min(1, picks / START_AT) };
+  const picks = (m && m.picks) || 0, state = m && ["live", "resting"].includes(m.state) ? m.state : "learning";
+  const line = !picks ? "Learning from your picks: none yet."
+    : m.lately ? `Learning from your picks: ${picks} so far. Lately: ${m.lately}.`
+    : `Learning from your picks: ${picks} so far, no clear pattern yet.`;
+  return { state, picks, line };
+}
+
+// For the engine: a function that says how well a quote fits her picks (s, about -6 to 6, 0 = as usual) and which
+// single thing about it counts most (top: [feature, value, weight]). Null when there is no sound model.
+export function pickScorer(m) {
+  if (!usable(m)) return null;
+  const ctx = prepare(countsOf(m));
+  return (item) => {
+    const r = describe(item);
+    let s = 0, top = null;
+    for (const [name, weight, prior] of FEATURES) {
+      const v = VALUE[name](r);
+      if (!v) continue;
+      const w = weight * leaning(ctx, name, prior, v);
+      s += w;
+      if (!top || w > top[2]) top = [name, v, w];
+    }
+    return { s, top };
+  };
 }
 
 // ---------- choosing among candidates (only when live) ----------
@@ -429,7 +453,7 @@ export function choose(model, pool, want, already = []) {
 export async function ranker(env, kit) {
   try {
     const m = await kit.loadDoc(env, "scorer/model", null);
-    if (!usable(m) || m.state !== "live" || !(m.picks >= START_AT) || !current(m)) return null;
+    if (!usable(m) || m.state === "resting" || !current(m)) return null;
     return {
       ask: (want) => Math.min(MAX_ASK, Math.max(want + 2, want * 2)),
       choose: (pool, want, already) => {
@@ -610,7 +634,7 @@ async function refresh(env, kit, opts = {}) {
     picks: res.picks, passes: res.passes, base: [round3(res.counts.P), round3(res.counts.N)], feat,
     eval: { days: ev.days, mean: round3(ev.mean), z: round3(ev.z), recent: round3(ev.recent) },
     aud: posts ? audience(posts) : (prev && prev.aud) || null,
-    lately: state === "live" ? lately(res.counts) : "",
+    lately: lately(res.counts),
   };
   // A last look before saving: if she tapped "Forget everything" while this was being worked out, none of it is kept.
   if ((await forgottenAt(env, kit)) > since) return { v: 1, state: "learning", picks: 0, passes: 0 };
@@ -624,21 +648,27 @@ export const routes = {
   // GET /api/scorer: where the scorer stands, in one line for the Nishiii section.
   scorer: async (request, env, parts, kit) => {
     if (request.method !== "GET" || parts.length !== 1) return kit.fail(404, "Not found.");
-    let model = null;
-    try {
-      const [stored, history] = await Promise.all([mustLoad(env, kit, "scorer/model"), kit.loadDoc(env, "history", []).catch(() => null)]);
-      model = usable(stored) ? stored : null;
-      // Gather and count again first if there is no status yet, if it is a while old, or if the record of her
-      // choices is not the one it was built from: a newer choice, or the record erased ("Forget everything").
-      const stale = !model || Date.now() - model.at > REFRESH_MS || (history !== null && lastAt(history) !== (model.seen || 0));
-      if (stale) model = await refresh(env, kit, { light: true, history: history || undefined, model });
-    } catch (e) {
-      if (!model || !current(model)) throw e;       // nothing stored, or only something long out of date: the line is left out
-      console.error("scorer: could not count again; showing the stored status", e);
-    }
-    return kit.json(statusOf(model));
+    return kit.json(statusOf(await upToDate(env, kit)));
   },
 };
+
+// The model as it stands, counted again first when it is old or her record of choices has changed since.
+// Used by GET /api/scorer and by the engine's status (server/engine.js).
+export async function upToDate(env, kit) {
+  let model = null;
+  try {
+    const [stored, history] = await Promise.all([mustLoad(env, kit, "scorer/model"), kit.loadDoc(env, "history", []).catch(() => null)]);
+    model = usable(stored) ? stored : null;
+    // Gather and count again first if there is no status yet, if it is a while old, or if the record of her
+    // choices is not the one it was built from: a newer choice, or the record erased ("Forget everything").
+    const stale = !model || Date.now() - model.at > REFRESH_MS || (history !== null && lastAt(history) !== (model.seen || 0));
+    if (stale) model = await refresh(env, kit, { light: true, history: history || undefined, model });
+  } catch (e) {
+    if (!model || !current(model)) throw e;       // nothing stored, or only something long out of date: the line is left out
+    console.error("scorer: could not count again; showing the stored status", e);
+  }
+  return model;
+}
 
 // Four times a day: gather what she chose, rebuild the counts, test them, and set the status.
 export const jobs = [{ name: "scorer", everyHours: 6, run: (env, kit) => refresh(env, kit) }];

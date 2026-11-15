@@ -18,26 +18,27 @@ tags = lambda items: [i["text"].split()[0] for i in items]
 print("A. a fresh app")
 serve(); tok = login()
 st, s = call("GET", "/api/scorer", token=tok)
-check("status answers", st == 200 and s["state"] == "learning" and s["picks"] == 0 and s["need"] == 50, str(s))
-check("the line reads 0 of 50", s["line"] == "Learning from your picks: 0 of 50.", s["line"])
+check("status answers, with no count to fifty", st == 200 and s["state"] == "learning" and s["picks"] == 0 and "need" not in s and "progress" not in s, str(s))
+check("the line says nothing is learnt yet", s["line"] == "Learning from your picks: none yet.", s["line"])
 check("signed out is refused", call("GET", "/api/scorer")[0] == 401)
 check("other methods are not found", call("POST", "/api/scorer", {}, token=tok)[0] == 404)
 
-# ---------- B. fewer than 50 picks: silent, and the day's quotes are made exactly as before ----------
-print("B. 20 picks with a clear taste: still silent")
+# ---------- B. 20 picks: no gate any more (Nishith's rule): the engine leans on them from the first pick ----------
+print("B. 20 picks with a clear taste: already counted, not yet proven")
 serve(); tok = login()
 put_log(history(20, 1, likes_calm_short, seed=3))
 m = run_job()
 check("20 picks counted", m["picks"] == 20, str(m["picks"]))
 check("not live", m["state"] == "learning")
 s = call("GET", "/api/scorer", token=tok)[1]
-check("the line reads 20 of 50", s["line"] == "Learning from your picks: 20 of 50." and abs(s["progress"] - 0.4) < 1e-9, str(s))
+check("the line says how many so far, with no count to fifty", s["line"].startswith("Learning from your picks: 20 so far") and "of 50" not in s["line"], str(s))
 call("PUT", "/__scorer_pool", pool_calm_short_late())
 st, today = call("GET", "/api/suggestions", token=tok)
 calls = call("GET", "/__scorer_calls")[1]
-check("one request to Claude, for exactly five, with the usual room", calls == [{"want": 5, "count": 5, "maxTokens": 3000}], str(calls))
-check("the five are Claude's first five, in Claude's order", tags(today["items"]) == ["Q1", "Q2", "Q3", "Q4", "Q5"], str(tags(today["items"])))
-check("no wildcard is marked", not any(i.get("wild") for i in today["items"]))
+check("one request to Claude, for ten (nothing else in the pool yet)", calls == [{"want": 10, "count": 10, "maxTokens": 3500}], str(calls))
+early = set(tags([i for i in today["items"] if not i.get("wild")]))
+check("twenty picks already lift the calm, short ones she likes (at least three of four kept)", len(early & {"Q6", "Q7", "Q8", "Q9"}) >= 3, str(tags(today["items"])))
+check("one wildcard, and every quote with its reason", sum(1 for i in today["items"] if i.get("wild")) == 1 and all("why" in i for i in today["items"]))
 
 # ---------- C. 60 picks with a clear taste: live, ranking, wildcard ----------
 print("C. 60 picks with a clear taste: goes live by itself")
@@ -48,19 +49,20 @@ check("60 picks counted", m["picks"] == 60, str(m["picks"]))
 check("live", m["state"] == "live", str(m["eval"]))
 check("it proved itself on her own days", m["eval"]["days"] >= 20 and m["eval"]["mean"] >= 0.56 and m["eval"]["z"] >= 2, str(m["eval"]))
 s = call("GET", "/api/scorer", token=tok)[1]
-check("the line says it is ranking, and what it learned", s["line"].startswith("Now ranking your daily quotes by what you pick. Lately: ") and "calm" in s["line"] and "short" in s["line"], s["line"])
+check("the line says what it learned", s["line"].startswith("Learning from your picks: 60 so far. Lately: ") and "calm" in s["line"] and "short" in s["line"], s["line"])
 print("     line:", s["line"], "| tested days:", m["eval"])
 call("PUT", "/__scorer_pool", pool_calm_short_late())
 st, today = call("GET", "/api/suggestions", token=tok)
 calls = call("GET", "/__scorer_calls")[1]
 got = tags(today["items"])
-check("Claude was asked for ten, with more room", calls == [{"want": 10, "count": 10, "maxTokens": 4500}], str(calls))
+check("Claude was asked for ten", calls == [{"want": 10, "count": 10, "maxTokens": 3500}], str(calls))
 check("five quotes came back", len(got) == 5, str(got))
 kept = tags([i for i in today["items"] if not i.get("wild")])
 check("the four calm, short ones were all kept", set(kept) == {"Q6", "Q7", "Q8", "Q9"}, str(got))
 wild = [i for i in today["items"] if i.get("wild")]
 check("exactly one wildcard", len(wild) == 1, str(got))
-check("shown in Nishiii's order, the wildcard where it stood (not best-scored first, wildcard last)", got == sorted(got, key=lambda t: int(t[1:])), str(got))
+# Shown in a random order (server/engine.js), so her habit of taking the first card can't flatter the ranking.
+# (so no check on the order here)
 check("the wildcard is something different", wild and wild[0]["tone"] != "calm", str(wild))
 stored = doc(f"suggestions/{day_str(0)}")
 check("the stored day list has those five, the wildcard marked", len(stored) == 5 and sum(1 for i in stored if i.get("wild")) == 1)
@@ -71,11 +73,11 @@ check("opening Today again asks nothing more", len(call("GET", "/__scorer_calls"
 call("DELETE", "/__scorer_calls")
 st, asked = call("POST", "/api/asked", {"about": "the sea", "count": 4}, token=tok)
 calls = call("GET", "/__scorer_calls")[1]
-check("an asked-for batch asks Claude for twice as many", st == 200 and calls == [{"want": 8, "count": 8, "maxTokens": 4000}], str(calls))
-check("four quotes come back, one a wildcard", len(asked["items"]) == 4 and sum(1 for i in asked["items"] if i.get("wild")) == 1, str(tags(asked["items"])))
+check("an asked-for batch asks Claude for three more than wanted", st == 200 and calls == [{"want": 7, "count": 7, "maxTokens": 4000}], str(calls))
+check("four quotes come back, ranked by the engine (no wildcard when she asked for something)", len(asked["items"]) == 4 and not any(i.get("wild") for i in asked["items"]) and all("why" in i for i in asked["items"]), str(tags(asked["items"])))
 
 # ---------- D. 60 picks made at random: stays off ----------
-print("D. 60 random picks: stays silent")
+print("D. 60 random picks: never proven")
 off = 0
 for seed in range(1, 9):
     serve(); tok = login()
@@ -84,11 +86,11 @@ for seed in range(1, 9):
     off += m["state"] == "learning"
     if seed == 1:
         s = call("GET", "/api/scorer", token=tok)[1]
-        check("the line says there is no clear pattern", s["line"] == "Still learning from your picks: 60 so far, and no clear pattern yet.", s["line"])
+        check("the line says there is no clear pattern", s["line"] == "Learning from your picks: 60 so far, no clear pattern yet.", s["line"])
         call("PUT", "/__scorer_pool", pool_calm_short_late())
         today = call("GET", "/api/suggestions", token=tok)[1]
-        check("the day's quotes are made the usual way", tags(today["items"]) == ["Q1", "Q2", "Q3", "Q4", "Q5"] and call("GET", "/__scorer_calls")[1][0]["want"] == 5)
-check("random picks leave it off (8 of 8 made-up histories)", off == 8, f"{off} of 8")
+        check("the day's five still come", len(today["items"]) == 5)
+check("random picks are never proven (8 of 8 made-up histories)", off == 8, f"{off} of 8")
 
 # ---------- E. live, then her taste reverses ----------
 print("E. live, then her taste turns around")
@@ -108,13 +110,8 @@ today = call("GET", "/api/suggestions", token=tok)[1]
 got = tags(today["items"])
 kept = set(tags([i for i in today["items"] if not i.get("wild")]))
 NEW, OLD = {"T4", "T5", "T6"}, {"T1", "T2", "T3"}
-if m["state"] == "live":
-    print("     it adapted: still live, now choosing", got, "| tested days:", m["eval"])
-    check("after ninety days of the new taste it ranks by the new one", NEW <= kept, str(got))
-else:
-    print("     it stepped back to learning | tested days:", m["eval"])
-    check("stepped back: the day's quotes are made the usual way", got == ["T1", "T2", "T3", "T4", "T5"], str(got))
-check("it adapted or stepped back (never live on the old taste)", m["state"] == "learning" or NEW <= kept)
+print("     after the turn:", m["state"], "now choosing", got, "| tested days:", m["eval"])
+check("after ninety days of the new taste it ranks by the new one", NEW <= kept, str(got))
 
 # day by day through the change, the way the timed job would see it: how long does it go on ranking by the old taste?
 # (Each step shows it the old days and the first "into" days of the new taste, moved in time so the last one is yesterday.)
@@ -127,8 +124,6 @@ for into in range(1, 46):
     seen = old + [r for r in turned if r["g"] <= day_str(91 - into)]
     put_log([dict(r, g=shift(r["g"], by), t=r["t"] + by * 86400000) for r in seen])
     m = run_job()
-    if m["state"] != "live":
-        ended = f"stepped back on day {into}"; break
     doc(f"suggestions/{day_str(0)}", delete=True)
     call("PUT", "/__scorer_pool", turn)
     kept_now = set(tags([i for i in call("GET", "/api/suggestions", token=tok)[1]["items"] if not i.get("wild")]))
@@ -153,7 +148,7 @@ def stepped_back(days_ago):
 m = stepped_back(0)
 check("just stepped back: the same fine record does not switch it on again", m["state"] == "learning" and m["eval"]["days"] == 0 and m["back"] == now_ms, f"{m['state']} {m['eval']} {m.get('back')}")
 s = call("GET", "/api/scorer", token=tok)[1]
-check("the line says it is still learning", s["line"] == "Still learning from your picks: 90 so far, and no clear pattern yet.", s["line"])
+check("the line says it is still learning", s["line"].startswith("Learning from your picks: 90 so far.") and s["state"] == "learning", s["line"])
 m = stepped_back(10)
 check("ten days later: not enough to go on yet", m["state"] == "learning" and 8 <= m["eval"]["days"] <= 10, f"{m['state']} {m['eval']}")
 m = stepped_back(40)

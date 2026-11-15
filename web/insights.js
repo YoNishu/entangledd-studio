@@ -262,8 +262,18 @@
       el("div", { className: "rank-top" }, el("p", { className: "rank-name", textContent: g.name }), el("p", { className: "rank-val", textContent: compact(g.reach) })),
       el("div", { className: "meter" }, el("i", { style: `width:${Math.max(2, (g.reach / top) * 100)}%` })),
       el("p", { className: "sub", textContent: `${plural(g.posts, "post")}, ${pctText(g.rate)} engagement, about ${compact(g.saves)} saves each.` }))));
-    fill(card, ...head("What works", "Average reach per post for each kind. Pick what to compare."), chips, list,
+    const learnt = el("p", { className: "note", id: "works-engine" });
+    fill(card, ...head("What works", "Average reach per post for each kind. Pick what to compare."), chips, list, learnt,
       el("p", { className: "note", textContent: "Only kinds with at least two posts are shown. With few posts these are hints: one strong reel can tilt a group. Backgrounds, fonts and reel lengths are only known for posts made since Insights was added." }));
+    worksLine(learnt);
+  }
+  // What the engine (server/engine.js) takes from the same numbers, and now leans on when it suggests quotes.
+  function worksLine(node) {
+    getJson("engine").then((e) => {
+      const w = (e && e.works) || [];
+      node.textContent = w.length ? `Nishiii now leans on this when choosing your quotes: ${w.join("; ")}.` : "";
+      node.hidden = !w.length;
+    }).catch(() => { node.hidden = true; });
   }
 
   // ---------- the clearest differences, and what Nishiii would try next ----------

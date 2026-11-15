@@ -1,7 +1,7 @@
 // Agent 4: the scorer's arithmetic on its own (no server): speed, how often chance fools it, how soon a clear
 // taste is recognised, and how long it lags when her taste turns around.
 // Run: node tests/test_a4_model.mjs
-import { learn, judge, decide, choose, START_AT } from "../server/scorer.js";
+import { learn, judge, decide, choose, nextState } from "../server/scorer.js";
 
 const DAY = 24 * 3600 * 1000, IST = 5.5 * 3600 * 1000;
 const fails = [];
@@ -100,11 +100,11 @@ for (const [label, strength, need] of [["clear", 1, 0.97], ["mild", 0.35, 0.5]])
   check(`${label} taste: live by 90 picks in at least ${need * 100}% of histories`, at90 >= N * need, String(at90));
   if (label === "clear") check("clear taste: live at 50 picks in at least 90%", at50 >= N * 0.9, String(at50));
 }
-check("the starting line is 50 picks", START_AT === 50);
+check("no starting line any more (Nishith's rule): proof alone can make it live, at any count", nextState("learning", 12, { days: 25, mean: 0.7, z: 4, recent: 0.7 }) === "live");
 {
   const rows = history(rng(11), 49, 1, calmShort);
   const s = stateAt(rows, 0, "learning");
-  check("49 picks, however clear: not live", s.res.picks === 49 && s.state === "learning", `${s.res.picks} ${s.state}`);
+  check("49 picks, clear: no gate any more, proof alone makes it live (Nishith's rule)", s.res.picks === 49 && s.state === "live", `${s.res.picks} ${s.state}`);
 }
 
 // ---------- her taste turns around ----------

@@ -682,8 +682,9 @@ details.lovenotes-edit .list li { background: var(--ink); }
 /* ---- scorer: status in the Nishiii section ---- */
 #scorer-slot { margin: 10px 0 4px; }
 #scorer-slot .note { margin: 0 0 6px; }
-.scorer-bar { height: 3px; border-radius: 2px; background: var(--swell); overflow: hidden; }
-.scorer-bar > span { display: block; height: 100%; background: var(--glass); }
+#scorer-slot .note.engine-src { font-size: 12px; opacity: 0.85; }
+/* Why a quote was suggested (server/engine.js): one quiet line on the card. */
+.card .why { margin: 2px 0 0; color: var(--mist); font-size: 12px; font-style: italic; }
 
 
 

@@ -27,7 +27,8 @@ import * as upkeep from "./upkeep.js";
 import * as claudeuse from "./claudeuse.js";
 import * as findlines from "./findlines.js";      // real lines from books, films and series, found without a paid search
 import * as verify from "./verify.js";            // quotes and titles looked up on the web: who said it, which work it is
-const SECTIONS = [health, scorer, lovenotes, upkeep];
+import * as engine from "./engine.js";            // the pool of quotes from every source, and one score for all of them
+const SECTIONS = [health, scorer, lovenotes, upkeep, engine];
 
 // The daily reminder to post is a section too (its routes are under /api/reminders); it also has a few
 // lines of its own at the top of scheduled(), near the end of this file.
@@ -603,27 +604,23 @@ function shuffle(a) {
   return a;
 }
 
+// The day's five: a pool of candidates from every source (her own lines, real lines found for her works, lines
+// found on the web beyond her list, the real quotes behind what does well on the pages she follows, and Nishiii
+// from memory), scored by the engine (server/engine.js), each with a short reason. A source with nothing to give,
+// or Nishiii unavailable, does not stop the day while the other sources have enough.
 async function generateSuggestions(env, count) {
   const date = todayIST();
-  const [lib, history, day, taste, insp, ranker] = await Promise.all([
+  const [lib, history, day, tasteDoc, insp, posts] = await Promise.all([
     loadDoc(env, "library", emptyLibrary()), loadDoc(env, "history", []), loadDoc(env, `suggestions/${date}`, []),
-    tasteBrief(env), loadDoc(env, "inspirations", []), scorer.ranker(env, kit),
+    loadDoc(env, "taste", emptyTaste()), loadDoc(env, "inspirations", []), loadDoc(env, "posts", []),
   ]);
+  const taste = briefOf(tasteDoc);
+  const eng = await engine.start(env, kit, { lib, history, day, tasteDoc, insp, posts });
   const seen = new Set([...history, ...day].map((x) => norm(x.text)));
-  const fresh = [];
-
-  // Her own quotes go in word for word, chosen here rather than by Claude.
-  const own = shuffle((lib.quotes || []).filter((q) => !seen.has(norm(q.text)))).slice(0, 1);
-  for (const q of own) {
-    fresh.push({ text: q.text, author: q.author || "", source: { type: "own", title: q.from || "" }, theme: "", tone: "", verify: false });
-    seen.add(norm(q.text));
-  }
-
-  const want = count - fresh.length;
+  const pool = eng.gather(seen);
+  const want = count;
   if (want > 0) {
-    // Once the scorer is live (see scorer.js), Nishiii is asked for more quotes than needed, so there is
-    // something to choose from. Until then "ranker" is empty and everything here is as it always was.
-    const ask = ranker ? ranker.ask(want) : want;
+    const ask = pool.length >= 15 ? 5 : pool.length >= 6 ? 8 : 10;      // Nishiii from memory: fewer when the other sources offer plenty
     const brief = {
       count: ask,
       books: (lib.books || []).map((b) => ({ title: b.title, author: b.author })),
@@ -631,29 +628,33 @@ async function generateSuggestions(env, count) {
       series: (lib.screen || []).filter((x) => x.kind === "series").map((x) => x.title),
       picked: history.filter((h) => h.action === "used").slice(-30).map((h) => ({ text: h.text, theme: h.theme, tone: h.tone })),
       skipped: history.filter((h) => h.action === "rejected").slice(-30).map((h) => ({ text: h.text, theme: h.theme, tone: h.tone })),
-      avoid: [...history, ...day].slice(-120).map((x) => x.text),
+      avoid: [...history, ...day, ...pool].slice(-120).map((x) => x.text),
       // What Nishiii has learned about her taste over time, and lines she loved on other pages.
       // Those lines show the kind of thing she likes; they belong to their creators and are not to be suggested themselves.
       taste: taste || undefined,
       lovedElsewhere: shuffle(insp.flatMap((i) => [i.quote, ...(i.top || []).map((t) => t.quote)]).filter(Boolean)).slice(0, 15),
     };
-    // Real lines found earlier for her works (see findlines.js): Nishiii may suggest these word for word.
-    const foundLines = findlines.forBrief(kit, lib, seen);
-    if (foundLines.length) brief.foundLines = foundLines;
-    const answer = parseJson(await claude(env, {
-      system: SUGGEST_SYSTEM, maxTokens: ranker ? 4500 : 3000,
-      messages: [{ role: "user", content: `Suggest ${ask} quotes. Reader details as JSON:\n${JSON.stringify(brief)}` }],
-    }));
-    const pool = [];
-    for (const s of Array.isArray(answer) ? answer : []) {
-      const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
-      if (!text || seen.has(norm(text))) continue;
-      pool.push(findlines.stamp(kit, lib, cleanSuggestion(s, text)));
-      seen.add(norm(text));
-      if (pool.length >= ask) break;
+    try {
+      const answer = parseJson(await claude(env, {
+        system: SUGGEST_SYSTEM, maxTokens: 3500,
+        messages: [{ role: "user", content: `Suggest ${ask} quotes. Reader details as JSON:\n${JSON.stringify(brief)}` }],
+      }));
+      let n = 0;
+      for (const s of Array.isArray(answer) ? answer : []) {
+        const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
+        if (!text || seen.has(norm(text))) continue;
+        const item = findlines.stamp(kit, lib, cleanSuggestion(s, text));
+        pool.push({ ...item, src: item.found ? "found" : "memory" });
+        seen.add(norm(text));
+        if (++n >= ask) break;
+      }
+    } catch (e) {
+      // Nishiii is resting or unreachable: the other sources carry the day if they have enough.
+      if (pool.length < count) throw e;
+      console.error("suggestions: Nishiii from memory is unavailable today", e && e.message);
     }
-    fresh.push(...(ranker ? ranker.choose(pool, want, fresh) : pool));
   }
+  const fresh = eng.choose(pool, count, []);
   const items = fresh.map((f) => ({ id: crypto.randomUUID(), state: "new", ...f }));
   await saveDoc(env, `suggestions/${date}`, [...day, ...items]);
   return { date, items: [...day, ...items] };
@@ -676,10 +677,14 @@ async function suggestFrom(env, b, already) {
   const date = todayIST();
   const count = Math.min(8, Math.max(1, Number(b.count) || 5));
   const about = oneLine(b.about, 120);
-  const [lib, history, day, taste, insp, ranker] = await Promise.all([
+  const [lib, history, day, tasteDoc, insp] = await Promise.all([
     loadDoc(env, "library", emptyLibrary()), loadDoc(env, "history", []), loadDoc(env, `suggestions/${date}`, []),
-    tasteBrief(env), loadDoc(env, "inspirations", []), scorer.ranker(env, kit),
+    loadDoc(env, "taste", emptyTaste()), loadDoc(env, "inspirations", []),
   ]);
+  const taste = briefOf(tasteDoc);
+  // The same engine as for Today's five ranks whatever is found here (server/engine.js), in the order found.
+  const eng = await engine.start(env, kit, { lib, history, day, tasteDoc, insp });
+  const ranker = { choose: (pool, want, already) => eng.choose(pool, want, already, { wild: false, mix: false }) };
   const ids = new Set((Array.isArray(b.sources) ? b.sources : []).map(String));
   const books = (lib.books || []).filter((x) => ids.has(x.id));
   const screen = (lib.screen || []).filter((x) => ids.has(x.id));
@@ -724,7 +729,7 @@ async function suggestFrom(env, b, already) {
   const more = short.length + pages.length > 0 || !!about && !withText.length && !named.length;
   if (want > 0 && fromWorks && (more || !fresh.length)) {
     const fallback = !more ? withText : [];            // the text gave nothing usable: fall back to memory for those books
-    const ask = ranker ? ranker.ask(want) : want;      // more than needed once the scorer is live, as for Today's five
+    const ask = Math.min(10, want + 3);                // a few more than needed, so the engine has a choice
     const brief = {
       count: ask,
       only: short.length || fallback.length ? [...short, ...fallback.map((x) => ({ ...x, type: "book" }))].map((x) => (x.type === "book" ? { type: "book", title: x.title, author: x.author } : { type: x.type, title: x.title })) : undefined,
@@ -736,7 +741,7 @@ async function suggestFrom(env, b, already) {
     };
     // Works that still lack lines: Anthropic's paid search if it is switched on (see claudeSearching), else memory.
     const works = [...short, ...fallback].map((x) => x.title);
-    const request = { maxTokens: ranker ? 4000 : 2500, messages: [{ role: "user", content: `Suggest ${ask} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] };
+    const request = { maxTokens: 4000, messages: [{ role: "user", content: `Suggest ${ask} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] };
     let answer;
     if (works.length && env.CLAUDE_WEB_SEARCH === "on") {
       const got = await claudeSearching(env, { ...request, system: SUGGEST_SYSTEM + SEARCH_RULES, uses: Math.min(6, 2 + works.length) });
@@ -746,15 +751,17 @@ async function suggestFrom(env, b, already) {
       if (works.length) searchedFor = { works, paid: false };
       answer = parseJson(await claude(env, { ...request, system: SUGGEST_SYSTEM }));
     }
-    const pool = [];
+    // On a subject alone: real lines on it already found on the web (the engine's bank) join what Nishiii offers.
+    const pool = about && !named.length && !withText.length && !pages.length ? eng.onSubject(about, seen, 4) : [];
+    let n = 0;
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
       if (!text || seen.has(norm(text))) continue;
       pool.push(findlines.stamp(kit, lib, cleanSuggestion(s, text)));
       seen.add(norm(text));
-      if (pool.length >= ask) break;
+      if (++n >= ask) break;
     }
-    fresh.push(...(ranker ? ranker.choose(pool, want, fresh) : pool));
+    fresh.push(...ranker.choose(pool, want, fresh));
   }
   if (!fresh.length) {
     if (searchedFor) {
@@ -765,7 +772,7 @@ async function suggestFrom(env, b, already) {
     throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
   }
   const now = Date.now();
-  return fresh.map((f) => ({ id: crypto.randomUUID(), state: "new", askedFor: label, askedAt: now, ...f }));
+  return eng.explain(fresh).map((f) => ({ id: crypto.randomUUID(), state: "new", askedFor: label, askedAt: now, ...f }));
 }
 
 // Marks each quote with what really happened to it: "posted", or "deleted" if the post made from it
@@ -1428,15 +1435,17 @@ async function postCarousel(request, env, ig, posts, b) {
 const CAPTION_SYSTEM = `You write Instagram captions for a quiet, reflective quotes page.
 Reply with a JSON object only: {"caption": "...", "hashtags": ["#...", "#..."]}
 - "caption": one or two short lines that sit beside the quote without repeating it. Calm, plain, lowercase is fine. No emojis unless they add something. If the quote has a named author, end with a credit line such as "— Seneca".
-- "hashtags": 8 to 12, mixing a few broad ones with more specific ones that fit this quote. No spaces inside a tag.`;
+- "hashtags": 8 to 12, mixing a few broad ones with more specific ones that fit this quote. No spaces inside a tag.
+- "didWell", when given, are hashtags from her own earlier posts that did better than her usual post; include the ones that fit this quote.`;
 
 async function writeCaption(request, env) {
   const b = await body(request);
   const quote = lines(b.quote, 600);
   if (!quote) return fail(400, "There is no quote to write a caption for.");
-  const taste = await tasteBrief(env);
+  const [taste, posts] = await Promise.all([tasteBrief(env), loadDoc(env, "posts", [])]);
+  const didWell = engine.hashtagsThatWork(posts);         // her own hashtags that did well, by the engine's measure
   const answer = parseJson(await claude(env, { system: CAPTION_SYSTEM, maxTokens: 700,
-    messages: [{ role: "user", content: `Quote:\n${quote}\nAuthor: ${oneLine(b.author, 80) || "none"}${taste ? `\n\nHer taste, for the caption's voice (written to her, so "you" in it means her):\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : ""}` }] }));
+    messages: [{ role: "user", content: `Quote:\n${quote}\nAuthor: ${oneLine(b.author, 80) || "none"}${taste ? `\n\nHer taste, for the caption's voice (written to her, so "you" in it means her):\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : ""}${didWell.length ? `\n\ndidWell: ${JSON.stringify(didWell)}` : ""}` }] }));
   const tags = (Array.isArray(answer.hashtags) ? answer.hashtags : []).map((t) => "#" + String(t).replace(/[^\p{L}\p{N}_]/gu, "")).filter((t) => t.length > 1).slice(0, 14);
   return json({ caption: lines(answer.caption, 600), hashtags: tags });
 }
@@ -1566,10 +1575,12 @@ function weekStats(posts, now) {
 const REPORT_SYSTEM = `You write a short weekly note to Dhruuu about her Instagram quotes page, signed off by nobody. You get this week's numbers, last week's, her best post and any patterns.
 ${TO_HER}
 Write two or three short, plain sentences: what went well ("your posts reached…"), and one concrete thing to try next week. Warm, no hype, no emojis, no markdown.
-Use only the numbers given. If there are fewer than three posts this week, say it is too early to read much into the numbers.\nNever state facts about how Instagram works (its ranking, features, limits, or which hashtags are banned) from memory: they change often and you cannot check them here. Base every suggestion on the numbers given.`;
+Use only the numbers given. If there are fewer than three posts this week, say it is too early to read much into the numbers.\nNever state facts about how Instagram works (its ranking, features, limits, or which hashtags are banned) from memory: they change often and you cannot check them here. Base every suggestion on the numbers given.
+"learnt", when given, is what the app's scoring has found works for her over all her posts; the thing to try may build on it.`;
 
 async function report(env) {
-  const stats = weekStats(await loadDoc(env, "posts", []), Date.now());
+  const [posts, insp, tagsDoc] = await Promise.all([loadDoc(env, "posts", []), loadDoc(env, "inspirations", []), loadDoc(env, "engine/tags", null)]);
+  const stats = weekStats(posts, Date.now());
   let note = "";
   if (env.ANTHROPIC_API_KEY && stats.thisWeek.posts > 0) {
     // One note a day at most, rewritten only if the numbers behind it changed.
@@ -1579,7 +1590,8 @@ async function report(env) {
     else {
       try {
         const numbers = JSON.stringify({ thisWeek: stats.thisWeek, lastWeek: stats.lastWeek,
-          bestPost: stats.best && { quote: stats.best.quote, ...stats.best.metrics }, bestTimes: stats.times, themes: stats.themes });
+          bestPost: stats.best && { quote: stats.best.quote, ...stats.best.metrics }, bestTimes: stats.times, themes: stats.themes,
+          learnt: engine.works(posts, insp, tagsDoc).phrases });
         const write = async (extra) => lines(await claude(env, { system: REPORT_SYSTEM, maxTokens: 300, messages: [{ role: "user", content: numbers + extra }] }), 600);
         note = await write("");
         if (aboutHer(note)) note = await write(SAY_IT_TO_HER);
@@ -1804,17 +1816,19 @@ const ADVICE_SYSTEM = `You are Nishiii. You read the numbers for Dhruuu's Instag
 ${TO_HER}
 You get totals, the comparisons that have enough posts behind them, the best times so far, and how regularly she posts.
 Reply with a JSON array of exactly three short strings. Each is one concrete thing to try in the coming week, tied to a number you were given ("Your evening posts reach about 4,600 each, so…"). Plain and warm, no hype, no emojis, no markdown.
-Use only the numbers given. If there are fewer than six posts with numbers, say in the first string that it is early and these are hints, not patterns.\nNever state facts about how Instagram works (its ranking, features, limits, or which hashtags are banned) from memory: they change often and you cannot check them here. Base every suggestion on the numbers given.`;
+Use only the numbers given. If there are fewer than six posts with numbers, say in the first string that it is early and these are hints, not patterns.\nNever state facts about how Instagram works (its ranking, features, limits, or which hashtags are banned) from memory: they change often and you cannot check them here. Base every suggestion on the numbers given.
+"learnt", when given, is what the app's scoring has found works for her (saves and shares per person reached on her posts, and what does well on the pages she follows); build on it where the numbers agree.`;
 
 async function insightAdvice(env, range) {
-  const posts = await loadDoc(env, "posts", []);
+  const [posts, insp, tagsDoc] = await Promise.all([loadDoc(env, "posts", []), loadDoc(env, "inspirations", []), loadDoc(env, "engine/tags", null)]);
   const ins = buildInsights(posts, range, Date.now());
   if (!env.ANTHROPIC_API_KEY || ins.measured < 3) return { advice: [] };
   const stamp = `v1:${todayIST()}:${range}:${ins.totals.posts}:${ins.totals.reach}`;
   const saved = await loadDoc(env, `insightcache/advice-${range}`, {});
   if (saved.stamp === stamp) return { advice: saved.advice };
   const given = JSON.stringify({ range: range === "all" ? "all time" : `last ${range} days`, totals: ins.totals, before: ins.before, postsWithNumbers: ins.measured,
-    comparisons: ins.dimensions.map((d) => ({ what: d.name, groups: d.groups.slice(0, 5) })), bestTimesOfDay: ins.times.byPart, bestDays: ins.times.byDay, rhythm: ins.rhythm });
+    comparisons: ins.dimensions.map((d) => ({ what: d.name, groups: d.groups.slice(0, 5) })), bestTimesOfDay: ins.times.byPart, bestDays: ins.times.byDay, rhythm: ins.rhythm,
+    learnt: engine.works(posts, insp, tagsDoc).phrases });
   const write = async (extra) => {
     const a = parseJson(await claude(env, { system: ADVICE_SYSTEM, maxTokens: 500, messages: [{ role: "user", content: given + extra }] }));
     return (Array.isArray(a) ? a : []).map((x) => lines(x, 300)).filter(Boolean).slice(0, 3);
@@ -2241,8 +2255,10 @@ async function buildTaste(env) {
 }
 // The short form handed to Claude whenever it suggests, rewords or captions.
 async function tasteBrief(env) {
-  const t = await loadDoc(env, "taste", emptyTaste());
-  if (!t.profile && !(t.notes || []).length) return null;
+  return briefOf(await loadDoc(env, "taste", emptyTaste()));
+}
+function briefOf(t) {
+  if (!t || (!t.profile && !(t.notes || []).length)) return null;
   const p = t.profile || {};
   return { summary: p.summary || "", loves: p.loves || [], avoids: p.avoids || [], voice: p.voice || [], performs: p.performs || [], herNotes: (t.notes || []).map((n) => n.text) };
 }
@@ -2270,7 +2286,7 @@ async function tasteRoutes(request, env, parts) {
     const scope = new URL(request.url).searchParams.get("scope");
     if (scope === "all") {
       // The scorer's own record of picks and passes goes too, so its count starts again from nothing.
-      await Promise.all([env.MEDIA.delete(["data/taste.json", "data/history.json", "data/rewords.json"]), scorer.forget(env, kit)]);
+      await Promise.all([env.MEDIA.delete(["data/taste.json", "data/history.json", "data/rewords.json"]), scorer.forget(env, kit), engine.forget(env)]);
       return out(emptyTaste());
     }
     if (scope !== "profile") return fail(400, "Say what to forget.");
@@ -2580,9 +2596,10 @@ async function runChatTool(env, name, input, actions) {
     return { saved: true };
   }
   if (name === "write_caption") {
-    const taste = await tasteBrief(env);
+    const [taste, posts] = await Promise.all([tasteBrief(env), loadDoc(env, "posts", [])]);
+    const didWell = engine.hashtagsThatWork(posts);
     const a = parseJson(await claude(env, { system: CAPTION_SYSTEM, maxTokens: 700, messages: [{ role: "user",
-      content: `Quote:\n${lines(input.quote, 600)}\nAuthor: ${oneLine(input.author, 80) || "none"}${taste ? `\n\nHer taste (written to her, so "you" in it means her):\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : ""}` }] }));
+      content: `Quote:\n${lines(input.quote, 600)}\nAuthor: ${oneLine(input.author, 80) || "none"}${taste ? `\n\nHer taste (written to her, so "you" in it means her):\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : ""}${didWell.length ? `\n\ndidWell: ${JSON.stringify(didWell)}` : ""}` }] }));
     return { caption: a.caption, hashtags: a.hashtags };
   }
   return { error: "Unknown tool." };

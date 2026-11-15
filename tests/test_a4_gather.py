@@ -54,7 +54,7 @@ st, _ = call("DELETE", "/api/taste?scope=all", token=tok)
 check("forget everything answers", st == 200, str(st))
 check("the model is gone", doc("scorer/model") is None or doc("scorer/model") == {} or "v" not in (doc("scorer/model") or {}), str(doc("scorer/model"))[:80])
 s = call("GET", "/api/scorer", token=tok)[1]
-check("the count starts again from nothing", s["picks"] == 0 and s["line"] == "Learning from your picks: 0 of 50.", str(s))
+check("the count starts again from nothing", s["picks"] == 0 and s["line"] == "Learning from your picks: none yet.", str(s))
 m = run_job()
 check("old lists are not gathered again after forgetting", m["picks"] == 0 and len(doc("scorer/log")["rows"]) == 0, f"{m['picks']} {len(doc('scorer/log')['rows'])}")
 
@@ -86,7 +86,7 @@ st, t = call("DELETE", "/api/taste?scope=all", token=tok)
 check("after forgetting there is nothing left to forget", st == 200 and t["canForget"]["all"] is False, f"{st} {t.get('canForget')}")
 check("the moment of forgetting is kept, apart from the record", (doc("scorer/forgot") or {}).get("at", 0) > 0, str(doc("scorer/forgot")))
 s = call("GET", "/api/scorer", token=tok)[1]
-check("the line reads 0 of 50", s["line"] == "Learning from your picks: 0 of 50.", s["line"])
+check("the line says none yet", s["line"] == "Learning from your picks: none yet.", s["line"])
 m = run_job()
 check("and the next timed run finds nothing from before", m["picks"] == 0 and m["passes"] == 0 and len(doc("scorer/log")["rows"]) == 0, f"{m['picks']} {m['passes']}")
 # a record written back after the forgetting (a count that was under way) is not believed
@@ -97,5 +97,5 @@ check("a record older than the forgetting is void", m["picks"] == 0 and len(doc(
 st, today = call("GET", "/api/suggestions", token=tok)
 call("POST", f"/api/suggestions/{today['items'][0]['id']}/feedback", {"action": "used"}, token=tok)
 s = call("GET", "/api/scorer", token=tok)[1]
-check("a pick made after forgetting is counted", s["picks"] == 1 and s["line"] == "Learning from your picks: 1 of 50.", str(s))
+check("a pick made after forgetting is counted", s["picks"] == 1 and s["line"].startswith("Learning from your picks: 1 so far"), str(s))
 finish("scorer gathers, forgets, and survives broken documents")

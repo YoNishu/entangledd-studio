@@ -1,7 +1,8 @@
-// Agent 4: until the scorer is live, the day's quotes and asked-for quotes are made exactly as they were before
-// the scorer existed. The worker as it was at the starting commit (d576d40, unpacked into $STUDIO_OUT/base by tests/prepare.sh) and the worker
-// as it is now are given the same storage and the same pretend Claude; every request to Claude and every storage
-// call is written down and compared. Also counts the outside calls of the whole daily pass.
+// Agent 4, updated by Agent 9: there is no longer a time "before it is live" (Nishith's rule: the engine ranks from the
+// first day), so this no longer compares with the worker as it was at d576d40. It now checks that a scorer model in any
+// state (none, learning, old, damaged, of the wrong shape, unreadable) never stops the day: five quotes, one request to
+// Claude for them, a reason on each, the picks part simply left out when the model can't be believed; and it counts the
+// outside calls of the daily pass and of an asked-for batch. The older worker is still loaded, for the call counts.
 // Run: bash tests/prepare.sh && node tests/test_a4_same.mjs
 import { Bucket, checker, suggestion, DAY, dateOf } from "./a4kit.mjs";
 const OUT = process.env.STUDIO_OUT || "/tmp/studio-tests";       // where tests/prepare.sh puts the code as it once was
@@ -62,57 +63,45 @@ const own = (list) => list.filter((c) => c !== "get data/healthnotes.json" && !c
 
 console.log("1. The daily pass (insights, taste, the day's five) with no scorer record at all");
 const was = await daily(base, world()), now = await daily(head, world());
-console.log(`     before the scorer: ${was.claude.length} requests to Claude, ${was.storage.length} storage calls; now: ${now.claude.length} and ${now.storage.length}`);
-check("the same requests go to Claude, word for word (prompt, count asked for, room for the answer)", same(was.claude, now.claude) && was.claude.length === 2);
-check("the same five quotes are stored", same(was.day, now.day) && now.day.length === 5, `${now.day.length} stored`);
-check("no quote carries the wildcard mark", now.day.every((q) => !("wild" in q)));
-check("storage: the one extra call is a single read of the scorer's model", !!without(own(now.storage), READ) && same(sorted(without(own(now.storage), READ)), sorted(was.storage)), `${now.storage.length} against ${was.storage.length}`);
+const quoteAsks = (r) => r.claude.filter((c) => /^Suggest \d+ quotes/.test(c.body.messages[0].content));
+console.log(`     the old worker: ${was.claude.length} requests to Claude, ${was.storage.length} storage calls; now: ${now.claude.length} and ${now.storage.length}`);
+check("one request to Claude for the day's quotes, as before", quoteAsks(now).length === 1 && now.claude.length === was.claude.length);
+check("five quotes are stored, one marked as the wildcard, each with its reason", now.day.length === 5 && now.day.filter((q) => q.wild).length === 1 && now.day.every((q) => typeof q.why === "string"), `${now.day.length} stored`);
+check("her own line is among them", now.day.filter((q) => q.source.type === "own").length === 1);
 check("the whole daily pass stays well inside fifty outside calls", now.storage.length + now.claude.length <= 40, `${now.storage.length + now.claude.length}`);
+check("the engine's extra reads are side by side, a handful", own(now.storage).length - was.storage.length <= 6, `${own(now.storage).length} against ${was.storage.length}`);
 
-console.log("2. The same with a scorer that is still learning, or whose model cannot be believed");
+console.log("2. A scorer model in any state never stops the day");
 const learning = { v: 1, at: NOW, seen: 0, state: "learning", since: NOW, back: 0, picks: 49, passes: 150, base: [40, 120], feat: { tone: { calm: [30, 10] } }, eval: { days: 30, mean: 0.7, z: 5, recent: 0.7 }, aud: null, lately: "" };
 const cases = [
-  ["49 picks, learning", { "scorer/model": learning }],
-  ["a model that says live with only 49 picks", { "scorer/model": { ...learning, state: "live" } }],
-  ["a live model that nobody has rebuilt for four days", { "scorer/model": { ...learning, state: "live", picks: 80, at: NOW - 4 * DAY } }],
-  ["a model damaged beyond reading", { "scorer/model": "{ not json" }],
-  ["a model of the wrong shape", { "scorer/model": { v: 1, state: "live", picks: 80, base: "oops", feat: null, at: NOW } }],
-  ["a model that is not an object", { "scorer/model": [1, 2, 3] }],
+  ["49 picks, learning", { "scorer/model": learning }, true],
+  ["a model that says live", { "scorer/model": { ...learning, state: "live" } }, true],
+  ["a model nobody has rebuilt for four days", { "scorer/model": { ...learning, state: "live", picks: 80, at: NOW - 4 * DAY } }, true],
+  ["a model that tests clearly worse than chance", { "scorer/model": { ...learning, state: "resting", eval: { days: 30, mean: 0.3, z: -4, recent: 0.3 } } }, false],
+  ["a model damaged beyond reading", { "scorer/model": "{ not json" }, false],
+  ["a model of the wrong shape", { "scorer/model": { v: 1, state: "live", picks: 80, base: "oops", feat: null, at: NOW } }, false],
+  ["a model that is not an object", { "scorer/model": [1, 2, 3] }, false],
 ];
-for (const [name, extra] of cases) {
+for (const [name, extra, counts] of cases) {
   const got = await daily(head, world(extra));
-  check(`${name}: same requests to Claude, same five quotes`, same(got.claude, was.claude) && same(got.day, was.day), `${got.claude.length} requests, ${got.day.length} quotes`);
+  const picksSaid = got.day.some((q) => /You often pick/.test(q.why || ""));
+  check(`${name}: five quotes, one request for them`, got.day.length === 5 && quoteAsks(got).length === 1, `${quoteAsks(got).length} requests, ${got.day.length} quotes`);
+  if (!counts) check(`${name}: its picks are left out of the reasons`, !picksSaid, got.day.map((q) => q.why));
 }
 {
   const env = world({ "scorer/model": { ...learning, state: "live", picks: 80 } });
   env.MEDIA.fail("get", "scorer/model", 5);
   const got = await daily(head, env);
-  check("a model that cannot be loaded just now: same requests, same five quotes", same(got.claude, was.claude) && same(got.day, was.day), `${got.day.length} quotes`);
+  check("a model that cannot be loaded just now: still five", got.day.length === 5, `${got.day.length} quotes`);
 }
-
 {
-  const got = await daily(head, world({ "scorer/model": { ...learning, state: "live", picks: 80, at: NOW - 2 * DAY } }));
-  check("(the check above is not empty: the same model rebuilt two days ago does rank)", got.day.filter((q) => q.wild).length === 1 && !same(got.claude, was.claude));
+  const got = await daily(head, world({ "scorer/model": { ...learning, state: "live", picks: 120, passes: 400, base: [120, 400], feat: { tone: { calm: [110, 40], wry: [10, 360] } } } }));
+  check("(not empty: a model with clear evidence for calm lines is named in the reasons)", got.day.some((q) => /You often pick calm lines/.test(q.why || "")), got.day.map((q) => [q.tone, q.why]));
 }
 
 console.log("3. An asked-for batch of five");
-const askedWas = await ask(base, world()), askedNow = await ask(head, world());
-check("it answers", askedWas.status === 200 && askedNow.status === 200, `${askedWas.status} ${askedNow.status}`);
-check("the same request goes to Claude, word for word", same(askedWas.claude, askedNow.claude) && askedNow.claude.length === 1);
-check("the same quotes come back", same(askedWas.items, askedNow.items) && askedNow.items.length === 5, `${askedNow.items.length}`);
-check("storage: the one extra call is a single read of the scorer's model", !!without(own(askedNow.storage), READ) && same(sorted(without(own(askedNow.storage), READ)), sorted(askedWas.storage)), `${askedNow.storage.length} against ${askedWas.storage.length}`);
-
-console.log("4. Once live: what changes, and what it costs");
-{
-  const live = { ...learning, state: "live", picks: 60 };
-  const got = await daily(head, world({ "scorer/model": live }));
-  const asked = got.claude.find((c) => /^Suggest \d+ quotes/.test(c.body.messages[0].content)), silent = was.claude.find((c) => /^Suggest \d+ quotes/.test(c.body.messages[0].content));
-  console.log(`     live: "${asked.body.messages[0].content.slice(0, 17)}", room ${asked.body.max_tokens}; silent: "${silent.body.messages[0].content.slice(0, 17)}", room ${silent.body.max_tokens}`);
-  check("still one request for the day's quotes, no extra one", got.claude.length === was.claude.length);
-  check("it asks for twice as many (8 for the 4 places beside her own line), with more room", /^Suggest 8 quotes/.test(asked.body.messages[0].content) && asked.body.max_tokens === 4500 && JSON.parse(asked.body.messages[0].content.split("as JSON:\n")[1]).count === 8);
-  check("nothing else in the request changes", same({ ...silent.body, max_tokens: 0, messages: 0 }, { ...asked.body, max_tokens: 0, messages: 0 }));
-  check("five quotes are stored, one marked as the wildcard", got.day.length === 5 && got.day.filter((q) => q.wild).length === 1, `${got.day.length}, ${got.day.filter((q) => q.wild).length} wild`);
-  check("her own line still comes first, untouched", got.day[0].source.type === "own" && !got.day[0].wild);
-  check("no more storage calls than while learning", own(got.storage).length === own(now.storage).length, `${own(got.storage).length} against ${own(now.storage).length}`);
-}
-finish("before it is live, quotes are made exactly as before");
+const askedNow = await ask(head, world());
+check("it answers with five, each with its reason", askedNow.status === 200 && askedNow.items.length === 5 && askedNow.items.every((q) => "why" in q), `${askedNow.status} ${askedNow.items.length}`);
+check("one request to Claude", askedNow.claude.length === 1);
+check("and stays well inside fifty outside calls", askedNow.storage.length + askedNow.claude.length <= 30, `${askedNow.storage.length}`);
+finish("a scorer model in any state never stops the day");

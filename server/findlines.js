@@ -357,7 +357,8 @@ function webLines(kit, said, read, behind, have) {
     const named = [q.page, q.also].map((u) => kit.foundAt(u)).filter((u) => u && read.some((r) => hostOf(u) === r.site || hostOf(u).endsWith("." + r.site)));
     if (!pages.length && !named.length) continue;
     const sites = new Set([...pages.map((p) => p.site), ...named.map(hostOf)]);
-    lines.push({ text, by: kit.oneLine(q.by, 80), url: named[0] || pages[0].uri, site: named[0] ? hostOf(named[0]) : pages[0].site, verify: sites.size < 2, theme: "", tone: "" });
+    lines.push({ text, by: kit.oneLine(q.by, 80), url: named[0] || pages[0].uri, site: named[0] ? hostOf(named[0]) : pages[0].site, verify: sites.size < 2, theme: "", tone: "",
+      ...(q.work ? { work: kit.oneLine(q.work, 120), type: ["book", "film", "series"].includes(q.type) ? q.type : "classic" } : {}) });
     have.add(n);
   }
   return lines;
@@ -418,8 +419,8 @@ export function geminiSearch(env, kit, state, prompt, ms = 20000) {
       return { said, read: read.filter((r) => r.uri && r.site), behind };
     });
 }
-async function fromGemini(env, kit, work, want, have, state) {
-  const got = await geminiSearch(env, kit, state, question(work, want));
+async function fromGemini(env, kit, work, want, have, state, text = question(work, want)) {
+  const got = await geminiSearch(env, kit, state, text);
   return got ? webLines(kit, got.said, got.read, got.behind, have) : [];
 }
 // OpenAI with its web search tool (the Responses API). OPENAI_MODEL can replace the list, as for Gemini.
@@ -440,8 +441,8 @@ export function openaiSearch(env, kit, state, prompt, ms = 25000) {
       return { said, read: [...cited, ...opened].filter((r) => r.uri && r.site), behind };
     });
 }
-async function fromOpenAI(env, kit, work, want, have, state) {
-  const got = await openaiSearch(env, kit, state, question(work, want));
+async function fromOpenAI(env, kit, work, want, have, state, text = question(work, want)) {
+  const got = await openaiSearch(env, kit, state, text);
   return got ? webLines(kit, got.said, got.read, got.behind, have) : [];
 }
 
@@ -482,7 +483,7 @@ async function lookUp(env, kit, work, need, about, taste, state) {
   let resume;
   for (let i = typeof prior.resume === "number" && Date.now() - prior.at < DAY ? prior.resume : 0; i < places.length && lines.length < need; i++) {
     if (places[i].off) continue;
-    if (state.spent + places[i].cost > BUDGET || Date.now() - state.began > state.limit) { resume = i; break; }
+    if (state.spent + places[i].cost > (state.budget || BUDGET) || Date.now() - state.began > state.limit) { resume = i; break; }
     await places[i].look();
   }
   const out = { ...prior, at: Date.now(), added: lines.length, resume, page: where || prior.page || "", lines: [...kept(work), ...lines].slice(-KEEP) };
@@ -551,6 +552,46 @@ export function stamp(kit, lib, item) {
     if (line) return { ...item, ...asQuote(work, line), theme: item.theme || line.theme || "", tone: item.tone || line.tone || "" };
   }
   return item;
+}
+
+// ---------------------------------------------------------------- for the engine (server/engine.js)
+
+// Kept lines not yet suggested, as ready suggestions (each with its work, speaker and page), in no set order.
+export function keptPool(kit, lib, seen, max = 14) {
+  const all = [];
+  for (const work of typed(lib)) for (const l of kept(work)) if (!seen.has(kit.norm(l.text))) all.push(asQuote(work, l));
+  return shuffle(all).slice(0, max);
+}
+// The timed look-up: one work of her Library that has never been looked up, or whose lines are due again, is
+// looked up within a smaller budget (a timed run may spend about 20 outside calls). Null when none is due.
+export async function refreshOne(env, kit, lib, { budget = 14, need = 10 } = {}) {
+  const now = Date.now();
+  const works = typed(lib).filter((w) => w.title);
+  const never = works.filter((w) => !w.found || !w.found.at);
+  const resumed = works.filter((w) => w.found && typeof w.found.resume === "number");
+  const old = works.filter((w) => w.found && w.found.at && now - w.found.at > LOOK_AGAIN_DAYS * DAY).sort((a, b) => a.found.at - b.found.at);
+  const work = never[0] || resumed[0] || old[0];
+  if (!work) return null;
+  const state = { spent: 2, rec: null, dirty: false, began: now, limit: (Number(env.LOOKUP_SECONDS) || SECONDS) * 1000, budget };
+  work.found = await lookUp(env, kit, work, need, "", null, state);
+  if (state.dirty) await saveRecord(env, kit, state);
+  await keep(env, kit, lib, [work]);
+  return { title: work.title, added: work.found.added || 0, spent: state.spent };
+}
+// One question to Gemini, and to OpenAI if Gemini gave too few, through the same daily limits and the same checks
+// as the look-ups above (a line is kept only with a page that was really read behind it; sure only when two
+// sites agree). "prompt" must hold nothing about her: only themes, titles, authors or a public line's words.
+// "allow" caps the questions this caller may put to each today ({ gemini, openai }), counted in "used".
+export async function searchWeb(env, kit, prompt, want, have, { allow = { gemini: 0, openai: 0 }, used = {} } = {}) {
+  const state = { spent: 0, rec: null, dirty: false, began: Date.now(), limit: 60000 };
+  let lines = [];
+  for (const [who, key, from] of [["gemini", "GEMINI_API_KEY", fromGemini], ["openai", "OPENAI_API_KEY", fromOpenAI]]) {
+    if (lines.length >= want || !env[key] || (used[who] || 0) >= (allow[who] || 0)) continue;
+    used[who] = (used[who] || 0) + 1;
+    lines = lines.concat(await from(env, kit, null, want - lines.length, have, state, prompt));
+  }
+  if (state.dirty) await saveRecord(env, kit, state);
+  return { lines, spent: state.spent };
 }
 
 // ---------------------------------------------------------------- for the Library
