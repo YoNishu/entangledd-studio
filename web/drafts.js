@@ -77,33 +77,33 @@
     // words: false when the words are still a style's sample; what follows keeps the same background and music.
     return { files, body: { id: d.id, of: d.of, words: !S.isBlank(true), snap: complete(S.snapshot(), files) } };
   }
-  // Saves are sent one after another, each with the composer as it was when it was asked for.
+  // Saves are sent one after another, each with the composer as it was when it was asked for. A file still on its
+  // way does not hold up the saves after it.
   function save() {
     clearTimeout(timer); timer = null; unsaved = false;
     const c = capture();
     if (!c) return chain;
     const waits = [c.files.bg, c.files.music].filter((f) => f && !stored.has(f)).map((f) => storeFile(f));
-    chain = chain.then(() => put(c, waits)).catch(() => {});
+    const sent = chain.then(() => send("drafts/current", "PUT", c.body)).then((r) => { if (r && r.aside) setAsideNow(); return true; },
+      () => { unsaved = true; return false; });                // offline or signed out: the next change tries again
+    chain = sent;
+    if (waits.length) sent.then((ok) => ok && Promise.allSettled(waits)).then((rs) => { if (rs && rs.some((r) => r.status === "fulfilled")) named(c); });
     return chain;
   }
-  async function put(c, waits) {
-    try {
-      const r = await send("drafts/current", "PUT", c.body);
-      if (r && r.aside) setAsideNow();
-    } catch (e) { unsaved = true; return; }                 // offline or signed out: the next change tries again
-    if (!waits.length || !(await Promise.allSettled(waits)).some((r) => r.status === "fulfilled")) return;
-    // A file still on its way is named as soon as it is there: in the next save, or, when she has begun something
-    // else meanwhile, in the draft that was set aside.
-    if (S.draft().id === c.body.id) { timer = setTimeout(save, 200); return; }
+  // A file that has arrived is named at once: in the next save, or, when she has begun something else meanwhile,
+  // in the draft that was set aside (never making it current again).
+  function named(c) {
+    if (S.draft().id === c.body.id) { clearTimeout(timer); timer = setTimeout(save, 200); return; }
     const snap = c.body.snap;
     if (snap.bg) snap.bg.file = (c.files.bg && stored.get(c.files.bg)) || "";
     if (snap.music) snap.music.file = (c.files.music && stored.get(c.files.music)) || "";
-    await send("drafts/current", "PUT", { ...c.body, setAside: true }).catch(() => {});
+    chain = chain.then(() => send("drafts/current", "PUT", { ...c.body, setAside: true })).catch(() => {});
   }
   // Sends what is still waiting to be saved, at once. Called before a new piece of work begins (app.js newDraft)
   // and before another draft or reel is opened here.
   function flush() { return timer || unsaved ? save() : chain; }
-  S.beforeNew = flush;
+  // Only a style's sample words: the new piece keeps the background and music, so there is nothing to send.
+  S.beforeNew = () => (S.isBlank(true) ? chain : flush());
   // Hiding or closing the app: the request is made so that it is still sent as the page goes.
   function flushOnHide() {
     if (!(timer || unsaved)) return;

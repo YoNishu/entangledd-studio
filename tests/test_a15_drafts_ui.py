@@ -5,7 +5,8 @@
 - Posts has two parts, Posted and Drafts; Drafts (with its count) lists quote 1 under "Not finished yet";
 - Continue brings back her words, the photo and the music exactly; quote 2 is now in Drafts;
 - Delete (after asking) removes it; with nothing left, Drafts says so in plain words; the part used last is
-  remembered, and a reel waiting for her tap opens Drafts.
+  remembered, and a reel waiting for her tap opens Drafts;
+- a change made a moment before a new quote, or before closing the app, is not lost.
 Run:  python3 tests/test_a15_drafts_ui.py"""
 import where as _W
 import json
@@ -135,7 +136,18 @@ with sync_playwright() as p:
     check("a reel waiting for her tap opens Drafts", pg.get_attribute("#posts-part-drafts", "aria-pressed") == "true" and pg.is_visible("#list-queue article"), s)
     check("the count includes it", pg.text_content("#drafts-count") == "1", pg.text_content("#drafts-count"))
     pg.screenshot(path=f"{SHOTS}/a15_6_waiting.png", full_page=True)
+
+    # ---- a change made a moment before something new, or before closing the app, still arrives ----
+    pg.click("#nav-create"); pg.evaluate("Studio.openOn('text')")
+    pg.fill("#words", "changed a moment before a new quote")
+    pg.evaluate("Studio.setQuote('a third quote', '')")         # what Today, Library and Nishiii do
+    late = until(lambda: [x for x in (doc("drafts") or []) if x["id"] == d1["id"]], 8000)
+    check("the earlier piece is set aside with the change made just before", late and any(b.get("text") == "changed a moment before a new quote" for b in late[0]["snap"]["blocks"]), late)
+    pg.fill("#words", "the very last words")
     check("no page errors", not errors, errors)
+    pg.close()                                                   # well within the few seconds a save waits
+    last = until(lambda: (lambda x: x if x and any(b.get("text") == "the very last words" for b in x["snap"]["blocks"]) else None)(doc("draft")), 6000)
+    check("closing the app sends what was waiting to be saved", bool(last), doc("draft"))
     br.close()
 
 finish()
