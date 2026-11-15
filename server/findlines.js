@@ -1387,6 +1387,7 @@ async function proofRound(env, kit) {
   rec.at = Date.now();
   await kit.saveDoc(env, "proof", rec);                    // stamped first, so two calls at once do not both run a round
   const state = newState(env);
+  state.keepRefused = [];                                  // (the proving run alone keeps what the judge refused, to be read here)
   const item = w.item || { id: w.id, title: w.title, type: w.type };
   const before = kept(item).length, began = Date.now();
   const entry = { round: w.rounds + 1 };
@@ -1397,6 +1398,8 @@ async function proofRound(env, kit) {
   } catch (e) { entry.failed = tidy(e && e.message, env, 160); }
   try { await closeRecord(env, kit, state); } catch (e) { /* the record of look-ups is not what is being proven */ }
   entry.calls = state.spent; entry.ms = Date.now() - began;
+  entry.refused = state.keepRefused.slice(0, 40);
+  entry.gateRefused = state.refused || {};
   w.item = item; w.rounds += 1; w.log.push(entry);
   w.left = !!(item.found && item.found.more && O.leftToRead(env, withKnown(kit, item), item.found.more));
   if (!w.left && !entry.added) w.done = true;              // nothing more to read and nothing new: its rounds are over

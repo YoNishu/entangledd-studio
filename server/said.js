@@ -206,10 +206,10 @@ export async function judge(env, kit, work, lines, { state = null, ask = true } 
     const out = { ...l };
     delete out.ctx;
     if (is === "said" || is === "narration") kept.push({ ...out, is });
-    else if (is === "about") count(refused, "judged about the work");
+    else if (is === "about") { count(refused, "judged about the work"); if (state && Array.isArray(state.keepRefused)) state.keepRefused.push({ text: String(l.text).slice(0, 200), is }); }
     // Unsure, but the page itself shows it is a line and names one of the work's characters for it: kept, to check.
     else if (is === "unsure" && isCharacter(work, l.by) && isSaid(l, work, l.ctx || {}).proof) kept.push({ ...out, is: "unsure", verify: true });
-    else if (is === "unsure") count(refused, "judged unsure");
+    else if (is === "unsure") { count(refused, "judged unsure"); if (state && Array.isArray(state.keepRefused)) state.keepRefused.push({ text: String(l.text).slice(0, 200), is }); }
     // Not judged (Claude could not be asked, or said nothing of it): only the page's own structure decides.
     else if (isSaid(l, work, l.ctx || {}).proof) kept.push({ ...out, is: "structure" });
     else count(refused, "no proof without nishiii");
