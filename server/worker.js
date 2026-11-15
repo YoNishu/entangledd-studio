@@ -23,7 +23,9 @@
 import * as health from "./health.js";
 import * as scorer from "./scorer.js";
 import * as lovenotes from "./lovenotes.js";
-const SECTIONS = [health, scorer, lovenotes];
+import * as upkeep from "./upkeep.js";
+import * as claudeuse from "./claudeuse.js";
+const SECTIONS = [health, scorer, lovenotes, upkeep];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PART_SIZE = 8 * 1024 * 1024;        // R2 needs equal parts of at least 5 MB
@@ -35,7 +37,7 @@ const RENDER_TIMEOUT_MS = 15 * 60 * 1000;
 const LOGIN_TRIES = 10, LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
-  status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
 });
 const fail = (status, message) => json({ error: message }, status);
 
@@ -83,24 +85,52 @@ const writeJob = (env, job) => env.MEDIA.put(jobKey(job.id, "job.json"), JSON.st
 });
 
 // ---------- sign in ----------
+// The passcode is never compared as it stands. What was typed and the real passcode both go through the same
+// keyed hash first, so the comparison always handles two strings of one length: how long it takes says
+// nothing about the passcode, not even how long it is.
+async function passcodeIs(env, typed) {
+  const tried = String(typed || "");
+  if (!tried || tried.length > 256) return false;
+  const [a, b] = await Promise.all([hmacHex(env.APP_PASSCODE, "passcode|" + tried), hmacHex(env.APP_PASSCODE, "passcode|" + env.APP_PASSCODE)]);
+  return safeEqual(a, b);
+}
+// Wrong tries are counted per address (ten in 15 minutes), and every try is counted across all addresses
+// together, so someone who keeps changing address still gets only so many guesses: after LOGIN_ALL_TRIES in
+// one clock hour, sign-in by passcode rests until that hour is over. Face ID, and anyone already signed in,
+// carry on as usual. Each try leaves a small marker in storage before the passcode is even looked at, and the
+// markers are counted after that, so a burst of guesses sent in the same instant can't slip past the count.
+// (A sign-in that succeeds takes its marker away again; the rest are cleaned up within a day.)
+const LOGIN_ALL_TRIES = 60, LOGIN_ALL_WINDOW_MS = 60 * 60 * 1000;
+const LOGIN_RESTING = "Too many wrong tries. Wait an hour and try again.";
 async function login(request, env) {
   if (!env.APP_PASSCODE) return fail(503, "The passcode hasn't been set up yet.");
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   const key = `auth/${await hmacHex(env.APP_PASSCODE, "ip:" + ip)}.json`;
+  const hour = `auth/try/${Math.floor(Date.now() / LOGIN_ALL_WINDOW_MS)}/`, mark = hour + crypto.randomUUID();
+  const triesThisHour = async () => ((await env.MEDIA.list({ prefix: hour, limit: LOGIN_ALL_TRIES + 1 })).objects || []).length;
   let tries = { n: 0, since: Date.now() };
   if (env.MEDIA) {
-    const obj = await env.MEDIA.get(key);
+    const [obj, all] = await Promise.all([env.MEDIA.get(key), triesThisHour()]);
+    if (all >= LOGIN_ALL_TRIES) return fail(429, LOGIN_RESTING);
     if (obj) tries = await obj.json();
     if (Date.now() - tries.since > LOGIN_WINDOW_MS) tries = { n: 0, since: Date.now() };
     if (tries.n >= LOGIN_TRIES) return fail(429, "Too many wrong tries. Wait 15 minutes and try again.");
   }
   let body;
   try { body = await request.json(); } catch (e) { return fail(400, "Send the passcode as JSON."); }
-  if (!safeEqual(String(body.passcode || ""), env.APP_PASSCODE)) {
+  let all = 0;
+  if (env.MEDIA) {
+    await env.MEDIA.put(mark, "1");
+    all = await triesThisHour();
+    if (all > LOGIN_ALL_TRIES) return fail(429, LOGIN_RESTING);
+  }
+  if (!(await passcodeIs(env, body.passcode))) {
     if (env.MEDIA) await env.MEDIA.put(key, JSON.stringify({ n: tries.n + 1, since: tries.since }));
+    // The guess that uses up the hour's allowance goes into the record of problems, so the health check hears of it.
+    if (all >= LOGIN_ALL_TRIES) await upkeep.noteError(env, kit, "sign-in", { message: "so many wrong passcodes were tried within an hour that sign-in by passcode rested" });
     return fail(401, "That passcode isn't right.");
   }
-  if (env.MEDIA && tries.n) await env.MEDIA.delete(key);
+  if (env.MEDIA) await Promise.all([env.MEDIA.delete(mark), tries.n ? env.MEDIA.delete(key) : null]);
   return json({ token: await sessionToken(env), status: statusOf(env, true) });
 }
 
@@ -335,11 +365,25 @@ async function claude(env, opts) {
 // The full reply, including any tools Claude wants run. Used directly by the chat assistant.
 async function claudeRaw(env, { system, messages, maxTokens = 2000, tools }) {
   if (!env.ANTHROPIC_API_KEY) throw new UserError(503, "Nishiii isn't switched on yet. (Setup: the Anthropic key is missing.)");
-  const res = await fetch((env.ANTHROPIC_API || "https://api.anthropic.com") + "/v1/messages", {
+  // Every question is counted against the day's limit first; the same small record says which model answers.
+  const use = await claudeuse.ticket(env, kit, CLAUDE_MODEL);
+  const ask = (model, plain) => fetch((env.ANTHROPIC_API || "https://api.anthropic.com") + "/v1/messages", {
     method: "POST",
     headers: { "x-api-key": env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: maxTokens, output_config: { effort: "medium" }, system, messages, tools }),
+    body: JSON.stringify({ model, max_tokens: maxTokens, ...(plain ? {} : { output_config: { effort: "medium" } }), system, messages, tools }),
   });
+  let res = await ask(use.model, use.plain);
+  if (res.status === 404) {
+    // Anthropic no longer offers this model. Move to the newest Sonnet on its list, remember that, and ask again.
+    const next = await claudeuse.moveOn(env, kit, use.model).catch(() => null);
+    if (next) { Object.assign(use, next); res = await ask(use.model, use.plain); }
+  }
+  if (res.status === 400 && use.model !== CLAUDE_MODEL && !use.plain) {
+    // A model the app moved to by itself may not know the one optional setting the app sends: ask without it.
+    let why = "";
+    try { why = (await res.clone().json()).error?.message || ""; } catch (e) { /* no detail */ }
+    if (/output_config|effort/i.test(why) && (await claudeuse.goPlain(env, kit).catch(() => false))) res = await ask(use.model, true);
+  }
   if (res.status === 401 || res.status === 403) {
     await health.saw(env, kit, "claude-fail", { kind: "key" });
     throw new UserError(502, "Nishiii can't answer right now: Anthropic no longer accepts the key. Ask Nishith to renew it (Settings, Check everything, shows how).");
@@ -916,33 +960,44 @@ async function stockRoutes(request, env, parts) {
     return json(data);
   }
   if (parts[1] === "file") {
-    // The first address, then any alternates, each checked against the list of allowed hosts.
-    const targets = [];
-    for (const raw of [url.searchParams.get("url"), ...url.searchParams.getAll("alt")].slice(0, 5)) {
-      let target;
-      try { target = new URL(raw); } catch (e) { continue; }
-      const local = !!env.STOCK_HOSTS && target.protocol === "http:";
-      if ((target.protocol === "https:" || local) && stockHostAllowed(env, target.hostname)) targets.push(target);
-    }
+    const targets = stockTargets(env, [url.searchParams.get("url"), ...url.searchParams.getAll("alt")]);
     if (!targets.length) return fail(400, "That one can't be used: it isn't from the photo and video library.");
-    let last = 0;
-    for (const target of targets) {
-      let res;
-      try {
-        res = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0 (compatible; EntangleddStudio/1.0)", Accept: "image/*,video/*;q=0.9,*/*;q=0.5", Referer: info.url + "/" } });
-      } catch (e) { continue; }
-      const type = res.headers.get("Content-Type") || "";
-      // A refusal can arrive as a web page with a "success" status, so the kind of file is checked too.
-      if (!res.ok || !/^(image|video)\/|octet-stream/i.test(type)) { last = res.status; console.error("Library file refused", target.hostname, res.status, type); continue; }
-      const size = Number(res.headers.get("Content-Length") || 0);
-      if (size > 250 * 1024 * 1024) return fail(413, "That file is too large. Pick a different one.");
-      const headers = { "Content-Type": type || "application/octet-stream", "Cache-Control": "no-store" };
-      if (size) headers["Content-Length"] = String(size);
-      return new Response(res.body, { headers });
-    }
-    return fail(502, `That one couldn't be fetched from ${info.name}${last ? ` (status ${last})` : ""}. Pick a different one.`);
+    const { res, type, last } = await fetchStockFile(env, info, targets);
+    if (!res) return fail(502, `That one couldn't be fetched from ${info.name}${last ? ` (status ${last})` : ""}. Pick a different one.`);
+    const size = Number(res.headers.get("Content-Length") || 0);
+    if (size > 250 * 1024 * 1024) return fail(413, "That file is too large. Pick a different one.");
+    const headers = { "Content-Type": type || "application/octet-stream", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
+    if (size) headers["Content-Length"] = String(size);
+    return new Response(res.body, { headers });
   }
   return fail(404, "Not found.");
+}
+// The first address, then any alternates, each checked against the list of allowed hosts.
+function stockTargets(env, raws) {
+  const targets = [];
+  for (const raw of raws.slice(0, 5)) {
+    let target;
+    try { target = new URL(raw); } catch (e) { continue; }
+    const local = !!env.STOCK_HOSTS && target.protocol === "http:";
+    if ((target.protocol === "https:" || local) && stockHostAllowed(env, target.hostname)) targets.push(target);
+  }
+  return targets;
+}
+// Asks each address in turn until one really gives a picture or a video. (Also used by the health record,
+// which reads only the headers, to see that this still works.)
+async function fetchStockFile(env, info, targets) {
+  let last = 0;
+  for (const target of targets) {
+    let res;
+    try {
+      res = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0 (compatible; EntangleddStudio/1.0)", Accept: "image/*,video/*;q=0.9,*/*;q=0.5", Referer: info.url + "/" } });
+    } catch (e) { continue; }
+    const type = res.headers.get("Content-Type") || "";
+    // A refusal can arrive as a web page with a "success" status, so the kind of file is checked too.
+    if (!res.ok || !/^(image|video)\/|octet-stream/i.test(type)) { last = res.status; console.error("Library file refused", target.hostname, res.status, type); continue; }
+    return { res, type, last };
+  }
+  return { res: null, type: "", last };
 }
 
 // ---------- free music for reels (Openverse: openly licensed tracks, mostly from Jamendo) ----------
@@ -1007,18 +1062,23 @@ async function searchMusic(env, q, page) {
   return { items, more: Number(data.page_count) > page };
 }
 
+// The same search is answered from the app's own copy for a week, which also keeps within the library's limits.
+// ("fresh" asks the library anyway: the health record does that once a day, for the search the Music tab opens with.)
+async function musicSearchCached(env, q, page, fresh) {
+  const cacheName = `musiccache/${await hmacHex("music", `v1|${norm(q)}|${page}`)}`;
+  const cached = fresh ? null : await loadDoc(env, cacheName, null);
+  if (cached && Date.now() - cached.at < 7 * 24 * 3600 * 1000) return cached.result;
+  const result = { ...(await searchMusic(env, q, page)), q };
+  if (result.items.length) await saveDoc(env, cacheName, { at: Date.now(), result });
+  return result;
+}
+
 async function musicRoutes(request, env, parts, url) {
   if (request.method !== "GET") return fail(404, "Not found.");
   if (parts.length === 1) {
     const q = oneLine(url.searchParams.get("q"), 80) || "calm piano";
     const page = Math.min(12, Math.max(1, Number(url.searchParams.get("page")) || 1));
-    // The same search is answered from the app's own copy for a week, which also keeps within the library's limits.
-    const cacheName = `musiccache/${await hmacHex("music", `v1|${norm(q)}|${page}`)}`;
-    const cached = await loadDoc(env, cacheName, null);
-    if (cached && Date.now() - cached.at < 7 * 24 * 3600 * 1000) return json(cached.result);
-    const result = { ...(await searchMusic(env, q, page)), q };
-    if (result.items.length) await saveDoc(env, cacheName, { at: Date.now(), result });
-    return json(result);
+    return json(await musicSearchCached(env, q, page, false));
   }
   if (parts[1] === "file") {
     let target;
@@ -1033,7 +1093,7 @@ async function musicRoutes(request, env, parts, url) {
     if (!/^audio\/|octet-stream|^video\/mp4/i.test(type)) return fail(502, "That track isn't a sound file the app can use. Pick a different one.");
     const size = Number(res.headers.get("Content-Length") || 0);
     if (size > MAX_MUSIC_BYTES) return fail(413, "That track is too large. Pick a different one.");
-    const headers = { "Content-Type": /^audio\//i.test(type) ? type : "audio/mpeg", "Cache-Control": "no-store" };
+    const headers = { "Content-Type": /^audio\//i.test(type) ? type : "audio/mpeg", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
     if (size) headers["Content-Length"] = String(size);
     return new Response(res.body, { headers });
   }
@@ -1042,12 +1102,14 @@ async function musicRoutes(request, env, parts, url) {
 
 // ---------- Instagram: connect, music, post ----------
 const GRAPH_VERSION = "v25.0";
+let graphAnswered = "";               // the version named in Meta's latest answer; differs once v25.0 has been withdrawn
 async function graph(env, method, path, params) {
   const url = new URL((env.GRAPH_API || "https://graph.facebook.com") + "/" + GRAPH_VERSION + path);
   const init = { method };
   if (method === "GET") for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   else init.body = new URLSearchParams(params);
   const res = await fetch(url, init);
+  graphAnswered = res.headers.get("facebook-api-version") || graphAnswered;   // Meta names the version it really used
   let data = {};
   try { data = await res.json(); } catch (e) { /* not JSON: handled below */ }
   if (!res.ok || data.error) {
@@ -1180,8 +1242,11 @@ async function publicReel(request, env, parts) {
   return obj ? new Response(obj.body, { headers: { ...base, "Content-Length": String(obj.size) } }) : new Response("Not found", { status: 404 });
 }
 
+// The name of the Instagram song on a post, as words. It is kept as plain text; a record that holds it as
+// {title: ...} instead still reads properly rather than as "[object Object]".
+const musicName = (m) => (typeof m === "string" ? m : m && typeof m === "object" ? oneLine(m.title || m.name || "", 120) || "a song" : "");
 const publicPost = (p) => ({ id: p.id, state: p.state, error: p.error, caption: p.caption, quote: p.quote, author: p.author,
-  music: p.music, via: p.via || "app", created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null,
+  music: musicName(p.music) || null, via: p.via || "app", created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null,
   kind: p.kind || "reel", slides: p.slides || 0 });
 const tokenFor = (ig, post) => (post.tokenKind === "user" ? ig.userToken : ig.pageToken);
 
@@ -1579,7 +1644,7 @@ function buildInsights(allPosts, range, now) {
       theme: p.theme || "", tone: p.tone || "", reach: reachOf(p), views: m.views || 0, likes: m.likes || 0, comments: m.comments || 0, saved: m.saved || 0, shares: m.shares || 0,
       interactions: interactionsOf(m), rate: share(interactionsOf(m), reachOf(p)), watch: m.watch || null, skip: m.skip != null ? m.skip : null,
       background: made.bg ? (made.bg === "plain" ? "plain" : `${made.bgFrom === "search" ? "searched" : "own"} ${made.bg}`) : "",
-      music: p.music ? `Instagram: ${p.music}` : made.music ? `${made.music === "library" ? "Free library" : "Own"}${made.musicTitle ? `: ${made.musicTitle}` : ""}` : "" };
+      music: p.music ? `Instagram: ${musicName(p.music)}` : made.music ? `${made.music === "library" ? "Free library" : "Own"}${made.musicTitle ? `: ${made.musicTitle}` : ""}` : "" };
   });
 
   // Reach over time: a bar per post while there are few, a bar per week once there are many.
@@ -2110,7 +2175,7 @@ async function gatherEvidence(env) {
     skipped: history.filter((h) => h.action === "rejected").slice(-40).map(slim),
     rewordRequests: rewords.slice(-25).map((r) => ({ asked: r.asked, before: r.before, after: r.after })),
     ownLines: (lib.quotes || []).slice(-25).map((q) => q.text),
-    posted: posts.filter((p) => p.state === "published").slice(-30).map((p) => ({ quote: p.quote, author: p.author, music: p.music || "", ...(p.metrics || {}) })),
+    posted: posts.filter((p) => p.state === "published").slice(-30).map((p) => ({ quote: p.quote, author: p.author, music: musicName(p.music), ...(p.metrics || {}) })),
     loved: insp.slice(-30).map((i) => ({ from: i.handle ? "@" + i.handle : i.kind, quote: i.quote || "", look: i.style || "",
       topPosts: (i.top || []).slice(0, 5).map((t) => ({ quote: t.quote || "", caption: (t.caption || "").slice(0, 160), likes: t.likes, views: t.views })) })),
   };
@@ -2262,7 +2327,7 @@ async function makeChallenge(env) {
   c.set(await challengeSeal(env, c.slice(0, 22)), 22);
   return b64u.enc(c);
 }
-async function takeChallenge(env, clientDataB64, type, request) {
+async function takeChallenge(env, clientDataB64, type, request, worthMarking = async () => true) {
   const expired = () => new UserError(400, "That unlock attempt has expired. Try again.");
   let client, c;
   try { client = JSON.parse(new TextDecoder().decode(b64u.dec(clientDataB64))); } catch (e) { throw new UserError(400, "The device's reply couldn't be read."); }
@@ -2278,6 +2343,9 @@ async function takeChallenge(env, clientDataB64, type, request) {
     throw new UserError(401, "That unlock attempt wasn't valid. Try again.");
   }
   if (Date.now() > exp || used) throw expired();      // each challenge works once, and only for five minutes
+  // A reply that names no saved device is turned away by the caller whatever happens here, so it is not
+  // written down: nobody can make the server write to storage just by asking for a challenge and answering it.
+  if (!(await worthMarking())) return;
   // Marked as used before anything else is looked at. Of two replies arriving in the same instant with the same
   // challenge, only the first to be marked goes on.
   if (!(await putIfNew(env, usedKey, JSON.stringify({ exp })))) throw expired();
@@ -2293,7 +2361,9 @@ async function passkeyRoutes(request, env, parts, authed) {
   if (parts[1] === "login" && method === "POST") {
     const b = await body(request);
     // The saved keys and the one-time check of the challenge are fetched side by side.
-    const [keys] = await Promise.all([loadDoc(env, "passkeys", []), takeChallenge(env, b.clientDataJSON, "webauthn.get", request)]);
+    const saving = loadDoc(env, "passkeys", []);
+    const [keys] = await Promise.all([saving, takeChallenge(env, b.clientDataJSON, "webauthn.get", request,
+      async () => (await saving).some((k) => k.id === b.credentialId))]);
     const saved = keys.find((k) => k.id === b.credentialId);
     if (!saved) return fail(401, "Face ID on this device isn't recognised any more. Use the passcode, then turn the lock on again in Settings.");
     let ok = false;
@@ -2434,7 +2504,7 @@ async function runChatTool(env, name, input, actions) {
   }
   if (name === "get_posts") {
     const posts = await loadDoc(env, "posts", []);
-    return posts.filter((p) => p.state === "published").slice(-12).reverse().map((p) => ({ quote: p.quote, posted: new Date(p.published || p.created).toISOString().slice(0, 10), music: p.music || "", ...(p.metrics || { numbers: "not available yet" }) }));
+    return posts.filter((p) => p.state === "published").slice(-12).reverse().map((p) => ({ quote: p.quote, posted: new Date(p.published || p.created).toISOString().slice(0, 10), music: musicName(p.music), ...(p.metrics || { numbers: "not available yet" }) }));
   }
   if (name === "get_week") {
     const w = weekStats(await loadDoc(env, "posts", []), Date.now());
@@ -2597,7 +2667,11 @@ async function route(request, env, parts, ctx) {
 // Shared helpers handed to the add-on sections (see SECTIONS at the top).
 const kit = { json, fail, UserError, body, loadDoc, saveDoc, signedIn, claude, claudeRaw, graph, graphAny, loadIg, igReady,
   reelsReady, stockProvider, todayIST, oneLine, lines, GRAPH_VERSION,
-  CLAUDE_MODEL };
+  CLAUDE_MODEL,
+  findBookText, textHostAllowed,
+  musicSearchCached,
+  searchPixabay, searchPexels, stockTargets, fetchStockFile, PROVIDERS,
+  graphAnswered: () => graphAnswered };
 
 // The sections' timed jobs. At most one runs per five-minute tick, so no single run does too much:
 // the free plan allows 50 outside calls (storage reads and writes count) and very little computing per run.
@@ -2614,6 +2688,7 @@ async function runOneDueJob(env) {
   try { await due.run(env, kit); }
   catch (e) {
     console.error(`job ${due.name} failed`, e);
+    await upkeep.noteError(env, kit, `timed job ${due.name}`, e);
     const again = await loadDoc(env, "jobstamps", {});
     again[due.name] = now - (due.everyHours || 24) * HOUR_MS + HOUR_MS;   // try once more in about an hour
     await saveDoc(env, "jobstamps", again);
@@ -2629,6 +2704,12 @@ export default {
       // "await" matters here: without it, an error inside a handler would skip the catch below.
       return await route(request, env, parts, ctx);
     } catch (e) {
+      // What went wrong on the server, or at an outside service, goes into the short record of problems
+      // that the health record counts. (Kept after the answer is sent, where Cloudflare allows it.)
+      if (!(e instanceof UserError) || e.status === 502) {
+        const noted = upkeep.noteError(env, kit, upkeep.plainPath(request.method, parts), e);
+        if (ctx && ctx.waitUntil) ctx.waitUntil(noted); else await noted;
+      }
       if (e instanceof UserError) return fail(e.status, e.message);
       console.error(e);
       return fail(500, "Something went wrong on our side. Try again.");
@@ -2642,7 +2723,7 @@ export default {
       // Once a day, in order: fetch how her posts did, update what Nishiii knows about her taste,
       // then choose the day's quotes with that fresh in mind.
       ctx.waitUntil((async () => {
-        const step = async (name, fn) => { try { await fn(); } catch (e) { console.error(`daily ${name} failed`, e); } };
+        const step = async (name, fn) => { try { await fn(); } catch (e) { console.error(`daily ${name} failed`, e); await upkeep.noteError(env, kit, `the morning's ${name}`, e); } };
         await step("insights", async () => {
           const ig = igReady(env) ? await loadIg(env) : null;
           if (!ig) return;
@@ -2659,7 +2740,7 @@ export default {
       })());
       return;
     }
-    ctx.waitUntil(runOneDueJob(env).catch((e) => console.error("timed job failed", e)));
+    ctx.waitUntil(runOneDueJob(env).catch((e) => { console.error("timed job failed", e); return upkeep.noteError(env, kit, "the timed jobs", e); }));
     // Every few minutes: finish any post still waiting on Instagram, in case she closed the app.
     ctx.waitUntil((async () => {
       const posts = await loadDoc(env, "posts", []);
@@ -2673,6 +2754,6 @@ export default {
       // A reel she took into Instagram to finish there: has it been posted yet?
       if (handed.length) changed = (await adoptFromInstagram(env, ig, posts)) > 0 || changed;
       if (changed) await saveDoc(env, "posts", posts.slice(-500));
-    })().catch((e) => console.error("finishing posts failed", e)));
+    })().catch((e) => { console.error("finishing posts failed", e); return upkeep.noteError(env, kit, "finishing posts", e); }));
   },
 };

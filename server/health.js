@@ -12,10 +12,12 @@
    This file is one of the app's add-on sections (see SECTIONS in worker.js).
    Handlers are called as handler(request, env, parts, kit); jobs as run(env, kit). */
 
+import * as claudeuse from "./claudeuse.js";
+import { PARTS, PROBE_IDS, PROBE_TITLES } from "./probes.js";
+
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR, WEEK = 7 * DAY;
 const RENEW_WHEN_DAYS_LEFT = 30;   // start asking Meta for a fresh sign-in this long before the old one ends
 const WARN_DAYS = 21;              // start telling Nishith this long before anything runs out
-const MODEL_WARN_DAYS = 30;        // a Claude model being withdrawn stops Nishiii altogether: a little more notice
 const STALE_HOURS = 36;            // a record older than this means the timers have stopped
 const TIMER_QUIET_HOURS = 30;      // the daily jobs run every 24 hours; this much silence is not normal
 const NEVER = 4102444800000;       // 1 January 2100: how "no end date" is kept
@@ -23,7 +25,7 @@ const TRIES = { outside: 8000 };   // how long an outside service gets to answer
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const ist = (ms) => new Date(ms + 5.5 * HOUR);
-const dayIST = (ms) => { const d = ist(ms); return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`; };
+export const dayIST = (ms) => { const d = ist(ms); return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`; };
 const timeIST = (ms) => {
   const d = ist(ms), h = d.getUTCHours(), m = String(d.getUTCMinutes()).padStart(2, "0");
   return `${h % 12 || 12}:${m} ${h < 12 ? "am" : "pm"}`;
@@ -58,7 +60,7 @@ const PERMISSIONS = [
   ["pages_show_list", "finding the Facebook Page", false],
   ["pages_read_engagement", "reading the linked Facebook Page", false],
 ];
-const RECONNECT = [
+export const RECONNECT = [
   "On a computer, open developers.facebook.com/tools/explorer and choose the app made for D's Studio.",
   "Tap Generate Access Token and approve the same permissions as before.",
   "Copy the token. In D's Studio open Settings, tap Connect again under Instagram, paste it and tap Connect Instagram.",
@@ -221,6 +223,7 @@ async function checkInstagram(env, kit, ctx) {
   // Permissions: one that was there before and is gone now is a real loss; one never given is only mentioned.
   const scopes = [...new Set([...page.scopes, ...user.scopes])];
   ctx.seenScopes = [...new Set([...(ctx.old?.seenScopes || []), ...scopes])];
+  ctx.scopes = scopes;                                   // what the connection may do today (the probes read this)
   const missing = scopes.length ? PERMISSIONS.filter(([name]) => !scopes.includes(name)) : [];
   const lost = missing.filter(([name, , vital]) => vital || (ctx.old?.seenScopes || []).includes(name));
   if (lost.length) {
@@ -348,33 +351,65 @@ function checkReels(env, kit, ctx) {
 
 // ---------------------------------------------------------------- Nishiii (Claude)
 
+// The day's questions against the day's limit, the model in use, and whether the app has had to move to a
+// newer model by itself (see claudeuse.js). Added to whatever the check of the key found.
+function withUse(got, use) {
+  if (got.state !== "ok") return got;
+  const LIMIT = ["If that was real, heavy use: in Cloudflare (Workers & Pages, entangledd-studio, Settings, Variables and Secrets) add CLAUDE_DAILY_CAP with a higher number, then Deploy.",
+    "If the app wasn't used that much, something is asking in a loop. Tell Claude, in the chat where the app was built: \"Nishiii reached the daily limit without being used much.\""];
+  if (use.capHitToday || use.capHitYesterday) {
+    return { ...got, state: "soon", fix: LIMIT, brief: `Nishiii reached the day's limit of ${use.cap} questions`,
+      line: `Nishiii reached the day's limit of ${use.cap} questions ${use.capHitToday ? "today" : "yesterday"} and stopped answering until midnight.` };
+  }
+  const moved = use.moved ? ` The app moved Nishiii to ${short(use.moved.name || use.moved.id, 60)} by itself on ${dayIST(use.moved.since)}, when the earlier Claude model was retired.` : "";
+  return { ...got, line: `${got.line}${moved} ${use.yesterday} questions yesterday, ${use.today} so far today; the limit is ${use.cap} a day.` };
+}
+
 async function checkNishiii(env, kit, ctx) {
+  if (!env.ANTHROPIC_API_KEY) return { title: "Nishiii", state: "off", line: "Nishiii isn't switched on yet.", brief: "" };
+  ctx.use = await claudeuse.usage(env, kit, kit.CLAUDE_MODEL);
+  const got = await checkNishiiiKey(env, kit, ctx, ctx.use.model);
+  // If the check put a question to Claude, look again: that question may have moved the model on.
+  // (No storage read this time: the question just asked left the newest state with this running copy.)
+  if (ctx.askedClaude) ctx.use = await claudeuse.usage(env, kit, kit.CLAUDE_MODEL, false);
+  return withUse(got, ctx.use);
+}
+
+async function checkNishiiiKey(env, kit, ctx, modelInUse) {
   const title = "Nishiii";
-  if (!env.ANTHROPIC_API_KEY) return { title, state: "off", line: "Nishiii isn't switched on yet.", brief: "" };
   const NEW_KEY = ["On platform.claude.com (the Claude Console) open Settings, API keys, tap Create key and copy it.", inCloudflare("ANTHROPIC_API_KEY")];
-  const NEW_MODEL = ["Open the Claude chat where the app was built and say: \"Nishiii's Claude model is being retired, please move the app to the current one.\" It is a one-line change."];
+  const NEW_MODEL = ["The app looks for the newest Claude Sonnet by itself when its model is retired, and found none it could use.",
+    "Open the Claude chat where the app was built and say: \"Nishiii's Claude model was retired and the app couldn't move to a new one by itself.\""];
+  const GONE = { title, state: "attention", fix: NEW_MODEL, brief: "the Claude model Nishiii runs on has been retired, and the app couldn't move to a newer one",
+    line: "The Claude model Nishiii runs on is no longer offered, and the app couldn't move to a newer one by itself, so suggestions, rewording and chat are off." };
+  // One very small real question. It is the only proof that Nishiii can answer, and asking it is also what
+  // moves the app to a newer model when the old one has gone (see claudeRaw in worker.js).
+  const ask = () => { ctx.askedClaude = true; return kit.claudeRaw(env, { system: "Answer with the single word OK.", messages: [{ role: "user", content: "OK?" }], maxTokens: 5 }); };
   const base = env.ANTHROPIC_API || "https://api.anthropic.com";
-  const res = await fetch(`${base}/v1/models/${kit.CLAUDE_MODEL}`, {
+  const res = await fetch(`${base}/v1/models/${modelInUse}`, {
     headers: { "x-api-key": env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" }, signal: AbortSignal.timeout(TRIES.outside),
   });
   if (res.status === 401 || res.status === 403) {
     return { title, state: "attention", fix: NEW_KEY, brief: "Anthropic no longer accepts Nishiii's key",
       line: "Anthropic no longer accepts Nishiii's key, so suggestions, rewording and chat are off." };
   }
-  if (res.status === 404) {
-    return { title, state: "attention", fix: NEW_MODEL, brief: "the Claude model Nishiii runs on has been retired",
-      line: "The Claude model Nishiii runs on is no longer offered, so suggestions, rewording and chat are off." };
-  }
-  if (!res.ok) throw new Error(`Anthropic answered ${res.status}`);
   let model = {};
-  try { model = await res.json(); } catch (e) { /* the status was enough */ }
+  if (res.ok) { try { model = await res.json(); } catch (e) { /* the status was enough */ } }
+  else if (res.status !== 404) throw new Error(`Anthropic answered ${res.status}`);
   // Anthropic says ahead of time when a model will be withdrawn: "lifecycle" stops being "active" and "retires_at"
   // gives the day. Whatever word it uses for a model on its way out, the day is what counts.
   const leaving = typeof model.lifecycle === "string" && model.lifecycle !== "" && model.lifecycle !== "active";
   const retires = Date.parse(model.retires_at || "");
-  if (model.lifecycle === "retired" || (leaving && retires <= Date.now())) {
-    return { title, state: "attention", fix: NEW_MODEL, brief: "the Claude model Nishiii runs on has been retired",
-      line: "The Claude model Nishiii runs on has been retired, so suggestions, rewording and chat are off." };
+  if (res.status === 404 || model.lifecycle === "retired" || (leaving && retires <= Date.now())) {
+    // The model has gone. Ask once: that moves the app to the newest Sonnet, or shows that it can't.
+    claudeTrouble = false; claudeLooked = Date.now();
+    try { await ask(); ctx.clearClaude = true; }
+    catch (e) {
+      claudeTrouble = true;
+      if (!(e instanceof kit.UserError)) throw e;
+      return GONE;
+    }
+    return { title, state: "ok", brief: "", line: "Nishiii's key is working." };
   }
 
   // What real use last showed. A key that passed just now clears an old "key refused" note by itself;
@@ -384,7 +419,7 @@ async function checkNishiii(env, kit, ctx) {
   if (trouble) {
     claudeTrouble = false; claudeLooked = Date.now();      // a good answer is noted once, below, not twice
     try {
-      await kit.claudeRaw(env, { system: "Answer with the single word OK.", messages: [{ role: "user", content: "OK?" }], maxTokens: 5 });
+      await ask();
       trouble = null; ctx.clearClaude = true;
     } catch (e) {
       claudeTrouble = true;                                // still on record: the next good answer in real use clears it
@@ -397,16 +432,11 @@ async function checkNishiii(env, kit, ctx) {
       fix: ["On platform.claude.com (the Claude Console) open Settings, Billing, and add credit.",
         "On the same page tap Set up auto-reload, so it tops itself up and this never comes back."] };
   }
-  if (retires > Date.now()) {
-    // A day is known. Months ahead it is only mentioned; it is raised when it comes near.
-    const days = daysUntil(retires);
-    const line = `Working. The Claude model Nishiii runs on will be retired on ${dayIST(retires)} (${inDays(days)}); the app needs a small update before then.`;
-    if (days > MODEL_WARN_DAYS) return { title, state: "ok", daysLeft: days, brief: "", line };
-    return { title, state: "soon", daysLeft: days, fix: NEW_MODEL, line, brief: `the Claude model Nishiii runs on is retired ${inDays(days)}` };
-  }
-  if (leaving) {
-    return { title, state: "soon", fix: NEW_MODEL, brief: "the Claude model Nishiii runs on is being retired",
-      line: "Working. The Claude model Nishiii runs on is being retired; the app needs a small update." };
+  if (retires > Date.now() || leaving) {
+    // A model on its way out needs nobody: on the day it goes, the app moves to the newest Sonnet by itself.
+    const when = retires > Date.now() ? ` on ${dayIST(retires)} (${inDays(daysUntil(retires))})` : " before long";
+    return { title, state: "ok", brief: "", ...(retires > Date.now() ? { daysLeft: daysUntil(retires) } : {}),
+      line: `Working. The Claude model Nishiii runs on will be retired${when}; the app will move to the newest one by itself then.` };
   }
   return { title, state: "ok", brief: "", line: "Nishiii's key is working." };
 }
@@ -495,6 +525,7 @@ function checkTimers(env, kit, ctx) {
 // ---------------------------------------------------------------- the whole check
 
 const ORDER = ["instagram", "github", "reels", "nishiii", "backgrounds", "music", "timers"];
+const ALL_IDS = [...ORDER, ...PROBE_IDS];           // the daily check's lines, then the probes' (see probes.js)
 
 // Reads one of this section's own two documents. If it can't be read or isn't what it should be, the answer
 // is the fallback, as if it had never been written.
@@ -519,40 +550,21 @@ export async function checkAll(env, kit, { fromTimer = false } = {}) {
     kit.igReady(env) ? kit.loadIg(env) : null,
     env.MEDIA.head(`data/suggestions/${kit.todayIST()}.json`),
   ]);
-  if (old) {                                             // whatever shape it is in, the checks get lists to read
-    old.items = (Array.isArray(old.items) ? old.items : []).filter((i) => i && typeof i === "object");
-    old.seenScopes = (Array.isArray(old.seenScopes) ? old.seenScopes : []).map(String);
-    old.missedMornings = Number(old.missedMornings) || 0;
-    old.missedDay = typeof old.missedDay === "string" ? old.missedDay : "";
-  }
+  sane(old);
   const ctx = { old, notes, stamps, ig, fromTimer, todayReady: !!today };
   const checks = { instagram: checkInstagram, github: checkGithub, reels: checkReels, nishiii: checkNishiii,
     backgrounds: checkBackgrounds, music: checkMusic, timers: checkTimers };
-  const items = await Promise.all(ORDER.map(async (id) => {
-    const before = (old?.items || []).find((i) => i.id === id);
-    try {
-      const got = await checks[id](env, kit, ctx);
-      const item = { id, title: got.title, state: got.state, line: got.line, brief: got.brief || "", checked: now };
-      if (got.fix && got.state !== "ok") item.fix = got.fix;
-      if (Number.isFinite(got.daysLeft)) item.daysLeft = got.daysLeft;
-      if (got.action && got.state !== "ok") item.action = got.action;
-      if (got.state === "unknown" || got.keepSince) item.unknownSince = before?.unknownSince || now;
-      return item;
-    } catch (e) {
-      // The check itself couldn't be made (a service was down or slow). Keep what was known, say so,
-      // and only raise it if it stays that way for three days.
-      console.error(`health check "${id}" couldn't run`, hide(e && e.message, ...keysOf(env)));
-      const since = before?.unknownSince || now;
-      const base = before && before.state !== "unknown" ? before : { id, title: titleOf(id), state: "unknown", brief: "", checked: 0 };
-      if (now - since > 3 * DAY) {
-        return { id, title: base.title, state: "attention", unknownSince: since, checked: base.checked || 0,
-          brief: "one check hasn't been possible for three days", line: `This couldn't be checked since ${dayIST(since)}.` };
-      }
-      return { ...base, unknownSince: since, line: before && before.state !== "unknown" ? before.line : "This couldn't be checked just now. It is tried again tomorrow." };
-    }
-  }));
-  const record = { asOf: now, items, seenScopes: ctx.seenScopes || old?.seenScopes || [],
-    missedMornings: ctx.missedMornings || 0, missedDay: ctx.missedDay || "" };
+  const items = await Promise.all(ORDER.map((id) => oneCheck(id, checks[id], env, kit, ctx, old, now)));
+  // The probes' lines (see probes.js) are kept as they are; their own jobs renew them.
+  const probed = old?.probed && typeof old.probed === "object" ? old.probed : {};
+  const firstAt = Number(old?.firstAt) || now;
+  const record = { asOf: now, items: [...items, ...(old?.items || []).filter((i) => PROBE_IDS.includes(i.id))],
+    seenScopes: ctx.seenScopes || old?.seenScopes || [], scopes: ctx.scopes || old?.scopes || [],
+    missedMornings: ctx.missedMornings || 0, missedDay: ctx.missedDay || "",
+    probed, firstAt, errorsLastDay: Number(old?.errorsLastDay) || 0,
+    // A group of probes that hasn't run for three days has stopped: said plainly in the open answer.
+    quiet: Object.keys(PARTS).filter((part) => now - (Number(probed[part]) || firstAt) > 3 * DAY),
+    use: ctx.use ? { today: ctx.use.today, yesterday: ctx.use.yesterday, cap: ctx.use.cap, movedAt: ctx.use.moved ? ctx.use.moved.since : 0 } : old?.use || null };
   await kit.saveDoc(env, "health", record);
   if (ctx.clearClaude && notes.claude) {
     const latest = await readOwn(env, kit, "healthnotes", {});
@@ -563,7 +575,59 @@ export async function checkAll(env, kit, { fromTimer = false } = {}) {
   return record;
 }
 const titleOf = (id) => ({ instagram: "Instagram", github: "Reel maker's key", reels: "Reel maker", nishiii: "Nishiii",
-  backgrounds: "Background search", music: "Free music", timers: "Daily routines" })[id] || id;
+  backgrounds: "Background search", music: "Free music", timers: "Daily routines", ...PROBE_TITLES })[id] || id;
+
+// Runs one check and turns its answer into a line of the record.
+async function oneCheck(id, check, env, kit, ctx, old, now) {
+  const before = (old?.items || []).find((i) => i.id === id);
+  try {
+    const got = await check(env, kit, ctx);
+    const item = { id, title: got.title, state: got.state, line: got.line, brief: got.brief || "", checked: now };
+    if (got.fix && got.state !== "ok") item.fix = got.fix;
+    if (Number.isFinite(got.daysLeft)) item.daysLeft = got.daysLeft;
+    if (got.action && got.state !== "ok") item.action = got.action;
+    if (got.state === "unknown" || got.keepSince) item.unknownSince = before?.unknownSince || now;
+    return item;
+  } catch (e) {
+    // The check itself couldn't be made (a service was down or slow). Keep what was known, say so,
+    // and only raise it if it stays that way for three days.
+    console.error(`health check "${id}" couldn't run`, hide(e && e.message, ...keysOf(env)));
+    const since = before?.unknownSince || now;
+    const base = before && before.state !== "unknown" ? before : { id, title: titleOf(id), state: "unknown", brief: "", checked: 0 };
+    if (now - since > 3 * DAY) {
+      return { id, title: base.title, state: "attention", unknownSince: since, checked: base.checked || 0,
+        brief: "one check hasn't been possible for three days", line: `This couldn't be checked since ${dayIST(since)}.` };
+    }
+    return { ...base, unknownSince: since, line: before && before.state !== "unknown" ? before.line : "This couldn't be checked just now. It is tried again tomorrow." };
+  }
+}
+
+// Whatever shape a stored record is in, the checks get lists to read.
+function sane(old) {
+  if (!old) return old;
+  old.items = (Array.isArray(old.items) ? old.items : []).filter((i) => i && typeof i === "object");
+  old.seenScopes = (Array.isArray(old.seenScopes) ? old.seenScopes : []).map(String);
+  old.scopes = (Array.isArray(old.scopes) ? old.scopes : []).map(String);
+  old.missedMornings = Number(old.missedMornings) || 0;
+  old.missedDay = typeof old.missedDay === "string" ? old.missedDay : "";
+  return old;
+}
+
+// One group of probes (see probes.js), merged into the record the daily check keeps.
+export async function probe(env, kit, part) {
+  const group = PARTS[part];
+  const now = Date.now();
+  const ctx = { old: sane(await readOwn(env, kit, "health", null)) };
+  await group.prepare(env, kit, ctx);
+  const items = await Promise.all(group.ids.map((id) => oneCheck(id, group.checks[id], env, kit, ctx, ctx.old, now)));
+  // Read once more just before saving, so a daily check that finished meanwhile isn't undone.
+  const latest = sane(await readOwn(env, kit, "health", null)) || { asOf: 0, items: [], firstAt: now };
+  const record = { ...latest, items: [...latest.items.filter((i) => !group.ids.includes(i.id)), ...items],
+    probed: { ...(latest.probed || {}), [part]: now }, quiet: (latest.quiet || []).filter((x) => x !== part) };
+  if (ctx.errorsLastDay !== undefined) record.errorsLastDay = ctx.errorsLastDay;
+  await kit.saveDoc(env, "health", record);
+  return record;
+}
 
 // ---------------------------------------------------------------- what real use shows
 
@@ -605,22 +669,32 @@ const needsHim = (item) => item.state === "attention" || item.state === "soon";
 // no names, no ids, no steps, none of an outside service's own words.
 function openView(record) {
   const head = { app: "D's Studio" };
-  if (!record || !Number.isFinite(record.asOf) || !Array.isArray(record.items)) {
+  if (!record || !(record.asOf > 0) || !Array.isArray(record.items)) {
     return { ...head, needsAttention: true, asOf: null, ageHours: null, items: [],
       message: "No check has run yet. The first one runs within ten minutes of the app being updated. If this is still the answer after that, the app's timers are not running." };
   }
   const ageHours = Math.max(0, Math.round((Date.now() - record.asOf) / HOUR));
   const stale = ageHours > STALE_HOURS;
-  const items = record.items.filter((i) => i && ORDER.includes(i.id));
+  // Every line the record should have, in a fixed order; one not looked at yet is shown as "unknown".
+  const items = ALL_IDS.map((id) => record.items.find((i) => i && i.id === id) || { id, state: "unknown" });
   const need = items.filter(needsHim);
   const parts = need.map((i) => `${titleOf(i.id)}: ${i.brief || (i.state === "soon" ? "needs attention soon" : "needs attention")}`);
-  let message = need.length
-    ? `${need.length === 1 ? "1 thing needs" : `${need.length} things need`} attention. ${parts.join(". ")}.`
+  // The checks of the outside services run on their own timers; if those go quiet, that is said too.
+  const quiet = (Array.isArray(record.quiet) ? record.quiet : []).filter((x) => Object.hasOwn(PARTS, x)).length > 0;
+  if (quiet) parts.push("The checks of the outside services and of the app's own housekeeping haven't run for three days");
+  const count = need.length + (quiet ? 1 : 0);
+  let message = count
+    ? `${count === 1 ? "1 thing needs" : `${count} things need`} attention. ${parts.join(". ")}.`
     : "Everything is working.";
   const ago = ageHours < 48 ? `${ageHours} hours ago` : `${Math.floor(ageHours / 24)} days ago`;
-  if (stale) message = `The daily check last ran ${ago}, so the app's timers may have stopped. ${need.length ? message : "What follows is the last known state."}`;
+  if (stale) message = `The daily check last ran ${ago}, so the app's timers may have stopped. ${count ? message : "What follows is the last known state."}`;
+  const use = record.use && typeof record.use === "object" ? record.use : null;
+  const whole = (n) => (Number.isFinite(Number(n)) ? Math.max(0, Math.round(Number(n))) : null);
   return {
-    ...head, needsAttention: stale || need.length > 0, message, asOf: new Date(record.asOf).toISOString(), ageHours,
+    ...head, needsAttention: stale || count > 0, message, asOf: new Date(record.asOf).toISOString(), ageHours,
+    // Plain counts, so that a climbing number is seen before it becomes a problem.
+    counts: { questionsYesterday: use ? whole(use.yesterday) : null, questionsDailyLimit: use ? whole(use.cap) : null, problemsLastDay: whole(record.errorsLastDay) },
+    notes: use && use.movedAt > 0 ? [`Nishiii moved to a newer Claude model by itself on ${dayIST(Number(use.movedAt))}.`] : [],
     items: items.map((i) => ({ id: i.id, state: STATES.includes(i.state) ? i.state : "unknown", daysLeft: Number.isFinite(i.daysLeft) ? i.daysLeft : null,
       checked: Number.isFinite(i.checked) && i.checked > 0 ? new Date(i.checked).toISOString() : null })),
   };
@@ -629,7 +703,7 @@ function openView(record) {
 // What she and Nishith see in Settings: everything, with the steps.
 function fullView(record) {
   if (!record || !Number.isFinite(record.asOf) || !Array.isArray(record.items)) return { asOf: 0, items: [], summary: "Not checked yet." };
-  const items = record.items.filter((i) => i && ORDER.includes(i.id));
+  const items = ALL_IDS.map((id) => record.items.find((i) => i && i.id === id)).filter(Boolean);
   const need = items.filter(needsHim).length;
   return { asOf: record.asOf, summary: need ? `${need === 1 ? "1 thing needs" : `${need} things need`} Nishith.` : "Everything is working.",
     items: items.map(({ unknownSince, brief, ...rest }) => rest) };
@@ -654,6 +728,13 @@ export const routes = {
     if (request.method === "GET") return kit.json(fullView(await readOwn(env, kit, "health", null)));
     if (request.method !== "POST") return kit.fail(404, "Not found.");
     const old = await readOwn(env, kit, "health", null);
+    // POST /api/checkup?part=services or ?part=page: one group of probes, now (each at most once a minute).
+    const part = new URL(request.url).searchParams.get("part");
+    if (part) {
+      if (!Object.hasOwn(PARTS, part)) return kit.fail(404, "Not found.");
+      if (old && Date.now() - (Number(old.probed?.[part]) || 0) < 60 * 1000) return kit.fail(429, "Checked a moment ago. Try again in a minute.");
+      return kit.json(fullView(await probe(env, kit, part)));
+    }
     if (old && Date.now() - old.asOf < 60 * 1000) return kit.fail(429, "Checked a moment ago. Try again in a minute.");
     await renewInstagram(env, kit).catch((e) => console.error("renewing Instagram failed", e && e.message));
     return kit.json(fullView(await checkAll(env, kit)));
@@ -665,3 +746,5 @@ export const jobs = [
   { name: "instagram-renew", everyHours: 24, run: (env, kit) => renewInstagram(env, kit) },
   { name: "health-check", everyHours: 24, run: (env, kit) => checkAll(env, kit, { fromTimer: true }) },
 ];
+// (The probes of probes.js run as two more timed jobs, listed in upkeep.js after the cleaning and the
+// backup, so that their first report already includes those.)

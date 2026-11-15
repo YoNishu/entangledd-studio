@@ -1,0 +1,8 @@
+# Headers Cloudflare adds to every file of the app it serves from this folder (the pages, scripts, styles,
+# fonts and icons). Answers from the server code under /api/ set their own headers in server/worker.js.
+# This file itself is never served.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'

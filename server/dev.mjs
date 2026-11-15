@@ -405,6 +405,20 @@ function runRenderJob(inputs) {
   child.on("exit", (code) => console.log(`render job ${inputs.job_id} exited with ${code}`));
 }
 
+// The headers web/_headers asks for on every file of the app (its "/*" rule), as Cloudflare would add them.
+async function assetHeaders() {
+  const text = await readFile(path.join(root, "web", "_headers"), "utf8").catch(() => "");
+  const out = {};
+  let on = false;
+  for (const line of text.split("\n")) {
+    if (!line.trim() || line.trim().startsWith("#")) continue;
+    if (!/^\s/.test(line)) { on = line.trim() === "/*"; continue; }
+    const at = line.indexOf(":");
+    if (on && at > 0) out[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+  }
+  return out;
+}
+
 const readBody = (req) => new Promise((resolve, reject) => {
   const chunks = [];
   req.on("data", (c) => chunks.push(c)).on("end", () => resolve(Buffer.concat(chunks))).on("error", reject);
@@ -620,8 +634,9 @@ http.createServer(async (req, res) => {
     }
     const file = path.join(root, "web", path.normalize(url.pathname === "/" ? "/index.html" : url.pathname));
     if (!file.startsWith(path.join(root, "web"))) { res.writeHead(403).end(); return; }
+    if (path.basename(file) === "_headers") { res.writeHead(404).end("Not found"); return; }   // Cloudflare never serves it either
     const data = await readFile(file);
-    res.writeHead(200, { "Content-Type": TYPES[path.extname(file)] || "application/octet-stream" }).end(data);
+    res.writeHead(200, { "Content-Type": TYPES[path.extname(file)] || "application/octet-stream", ...(await assetHeaders()) }).end(data);
   } catch (e) {
     if (e.code === "ENOENT") res.writeHead(404).end("Not found");
     else { console.error(e); res.writeHead(500).end("Server error"); }

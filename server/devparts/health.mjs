@@ -41,9 +41,17 @@ const fine = () => ({
                         //   | active-dated (still "active", but sent with the date in modelDays)
   modelDays: 90,        // days until a deprecated model is retired ("" = no date given)
   claudeAsk: "",        // how a real question is answered: "" = normally | credit | 401 | 404
+  modelGone: "",        // "yes": a real question to claude-sonnet-5-5 is answered "no such model"; newer models answer normally
+  modelList: "ok",      // what Anthropic's list of models holds: ok (a newer Sonnet among others) | none (no other Sonnet) | busy
+  newModelPlain: "",    // "yes": the newer Sonnet refuses the app's optional "effort" setting
   // the rest
   pixabay: "ok",        // ok | 400 | 429 | busy
   openverse: "ok",      // ok | 401
+  tracks: "ok",         // the music search itself: ok | 429 | empty | busy
+  gutendex: "ok",       // the free-books catalogue: ok | busy | notext (the book is listed without plain text) | textgone (the text's address is dead)
+  selfcheck: "",        // the reel maker's self-test on GitHub: "" = there is none | pass | fail (once) | fail2 (twice running) | none (never run)
+  selfcheckDays: 1,     // how many days ago its latest run was
+  graphVersion: "",     // e.g. "v27.0": Meta answers the list of her posts as a different version from the one asked for
 });
 let mode = fine();
 let log = [];
@@ -107,6 +115,8 @@ function graph(req, res, url) {
     return err(400, 190, `Malformed access token ${q.get("fb_exchange_token")}`);
   }
   if (p === "/ig_audio" && mode.graphEcho === "yes") return err(400, 100, `Unsupported get request with access token ${token}`);
+  // Meta names the version it really answered with; a withdrawn version is answered as a newer one.
+  if (mode.graphVersion && p === "/17890/media" && req.method === "GET") return send(res, 200, { data: [] }, { "facebook-api-version": mode.graphVersion });
   // Asking for a fresh sign-in with one that is already long-lived (the first connection, with a SHORT token, is built in).
   if (p === "/oauth/access_token" && String(q.get("fb_exchange_token")).startsWith("LONG")) {
     if (q.get("client_id") !== "dev-app" || q.get("client_secret") !== "dev-secret") return err(400, 101, "Error validating application. Invalid application secret.");
@@ -141,7 +151,25 @@ function graph(req, res, url) {
   return false;
 }
 
+// The reel maker's self-test ("Render check"): its runs, and the app switching it on and starting it.
+function selfcheck(req, res, url, tools) {
+  if (req.headers.authorization !== `Bearer ${tools.env.GITHUB_TOKEN}`) return send(res, 401, { message: "Bad credentials" });
+  if (!mode.selfcheck) return send(res, 404, { message: "Not Found" });
+  if (req.method === "PUT" && url.pathname.endsWith("/enable")) return send(res, 204, "");
+  if (req.method === "POST" && url.pathname.endsWith("/dispatches")) return send(res, 204, "");
+  if (req.method === "GET" && url.pathname.endsWith("/runs")) {
+    if (mode.selfcheck === "none") return send(res, 200, { total_count: 0, workflow_runs: [] });
+    const at = new Date(Date.now() - Number(mode.selfcheckDays) * DAY).toISOString();
+    const run = (n, conclusion, when) => ({ id: n, name: "Render check", status: "completed", conclusion, event: "schedule", head_branch: "main", created_at: when, updated_at: when });
+    const failed = mode.selfcheck === "fail" || mode.selfcheck === "fail2";
+    return send(res, 200, { total_count: 2, workflow_runs: [run(2, failed ? "failure" : "success", at),
+      run(1, mode.selfcheck === "fail2" ? "failure" : "success", new Date(Date.now() - (Number(mode.selfcheckDays) + 7) * DAY).toISOString())] });
+  }
+  return send(res, 404, { message: "Not Found" });
+}
+
 function github(req, res, url, tools) {
+  if (/\/actions\/workflows\/render-check\.yml(\/|$)/.test(url.pathname)) return selfcheck(req, res, url, tools);
   if (req.method === "POST") {                       // starting a reel
     if (!mode.dispatch) return false;
     return send(res, Number(mode.dispatch), { message: Number(mode.dispatch) === 401 ? "Bad credentials" : "Refused" });
@@ -160,8 +188,32 @@ function github(req, res, url, tools) {
     state: mode.github === "off" ? "disabled_manually" : "active" }, headers);
 }
 
-function anthropic(req, res, url, tools) {
+const NEWER = "claude-sonnet-6";
+async function anthropic(req, res, url, tools) {
   const refuse = () => send(res, 401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
+  // Anthropic's list of models, newest first, as the real one gives it.
+  if (req.method === "GET" && url.pathname === "/__anthropic/v1/models") {
+    if (req.headers["x-api-key"] !== tools.env.ANTHROPIC_API_KEY || mode.claudeKey === "401") return refuse();
+    if (mode.modelList === "busy") return send(res, 529, { type: "error", error: { type: "overloaded_error", message: "Overloaded" } });
+    const m = (id, display_name, created_at) => ({ type: "model", id, display_name, created_at });
+    return send(res, 200, { has_more: false, data: [m("claude-opus-7", "Claude Opus 7", "2027-03-01T00:00:00Z"),
+      ...(mode.modelList === "none" ? [] : [m(NEWER, "Claude Sonnet 6", "2027-02-01T00:00:00Z"), m("claude-sonnet-5-8", "Claude Sonnet 5.8", "2026-12-01T00:00:00Z")]),
+      m("claude-haiku-6", "Claude Haiku 6", "2027-02-15T00:00:00Z"), m("claude-sonnet-5-5", "Claude Sonnet 5.5", "2026-09-21T00:00:00Z")] });
+  }
+  // A real question while the old model is gone: the old model is refused, the newer one answers
+  // (through the built-in pretend Claude, which only knows the old name). A request another stand-in passes
+  // on to the built-in one ("?plain") has been through here already.
+  if (req.method === "POST" && url.pathname === "/__anthropic/v1/messages" && mode.modelGone === "yes" && !req.headers["x-dev-forwarded"] && !url.searchParams.has("plain")) {
+    const body = JSON.parse((await tools.readBody(req)).toString() || "{}");
+    if (body.model !== NEWER) return send(res, 404, { type: "error", error: { type: "not_found_error", message: `model: ${body.model}` } });
+    if (mode.newModelPlain === "yes" && body.output_config) {
+      return send(res, 400, { type: "error", error: { type: "invalid_request_error", message: "output_config.effort: Extra inputs are not permitted" } });
+    }
+    const out = await fetch(`http://localhost:${tools.PORT}/__anthropic/v1/messages`, { method: "POST",
+      headers: { "x-api-key": req.headers["x-api-key"] || "", "content-type": "application/json", "x-dev-forwarded": "1" },
+      body: JSON.stringify({ ...body, model: "claude-sonnet-5-5", output_config: { effort: "medium" } }) });
+    return send(res, out.status, await out.text());
+  }
   if (req.method === "GET" && url.pathname.startsWith("/__anthropic/v1/models/")) {
     if (req.headers["x-api-key"] !== tools.env.ANTHROPIC_API_KEY || mode.claudeKey === "401") return refuse();
     const id = decodeURIComponent(url.pathname.split("/").pop());
@@ -199,9 +251,16 @@ export async function handle(req, res, url, tools) {
   if (p === "/__health_reset") { mode = fine(); log = []; issued = new Map(); made = 0; return send(res, 200, mode); }
 
   const service = /^\/__(graph|github|anthropic|pixabay|pexels|openverse|gutendex)\//.exec(p)?.[1];
-  if (!service) return false;
-  log.push({ service, method: req.method, path: p.replace(/^\/__\w+/, "") });
-  ops.outside += 1; ops.what.push(`${service} ${req.method} ${p.replace(/^\/__\w+/, "")}`);
+  if (!service) {
+    // Files fetched from the libraries' own hosts (a photo, a book's text) are outside calls too.
+    if (p.startsWith("/__media/")) { ops.outside += 1; ops.what.push(`media ${req.method} ${p}`); }
+    return false;
+  }
+  // (A call one stand-in passes on to another, marked by a header or by "?plain", is the same call: counted once.)
+  if (!req.headers["x-dev-forwarded"] && !url.searchParams.has("plain")) {
+    log.push({ service, method: req.method, path: p.replace(/^\/__\w+/, "") });
+    ops.outside += 1; ops.what.push(`${service} ${req.method} ${p.replace(/^\/__\w+/, "")}`);
+  }
   if (service === "graph") return graph(req, res, url);
   if (service === "github") return github(req, res, url, tools);
   if (service === "anthropic") return anthropic(req, res, url, tools);
@@ -210,6 +269,17 @@ export async function handle(req, res, url, tools) {
   }
   if (service === "openverse" && p === "/__openverse/v1/auth_tokens/token/" && mode.openverse !== "ok") {
     return send(res, 401, { error: "invalid_client" });
+  }
+  if (service === "openverse" && p === "/__openverse/v1/audio/" && mode.tracks !== "ok") {
+    if (mode.tracks === "429") return send(res, 429, { detail: "Request was throttled. Expected available in 3000 seconds." });
+    if (mode.tracks === "busy") return send(res, 503, "busy");
+    return send(res, 200, { result_count: 0, page_count: 0, page_size: 20, page: 1, results: [] });
+  }
+  if (service === "gutendex" && mode.gutendex !== "ok") {
+    if (mode.gutendex === "busy") return send(res, 503, "busy");
+    const text = mode.gutendex === "textgone" ? { "text/plain; charset=us-ascii": `http://localhost:${tools.PORT}/__media/refused_book.txt` } : {};
+    return send(res, 200, { count: 1, results: [{ id: 205, title: "Walden, and On The Duty Of Civil Disobedience", languages: ["en"],
+      authors: [{ name: "Thoreau, Henry David" }], formats: { "text/html": "x", ...text } }] });
   }
   return false;
 }
