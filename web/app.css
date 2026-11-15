@@ -57,6 +57,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
+html, body { height: var(--app-h, 100%); }   /* --app-h: see the note in index.html (iOS Home Screen) */
 body {
   background: var(--ink);
   color: var(--foam);

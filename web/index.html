@@ -22,6 +22,19 @@ try {
       .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
   }
 } catch (e) { /* no storage: the app asks later instead */ }
+// Opened from the Home Screen, iOS reports the page as shorter than the screen by the height of the status bar,
+// which left an empty strip under the section bar. There the app always fills the whole screen, so its height
+// is set to the screen's own (the shorter side when the phone is on its side).
+(function () {
+  if (!navigator.standalone) return;
+  var fit = function () {
+    var a = screen.width, b = screen.height, wide = window.innerWidth > window.innerHeight;
+    var full = wide ? Math.min(a, b) : Math.max(a, b);
+    if (full > window.innerHeight) document.documentElement.style.setProperty("--app-h", full + "px");
+    else document.documentElement.style.removeProperty("--app-h");
+  };
+  fit(); window.addEventListener("resize", fit); window.addEventListener("orientationchange", function () { setTimeout(fit, 300); });
+})();
 </script>
 <link rel="stylesheet" href="app.css">
 </head>
