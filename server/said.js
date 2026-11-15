@@ -106,6 +106,16 @@ function titleCase(text) {
   return content.filter((w) => /^[\p{Lu}\p{N}]/u.test(w)).length / content.length >= 0.8;
 }
 // A known character's name, compared without spaces ("Shang Zhi Tao" is "Shang Zhitao").
+// A reviewer's aside inside a quoted line is not part of the line: "(ICK!)", "(HOW HAS SHE ENDURED?!?)", "[lol]",
+// or one left open where the page cut the line. An aside in ordinary words ("(to her mother)") stays.
+export function withoutAsides(text) {
+  let t = String(text || "").replace(/\s*[(\[]([^()\[\]]{1,90})[)\]]/g, (m, inner) => {
+    const letters = inner.replace(/[^A-Za-z]/g, ""), caps = letters.replace(/[^A-Z]/g, "").length;
+    return (letters.length >= 2 && caps / letters.length > 0.6) || /[!?]\s*$/.test(inner) || /^(lol|lmao|omg|sic|ep\.?\s*\d+|episode\s+\d+)\b/i.test(inner.trim()) ? "" : m;
+  });
+  t = t.replace(/\s*[(\[][^()\[\]]*$/, "");
+  return t.replace(/\s+/g, " ").trim();
+}
 export const isCharacter = (work, by) => !!(work && by && (work.characters || []).some((c) => squash(c).length >= 3 && squash(c) === squash(by)));
 
 // ---------------------------------------------------------------- 1. the cheap refusals
@@ -206,6 +216,10 @@ export async function judge(env, kit, work, lines, { state = null, ask = true } 
     const out = { ...l };
     delete out.ctx;
     if (is === "said" || is === "narration") kept.push({ ...out, is });
+    // Judged "about", but the page credits it to one of the work's own characters and shows by its structure that
+    // it is a line: the page is believed over the judge, and the line is marked to check. (Real case: a character's
+    // metaphor, "In the height of summer, there are no ice sculptures.", was judged a remark about the drama.)
+    else if (is === "about" && isCharacter(work, l.by) && isSaid(l, work, l.ctx || {}).proof) kept.push({ ...out, is: "unsure", verify: true });
     else if (is === "about") { count(refused, "judged about the work"); if (state && Array.isArray(state.keepRefused)) state.keepRefused.push({ text: String(l.text).slice(0, 200), is }); }
     // Unsure, but the page itself shows it is a line and names one of the work's characters for it: kept, to check.
     else if (is === "unsure" && isCharacter(work, l.by) && isSaid(l, work, l.ctx || {}).proof) kept.push({ ...out, is: "unsure", verify: true });

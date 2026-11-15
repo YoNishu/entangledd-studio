@@ -380,6 +380,8 @@ async function mdlPage(env, kit, work, state) {
   const pg = (await O.readSite(env, kit, state, "mydramalist", [url], own)).get(O.addressKey(url));
   if (!pg) return null;
   more.mdl.next = 2;
+  // It came back as a short other page (it happens through Extract): asked again in the next round.
+  if (pg.how === "read through Tavily" && !(pg.text.length >= 1000 && String(pg.links || "").includes(more.mdl.path))) { more.mdl.bad = { 1: 1 }; return null; }
   more.mdl.last = O.lastPage(pg.links) || 1;                  // no list of pages: it is the only one
   const text = pg.text.slice(0, 300000);
   // Reviews: every quoted line goes to the gate, whose judge sees the words around it (no picking by Claude).
@@ -1369,11 +1371,14 @@ export const runClean = cleanJob;                // for the tests
 // without her phone. Bounded: PROOF_ROUNDS rounds a title for each PROOF_V, whoever calls, and never two within
 // 15 seconds; after that it only reads back what it has. It holds nothing of hers: the titles are fixed, the works
 // are kept apart from the Library (data/proof.json), and no taste or note is used.
-export const PROOF_V = 2;
-const PROOF_ROUNDS = 3;
+export const PROOF_V = 3;
+const PROOF_ROUNDS = 5;
 const PROOF_WORKS = [["The early spring", "series"], ["True beauty", "series"]];
-function proofView(rec, note) {
-  return { v: rec.v, note, works: rec.works.map((w) => ({ title: w.title, type: w.type, rounds: w.rounds, done: !!w.done,
+function proofView(rec, note, look = null) {
+  // How the search helpers stand today (counts and the services' own short words; no key, nothing of hers).
+  const svc = (u) => (u ? { calls: u.calls || 0, answered: u.answered || 0, refused: u.refused || 0, off: u.off || "", skip: u.skip || [] } : null);
+  return { v: rec.v, note, ...(look ? { services: { day: look.day || "", gemini: svc(look.gemini), openai: svc(look.openai), last: look.last || {}, uses: look.uses || {},
+    open: look.open || {}, sites: Object.fromEntries(Object.entries(look.sites || {}).map(([k, v]) => [k, { ok: v.ok || 0, failed: v.failed || 0, why: v.why || "", until: v.until || 0 }])) } } : {}), works: rec.works.map((w) => ({ title: w.title, type: w.type, rounds: w.rounds, done: !!w.done,
     known: w.item && w.item.known ? { real: w.item.known.real || "", year: w.item.known.year || 0, country: w.item.known.country || "", characters: (w.item.known.characters || []).length } : null,
     kept: kept(w.item || {}).length, left: !!w.left, log: w.log,
     lines: kept(w.item || {}).map((l) => ({ text: l.text, by: l.by || "", site: l.site || "", check: !!l.verify })) })) };
@@ -1414,10 +1419,11 @@ export const open = {
   proof: async (request, env, parts, kit, ctx) => {
     if (request.method !== "GET" || parts.length !== 1) return kit.fail(404, "Not found.");
     if (!ctx || !ctx.waitUntil) return kit.json(await proofRound(env, kit));
-    const doc = await kit.loadDoc(env, "proof", null);
+    const [doc, look] = await Promise.all([kit.loadDoc(env, "proof", null), kit.loadDoc(env, "lookups", null)]);
     const rec = doc && doc.v === PROOF_V ? doc : null;
     const due = !rec || (rec.works.some((x) => x.rounds < PROOF_ROUNDS && !x.done) && Date.now() - rec.at >= 15000);
     if (due) ctx.waitUntil(proofRound(env, kit).catch((e) => console.error("proof round failed", e)));
+    if (new URL(request.url).searchParams.get("see") === "services") return kit.json(proofView({ v: PROOF_V, works: [] }, "services", look || {}));
     return kit.json(rec ? proofView(rec, due ? "a round has been started: ask again in half a minute" : rec.works.some((x) => x.rounds < PROOF_ROUNDS && !x.done) ? "a round is running or has just run" : "done") : { v: PROOF_V, note: "the first round has been started: ask again in half a minute", works: [] });
   },
 };

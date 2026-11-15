@@ -150,11 +150,13 @@ function searchFor(body) {
   return null;
 }
 
+const wrongOnce = new Set();
+const WRONG_PAGE = `# 'A Hundred Days of Rain' climbs back above 10%\n\nThe weekend drama rose again in the ratings on Sunday. "It is a relief," said its producer.\n\n` + "More news from the week. ".repeat(60);
 export async function handle(req, res, url, tools) {
   const p = url.pathname;
   const send = (status, out, type = "application/json", headers = {}) => { res.writeHead(status, { "Content-Type": type, ...headers }).end(typeof out === "string" ? out : JSON.stringify(out)); return true; };
   if (p === "/__extract_log") { const was = log; if (url.searchParams.get("reset")) log = []; return send(200, was); }
-  if (p === "/__extract_set") { if (url.searchParams.has("mode")) mode.extract = url.searchParams.get("mode"); return send(200, mode); }
+  if (p === "/__extract_set") { if (url.searchParams.has("mode")) { mode.extract = url.searchParams.get("mode"); wrongOnce.clear(); } return send(200, mode); }
   // The app's own fetch of the made-up drama's MyDramaList pages: refused, as the real site refuses the app.
   if (p.startsWith("/__mdl/") && (p.startsWith("/__mdl" + PATH) || (p === "/__mdl/search" && /willow station/i.test(url.searchParams.get("q") || "")))) {
     log.push({ own: p + url.search });
@@ -188,7 +190,11 @@ export async function handle(req, res, url, tools) {
   if (!urls.length || urls.length > 20) return send((entry.status = 400), { detail: { error: "Between 1 and 20 URLs." } });
   const results = [], failed_results = [];
   for (const u of urls) {
-    const md = readAt(String(u));
+    let md = readAt(String(u));
+    // mode "wrong" (as the real service did, 16 Nov 2026): review pages 2, 4 and 9 come back as a short other page
+    // the first time each is asked for, and as themselves when asked again.
+    const n = /\/reviews\?page=(\d+)$/.exec(String(u));
+    if (mode.extract === "wrong" && md && n && [2, 4, 9].includes(Number(n[1])) && !wrongOnce.has(n[1])) { wrongOnce.add(n[1]); md = WRONG_PAGE; }
     if (md) results.push({ url: u, raw_content: body.format === "text" ? plainOf(md) : md, images: [] });
     else failed_results.push({ url: u, error: "Failed to fetch url" });
   }

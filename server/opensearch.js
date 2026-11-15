@@ -245,17 +245,25 @@ export async function results(env, kit, state, queries, { enough = 6 } = {}) {
   let keyless = 0;
   // Enough: as many results the app can read as it reads pages (a list of sign-in sites is not enough, however long).
   const full = () => list.filter(readable).length >= Math.min(enough, MAX_PAGES);
-  for (const [id, run, cap] of providers(env)) {
-    if (full()) break;
-    if (F.resting(state, id)) { F.step(state, id, "not asked", { why: "it turned the app away earlier" }); continue; }
-    const mine = id === "tavily" ? queries : queries.filter((q) => typeof q === "string");     // only Tavily can be told which sites
-    for (const query of mine.slice(0, cap === "results" ? MAX_RESULT_PAGES - keyless : KEYED_QUERIES)) {
-      const q = textOf(query);
-      if (full() || Date.now() - state.began > state.limit) break;
-      if (cap === "results" && keyless >= MAX_RESULT_PAGES) break;
-      if (!spend(state, kit, cap)) { F.step(state, id, "not asked", { why: "the app's daily limit for it" }); break; }
+  // Question by question. A question for particular sites goes to Tavily (only it can be told which sites); a
+  // plain question goes to Google first when Serper's key is set (it finds the fan pages and quote lists best),
+  // then to Tavily, then to the public results pages. The first that answers a question is enough for it.
+  const count = {}, dead = new Set(), told = new Set();
+  const tell = (id, why) => { if (!told.has(id)) { told.add(id); F.step(state, id, "not asked", { why }); } };
+  for (const query of queries) {
+    if (full() || Date.now() - state.began > state.limit) break;
+    const q = textOf(query);
+    let order = providers(env).filter(([id]) => typeof query === "string" || id === "tavily");
+    if (typeof query === "string") order = [...order.filter(([id]) => id === "serper"), ...order.filter(([id]) => id !== "serper")];
+    for (const [id, run, cap] of order) {
+      if (dead.has(id)) continue;
+      if (F.resting(state, id)) { tell(id, "it turned the app away earlier"); dead.add(id); continue; }
+      if ((count[id] || 0) >= (cap === "results" ? MAX_RESULT_PAGES : KEYED_QUERIES)) continue;
+      if (cap === "results" && keyless >= MAX_RESULT_PAGES) continue;
+      if (!spend(state, kit, cap)) { tell(id, "the app's daily limit for it"); dead.add(id); continue; }
       if (cap === "results") keyless += 1;
-      asked.push(query);
+      count[id] = (count[id] || 0) + 1;
+      if (!asked.includes(query)) asked.push(query);
       let got;
       try { got = await run(env, kit, state, query); say(env, "results", { via: id, q, list: got.map((r) => [r.url, r.title, r.snippet]) }); }
       catch (e) {
@@ -263,7 +271,8 @@ export async function results(env, kit, state, queries, { enough = 6 } = {}) {
         if (cap === "results") keyless -= 1;           // a results page that said no does not use up a search's share
         if (e && e.blocked) F.noteBlocked(state, id, e.blocked);
         else F.noteSite(state, id, e && e.name === "TimeoutError" ? "no answer in time" : "could not be reached");
-        break;                                         // this provider is no good now: the next one
+        dead.add(id);                                  // this provider is no good now: the next one
+        continue;
       }
       let n = 0;
       for (const r of got) {
@@ -272,7 +281,7 @@ export async function results(env, kit, state, queries, { enough = 6 } = {}) {
         list.push({ ...r, host: F.hostOf(r.url), via: id });
       }
       F.step(state, id, n ? "answered" : "no page", { q: kit.oneLine(q, 90), n, ...(query && query.sites ? { on: "the sites where lines are written down" } : {}) });
-      if (n) { F.noteSite(state, id, ""); if (!via.includes(id)) via.push(id); }
+      if (n) { F.noteSite(state, id, ""); if (!via.includes(id)) via.push(id); break; }
     }
   }
   return { list, via, asked };
@@ -362,7 +371,7 @@ export function extractWait(env, state) {
 }
 // Reads the addresses through Extract: a Map from addressKey(url) to { text, links } (text as plain text, links the
 // markdown it came as, for its page links). An address it could not read is simply not there.
-export async function extractPages(env, kit, state, urls) {
+export async function extractPages(env, kit, state, urls, depth = "basic") {
   const out = new Map();
   if (!env.TAVILY_API_KEY) return out;
   await F.openRecord(env, kit, state);
@@ -375,7 +384,7 @@ export async function extractPages(env, kit, state, urls) {
   try {
     const got = await fetchCapped(env, state, `${env.TAVILY_API || "https://api.tavily.com"}/extract`, { method: "POST", accept: "application/json", bytes: 4 * 1024 * 1024, ms: EXTRACT_MS,
       headers: { Authorization: "Bearer " + env.TAVILY_API_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ urls: ask, extract_depth: "basic", format: "markdown" }) });
+      body: JSON.stringify({ urls: ask, extract_depth: depth === "advanced" ? "advanced" : "basic", format: "markdown" }) });
     if (got.status === 401) throw blocked("refused the key (status 401)");
     if (got.status === 432 || got.status === 433) {
       F.noteBlocked(state, "extract", `the allowance is used up (status ${got.status}); resting until tomorrow`);
@@ -431,7 +440,7 @@ export const lastPage = (raw) => Math.min(200, Math.max(0, ...[...String(raw || 
 // once it turns the app away it rests for the day, and its pages are read through Extract instead. "own" gives the
 // address the app itself fetches for a page (the stand-in's site in tests). Map from addressKey(url) to
 // { text, links, how }.
-export async function readSite(env, kit, state, site, urls, own = (u) => u) {
+export async function readSite(env, kit, state, site, urls, own = (u) => u, depth = "basic") {
   const out = new Map();
   await F.openRecord(env, kit, state);
   let rest = urls.slice();
@@ -452,7 +461,7 @@ export async function readSite(env, kit, state, site, urls, own = (u) => u) {
       if (!(e && e.blocked)) rest = [];
     }
   }
-  if (rest.length && env.TAVILY_API_KEY) for (const [k, v] of await extractPages(env, kit, state, rest)) out.set(k, { ...v, how: "read through Tavily" });
+  if (rest.length && env.TAVILY_API_KEY) for (const [k, v] of await extractPages(env, kit, state, rest, depth)) out.set(k, { ...v, how: "read through Tavily" });
   return out;
 }
 
@@ -739,10 +748,12 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
   const take = (q, i) => {
     const pg = pages[i];
     tried += 1;
-    const text = kit.flatten(q && q.text).replace(/^"+|"+$/g, ""), n = kit.norm(text);
+    // As written on the page it must be on the page; what is kept is the line without a reviewer's asides.
+    const written = kit.flatten(q && q.text).replace(/^"+|"+$/g, "");
+    const text = S.withoutAsides(written) || written, n = kit.norm(text);
     if (!pg) return drop("no page named", text);
     if (!lineLike(text)) return drop("too short or too long", text, pg.site);
-    if (!onPage(words[i], text)) return drop("not on the page", text, pg.site);
+    if (!onPage(words[i], written)) return drop("not on the page", text, pg.site);
     if (have.has(n)) { agrees(have, n, pg); return drop("already kept", text, pg.site); }
     const by = kit.oneLine(q.by, 80), from = kit.oneLine(q.from, 120);
     const credited = by && (q.fromPage || words[i].includes(sameWords(by))) ? by : "";
@@ -752,7 +763,7 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
     if (!work && !credited && !(from && words[i].includes(sameWords(from)))) return drop("no one named for it", text, pg.site);
     // The gate (said.js): a line said in the work, never one said about it. Where it sat on the page counts.
     const place = pg.site === "mydramalist.com" ? "mdl" : QUOTE_SITES.test(pg.site) ? "quotes" : "page";
-    const ctx = q.ctx ? { ...q.ctx, place } : S.contextOf(pg, text, place);
+    const ctx = q.ctx ? { ...q.ctx, place } : S.contextOf(pg, written, place);
     const said = S.isSaid({ text, by: credited }, work, ctx);
     if (!said.ok) { S.count(refused, said.why); return say(env, "rejected", { why: "gate: " + said.why, site: pg.site, text: text.slice(0, 120) }); }
     lines.push({ text, by: credited, url: pg.url, site: pg.site, verify: !!work, theme: kit.oneLine(q.theme, 30), tone: kit.oneLine(q.tone, 20),
@@ -877,7 +888,14 @@ export async function linesForWork(env, kit, work, state, { want = 10, have = ne
 // how many) and its Goodreads quotes pages, the questions already asked. Each round reads the next few, so that
 // when her kept lines run out there is always somewhere new to read, until all of it is read.
 //   { pages: [{ url, site, title, read, got }], mdl: { path, next, last, quiet, done }, gr: { id, ... }, asked: [q] }
-export const LISTED = 40, ASKED = 12, QUIET = 3;
+export const LISTED = 40, ASKED = 12, QUIET = 5;
+// A work's own page that came back as it should: a real page of its reviews names the work's own address many times
+// and is long. (Real case, 16 Nov 2026: through Extract, 4 of 12 review pages came back as a short other page.)
+export const TRIES = 3;                                       // times a page that came back wrong is asked again
+const goodOwn = (o, more, pg) => !!pg && (o !== more.mdl || (pg.text.length >= 1000 && String(pg.links || pg.text).includes(more.mdl.path)));
+const retries = (o) => Object.entries((o && o.bad) || {}).filter(([, t]) => t < TRIES).map(([n]) => Number(n)).sort((a, b) => a - b);
+// Is anything of its own left to read: further pages, or pages to ask again.
+const ownLeft = (o) => !!o && ((!o.done && (!o.last || o.next <= o.last)) || retries(o).length > 0);
 export const newMore = (m) => {
   const x = m && typeof m === "object" ? m : {};
   return { pages: Array.isArray(x.pages) ? x.pages.slice(0, LISTED).map((p) => ({ ...p })) : [], ...(x.mdl ? { mdl: { ...x.mdl } } : {}), ...(x.gr ? { gr: { ...x.gr } } : {}),
@@ -919,13 +937,13 @@ function ownPage(more, url) {
 // Is anything left to read? Own pages not read yet, results not read yet, or a question not asked yet.
 export function leftToRead(env, work, more) {
   if (!more || !Array.isArray(more.pages)) return false;
-  const own = (o) => o && !o.done && (!o.last || o.next <= o.last);
+  const own = ownLeft;
   return own(more.mdl) || (own(more.gr) && env.QUOTE_SITES !== "off") || more.pages.some((p) => !p.read) || (!!providers(env).length && !!nextQuestion(work, more));
 }
 const nextQuestion = (work, more) => [siteQuery(work), ...queriesFor(work)].find((q) => !more.asked.includes(qKey(q))) || null;
 // What the next round will read, in her words: "Reading more reviews of X…" or "Reading more pages about X…".
 export function readingWhat(work, more) {
-  const own = (o) => o && !o.done && (!o.last || o.next <= o.last);
+  const own = ownLeft;
   const title = work.title;
   if (own(more && more.mdl)) return `Reading more reviews of ${title}…`;
   if (own(more && more.gr)) return `Reading more quotes pages of ${title}…`;
@@ -940,9 +958,14 @@ export function readingWhat(work, more) {
 export async function readOn(env, kit, work, state, { want = 30, have = new Set(), about = "" } = {}) {
   await F.openRecord(env, kit, state);
   const more = state.more || (state.more = newMore());
-  const own = (o) => o && !o.done && (!o.last || o.next <= o.last);
+  const own = ownLeft;
   const picks = [];
-  const take = (o, site, addr) => { if (own(o)) for (let n = o.next; picks.length < ROUND_PAGES && (!o.last || n <= o.last); n++) picks.push({ o, n, url: addr(n), site }); };
+  // Pages that came back wrong are asked again first (more thoroughly), then the next ones.
+  const take = (o, site, addr) => {
+    if (!o) return;
+    for (const n of retries(o)) if (picks.length < ROUND_PAGES && !picks.some((p) => p.o === o && p.n === n)) picks.push({ o, n, url: addr(n), site, again: true });
+    if (!o.done) for (let n = o.next; picks.length < ROUND_PAGES && (!o.last || n <= o.last); n++) if (!picks.some((p) => p.o === o && p.n === n)) picks.push({ o, n, url: addr(n), site });
+  };
   if (more.mdl) take(more.mdl, "mydramalist", (n) => mdlReviews(more.mdl.path, n));
   if (more.gr && env.QUOTE_SITES !== "off") take(more.gr, "goodreads", (n) => grQuotes(more.gr.id, n));
   let rest = more.pages.filter((p) => !p.read).slice(0, ROUND_PAGES - picks.length);
@@ -964,14 +987,16 @@ export async function readOn(env, kit, work, state, { want = 30, have = new Set(
   const ownAddress = (site) => (u) => base[site] + new URL(u).pathname + new URL(u).search;
   const got = new Map();
   for (const site of ["mydramalist", "goodreads"]) {
-    const mine = picks.filter((p) => p.site === site);
-    if (mine.length) for (const [k, v] of await readSite(env, kit, state, site, mine.map((p) => p.url), ownAddress(site))) got.set(k, v);
+    for (const again of [false, true]) {
+      const mine = picks.filter((p) => p.site === site && !!p.again === again);
+      if (mine.length) for (const [k, v] of await readSite(env, kit, state, site, mine.map((p) => p.url), ownAddress(site), again ? "advanced" : "basic")) got.set(k, v);
+    }
   }
   const pagesRead = [];
   const ownSite = { mydramalist: "mydramalist.com", goodreads: "goodreads.com" };
   for (const p of picks) {
     const pg = got.get(addressKey(p.url));
-    if (pg && pg.text.length >= 200) pagesRead.push({ url: p.url, site: ownSite[p.site], title: "", head: "", text: pg.text, via: pg.how, links: pg.links, own: true, pick: p });
+    if (pg && pg.text.length >= 200 && goodOwn(p.o, more, pg)) pagesRead.push({ url: p.url, site: ownSite[p.site], title: "", head: "", text: pg.text, via: pg.how, links: pg.links, own: true, pick: p });
   }
   const others = rest.length ? await readPages(env, kit, state, rest.map((p) => ({ url: p.url, title: p.title, snippet: "", host: p.site, via: "list" })), rest.length) : [];
   const wait = extractWait(env, state);
@@ -993,10 +1018,15 @@ export async function readOn(env, kit, work, state, { want = 30, have = new Set(
   for (const o of [more.mdl, more.gr].filter(Boolean)) {
     for (const p of picks.filter((x) => x.o === o).sort((a, b) => a.n - b.n)) {
       const pg = pagesRead.find((x) => x.pick === p);
-      if (pg && pg.links) o.last = Math.max(o.last || 0, lastPage(pg.links));
-      const n = pg ? gave(p.url) : 0;
-      o.quiet = n ? 0 : (o.quiet || 0) + 1;
-      o.next = p.n + 1;
+      if (!p.again) o.next = Math.max(o.next, p.n + 1);
+      if (!pg) {
+        // Not read, or it came back as another page: asked again in a later round, and no sign that the reviews are over.
+        if (got.size || !wait) o.bad = { ...(o.bad || {}), [p.n]: ((o.bad || {})[p.n] || 0) + 1 };
+        continue;
+      }
+      if (o.bad) delete o.bad[p.n];
+      if (pg.links) o.last = Math.max(o.last || 0, lastPage(pg.links));
+      if (!p.again) o.quiet = gave(p.url) ? 0 : (o.quiet || 0) + 1;
       if (o.quiet >= QUIET || (o.last && o.next > o.last)) o.done = true;
     }
   }
