@@ -48,4 +48,15 @@ http("GET", "/__posted_in_instagram?caption=" + urllib.parse.quote("Second waiti
 http("GET", "/api/posts", None, T)
 q = http("GET", "/api/queue", None, T)[1]["queue"]
 check("with the quote in the caption, the right one is linked", [x["id"] for x in q] == ["a"], q)
+# a reel kept under "Made, not posted" (not waiting, not handed over), posted from Instagram: found by its words
+serve()
+T = login(); connect(T)
+mj = "55555555-5555-4555-8555-555555555555"
+putdoc("made", [{"id": "m1", "jobId": mj, "made": int(time.time() * 1000) - 7200000, "snap": {}, "about": {"quote": "A kept line she made last week and posted later.", "author": "", "theme": "", "tone": "", "source": "own", "suggestionId": "", "made": None}},
+                {"id": "m2", "jobId": "66666666-6666-4666-8666-666666666666", "made": int(time.time() * 1000) - 9200000, "snap": {}, "about": {"quote": "Another kept line that stays where it is.", "author": "", "theme": "", "tone": "", "source": "own", "suggestionId": "", "made": None}}])
+http("GET", "/__posted_in_instagram?caption=" + urllib.parse.quote("A kept line she made last week and posted later. #love") + "&ago=60&type=REELS")
+s, b, _ = http("GET", "/api/posts", None, T)
+got = [p for p in doc("posts") if p.get("jobId") == mj]
+check("a made, not posted reel is found on Instagram and moved to Posted", len(got) == 1 and got[0]["mediaId"] and got[0]["quote"].startswith("A kept line she made"), doc("posts"))
+check("the other kept reel is left alone", not [p for p in doc("posts") if p.get("jobId", "").startswith("6666")])
 finish()

@@ -2922,8 +2922,7 @@ export default {
       // also: reels she marked as posted by hand that still wait for their Instagram link (looked for hourly)
       const hourly = new Date().getUTCMinutes() < 5;
       const unlinked = hourly && (posts.some((p) => p.byHand && !p.mediaId && Date.now() - (p.published || 0) < 30 * 24 * 3600 * 1000)
-        || (await loadDoc(env, "queue", [])).length > 0
-        || (await loadDoc(env, "made", [])).some((m) => m && !m.posted && !posts.some((p) => p.jobId === m.jobId)));
+        || (await loadDoc(env, "queue", [])).length > 0);
       if (!waiting.length && !handed.length && !unlinked) return;
       const ig = igReady(env) ? await loadIg(env) : null;
       if (!ig) return;
