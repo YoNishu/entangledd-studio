@@ -195,6 +195,11 @@ try {
 
 <section class="page" id="view-posts" aria-label="Posts" hidden>
   <article class="card week" id="week-card" hidden></article>
+  <div class="group" id="made-wrap" hidden>
+    <h2 class="ic ic-reel">Made, not posted</h2>
+    <p class="note" id="made-note"></p>
+    <div class="cards" id="list-made"></div>
+  </div>
   <div class="group" id="handoff-wrap" hidden>
     <h2 class="ic ic-insta">Being finished in Instagram</h2>
     <p class="note">Once you post one there, it moves down to Posted by itself, usually within a few minutes.</p>
@@ -290,6 +295,7 @@ try {
   </section>
 
   <section class="panel" id="panel">
+    <div id="draft-slot"></div>
     <nav class="tabs" role="tablist" aria-label="Editor">
       <button role="tab" id="tab-bg" aria-controls="pane-bg" aria-selected="false">Background</button>
       <button role="tab" id="tab-text" aria-controls="pane-text" aria-selected="false">Text</button>
@@ -424,6 +430,7 @@ try {
           <button class="btn tall ic ic-save" id="save-reel">Save</button>
         </div>
         <video id="result" controls playsinline loop></video>
+        <button class="btn quiet" id="edit-reel">Edit this reel</button>
         <button class="btn quiet" id="again">Start a new one</button>
       </div>
       <p class="done" id="done" role="status" hidden></p>
@@ -664,5 +671,6 @@ try {
 <script src="scorer.js"></script>
 <script src="lovenotes.js"></script>
 <script src="reminders.js"></script>
+<script src="drafts.js"></script>
 </body>
 </html>

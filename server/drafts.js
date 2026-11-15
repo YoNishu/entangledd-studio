@@ -24,7 +24,7 @@ const PART_SIZE = 8 * 1024 * 1024;                // as for a reel's background:
 const MAX_FILE_BYTES = 500 * 1024 * 1024;
 const MAX_SNAP_CHARS = 64 * 1024;
 const MAX_THUMB_BYTES = 300 * 1024;
-const FILE_TYPES = /^(jpg|jpeg|png|heic|webp|gif|mp4|mov|m4v|webm|mp3|m4a|aac|wav|ogg|oga|flac)$/;
+const FILE_TYPES = /^(bin|jpg|jpeg|png|heic|heif|webp|gif|mp4|mov|m4v|webm|mp3|m4a|aac|wav|ogg|oga|flac)$/;
 const FILE_GRACE_MS = DAY;                        // a file not (yet) named by any draft is left alone this long
 
 export const fileKey = (id) => `drafts/${id}`;
