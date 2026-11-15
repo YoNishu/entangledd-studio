@@ -53,8 +53,8 @@ const TONES = {
 
 const plainForm = (w) => {
   let s = String(w || "").toLowerCase().replace(/[^a-z]/g, "");
-  if (s.length > 5) s = s.replace(/(fulness|ness|ment|ful|ing|ity|ly|ed)$/, "");
   if (s.length > 3 && s.endsWith("s") && !s.endsWith("ss")) s = s.slice(0, -1);
+  if (s.length > 5) s = s.replace(/(fulness|ness|ment|ful|ing|ity|ly|ed)$/, "");
   return s;
 };
 function index(table) {
@@ -104,9 +104,12 @@ export function tagsIn(phrase) {
     if (/^(series|show|shows|tv)$/.test(w)) kinds.add("series");
     if (/^(book|books|novel|novels|reading)$/.test(w)) kinds.add("book");
   }
-  return { themes: [...themes], tones: [...tones], len, kinds: [...kinds] };
+  // Other words of four letters or more, in plain form: "never anything about money" can still meet a theme "money".
+  const other = words.filter((w) => w.length >= 4 && !STOP.has(w)).map(plainForm).filter((p) => p && !THEME_OF.has(p) && !TONE_OF.has(p));
+  return { themes: [...themes], tones: [...tones], len, kinds: [...kinds], words: [...new Set(other)] };
 }
 
+const STOP = new Set("about anything everything something nothing never always lines line quote quotes more less please like with from that this they them their there what when where which your yours just very much many some only also into over under than then even ever really things thing kind sort feel feels make makes made".split(" "));
 export const wordsIn = (text) => String(text || "").split(/\s+/).filter(Boolean).length;
 // The length group the scorer uses too: up to 10 words short, up to 25 medium, longer long.
 export const lenOf = (text) => { const n = wordsIn(text); return !n ? "" : n <= 10 ? "short" : n <= 25 ? "medium" : "long"; };

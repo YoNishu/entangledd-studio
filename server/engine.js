@@ -61,7 +61,7 @@ function today(bank, kit) { const d = kit.todayIST(); if (bank.day !== d) { bank
 // ---------------------------------------------------------------- the facts about one candidate
 function factsOf(item, tagsDoc) {
   const text = item.text != null ? item.text : item.quote;
-  const stored = tagsDoc && tagsDoc.items[keyOf(text)];
+  const stored = tagsDoc && (!item.theme || !item.tone) ? tagsDoc.items[keyOf(text)] : null;
   const src = item.source;
   const kind = low(src && typeof src === "object" ? src.type : src, 12);
   return {
@@ -86,6 +86,7 @@ function tasteOf(doc) {
 function fit(ph, f) {
   const asks = [], t = ph.t;
   if (t.themes.length) asks.push(t.themes.includes(f.th));
+  else if (f.th && t.words.includes(f.th)) asks.push(true);       // a theme outside the vocabulary, named in her words
   if (t.tones.length) asks.push(t.tones.includes(f.to));
   if (t.len) asks.push(t.len === f.len || (t.len === "short" && f.n <= 14));
   if (t.kinds.length) asks.push(t.kinds.includes(f.k));
