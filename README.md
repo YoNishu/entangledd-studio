@@ -33,7 +33,7 @@ Nothing is ever posted without her tap.
 | Part | Where | What |
 |---|---|---|
 | The app | Cloudflare Workers, static assets from `web/` | Plain HTML, CSS and JavaScript. No build step, no frameworks, no packages. |
-| The server | Cloudflare Worker `server/worker.js` | Everything under `/api/`. Add-on sections: `health.js` and `probes.js` (the health record), `scorer.js`, `lovenotes.js`, `upkeep.js` (cleaning, backups, the record of problems), `claudeuse.js` (the daily ceiling and the model in use). |
+| The server | Cloudflare Worker `server/worker.js` | Everything under `/api/`. Add-on sections: `health.js` and `probes.js` (the health record), `engine.js` (the pool of quotes and the score behind every suggestion, with `tags.js`), `scorer.js`, `lovenotes.js`, `upkeep.js` (cleaning, backups, the record of problems), `claudeuse.js` (the daily ceiling and the model in use). |
 | Storage | Cloudflare R2 bucket `entangledd-media` | Small JSON documents under `data/`, reels and uploads under `jobs/`, daily copies under `backup/`. |
 | Reels | GitHub Actions, `.github/workflows/render-job.yml` | `render/render.py` with ffmpeg lays the text the app drew over the background and mixes in the music. |
 | Outside services | Instagram Graph API, Anthropic (Claude), Pixabay, Openverse, Gutendex | Their keys live only in Cloudflare and GitHub, never in this repository. |
@@ -57,7 +57,8 @@ finished in Instagram's own editor, and runs at most one of the timed jobs below
 |---|---|---|
 | The morning pass | daily, 06:00 India time | Reads how posts did, notes the follower count, updates Nishiii's picture of her taste, prepares the day's five quotes. |
 | Instagram sign-in renewal | daily, in the last 30 days of a sign-in | Asks Meta for a fresh sign-in and takes it only if Meta's own check says it is as good as the old one. |
-| The scorer | every 6 hours | Learns which suggestions she picks. After 50 picks, and only while it proves itself on her past choices, it ranks what Nishiii suggests. |
+| The scorer | every 6 hours | Learns which suggestions she picks, from the first pick, and tests itself on her past choices. |
+| The engine's pool | every 2 to 6 hours, a little at a time | Tags new lines (theme, tone) in one question to Claude; looks up a book, film or series of hers never looked up (or due again); searches the web for real quotes on her themes, by her authors and from works close to hers; finds the real author behind lines that do well on pages she follows. Within its own share of each day's limits: 8 questions to Claude, 4 to Gemini, 2 to OpenAI, 4 look-ups. |
 | Little notes | hourly, while a sealed delivery is waiting | Opens notes delivered through `server/sealed.js`. |
 | Cleaning | every 6 hours | Removes what has outlived its use: reels and their parts after 7 days (the parts an hour after the reel exists), carousel pictures after 7 days, search results after 2 and 8 days, sign-in markers after 1 day, day lists after 60 days. |
 | Backups | looked at hourly, copied once a day | Copies every document that cannot be made again to `backup/<day>/`. Unchanged documents are skipped. Two weeks are kept, and a document's newest copy is never removed. |
@@ -128,6 +129,17 @@ Anthropic's own paid web search stays off unless `CLAUDE_WEB_SEARCH` is `on`. Wh
 is kept in the Library on that work, so a title is looked up once. `data/lookups.json` in
 storage shows the day's counts and whether each site answered.
 
+## How quotes are chosen
+
+Every suggestion, Today's five and quotes on request, comes from one pool and one score
+(`server/engine.js`). The pool: her own lines, real lines found for her books, films and series,
+real lines found on the web beyond her list, the real quotes behind what does well on the pages
+she follows, and Nishiii from memory. A source with nothing to give, or Nishiii unavailable for
+the day, does not stop the day. The score weighs her picks, what she told Nishiii, her own voice,
+the pages she follows, how her posts did, how sure the wording is, and variety; each card says
+why in one quiet line. `docs/SPEC.md` has the parts and their weights. Gemini and OpenAI are only
+ever sent themes, titles, authors and the words of a public quote.
+
 ## How to add a little note
 
 - **In the app**: Settings, Little notes from Nishiii, write the note, add a date if it belongs
@@ -196,7 +208,7 @@ python3 render/render.py --help
 
 | Folder | What is in it |
 |---|---|
-| `web/` | The app: `index.html`, `app.js` (composer, sign-in, Face ID), `studio.js` (everything around it), `insights.js`, `health.js`, `scorer.js`, `lovenotes.js`, `app.css`, fonts, `_headers` |
+| `web/` | The app: `index.html`, `app.js` (composer, sign-in, Face ID), `studio.js` (everything around it), `insights.js`, `health.js`, `scorer.js` (what the engine has learnt), `lovenotes.js`, `app.css`, fonts, `_headers` |
 | `server/` | The server, its add-on sections, and `dev.mjs` with `devparts/`: the stand-in for trying and testing |
 | `render/` | The reel renderer, its fonts, and its self-check |
 | `.github/` | Workflows: making a reel for the app, making one by hand, and the self-check twice a week |

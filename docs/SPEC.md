@@ -36,7 +36,7 @@ list at the end, "Ideas for later, only if she asks".
 | 13 | Insights: totals, reach over time, followers, best posts, best days and times, what works by theme, tone, source, background, format, length, author, music, font, reel length and hashtags, audience, rhythm, Nishiii's advice, a downloadable file | Done |
 | 14 | Music inside the reel: her own audio (or a video's sound), or a free track from Openverse; start point, volume, preview; credit added to the caption where the licence asks | Done |
 | 15 | "Add a song in Instagram": hand the finished reel to the Instagram app, then find it on her page and track it | Done |
-| 16 | A scorer trained on her picks and skips, which ranks suggestions once it has proved itself | Done |
+| 16 | A scorer trained on her picks and skips, from the first pick, self-tested on her own days | Done |
 | 17 | Little notes from Nishiii under the heading on Today; sealed delivery of notes through the repository | Done |
 | 18 | The health record, self-renewing Instagram sign-in, "Check everything" in Settings | Done |
 | 19 | Upkeep: cleaning, daily backups, the record of problems, a ceiling on questions to Claude, moving to a new Claude model unaided, the reel maker's self-test | Done |
@@ -44,6 +44,7 @@ list at the end, "Ideas for later, only if she asks".
 | 21 | A daily reminder on her phone at 11:11, if she turns it on | Done |
 | 22 | The test suite in the repository (`tests/`) | Done |
 | 23 | Real lines from a named book, film or series, found on Wikiquote, Goodreads and IMDb at no cost (and through Gemini or OpenAI web search when a key is set), kept in the Library | Done |
+| 24 | One engine for every suggestion: a pool from every source (her lines, found lines, web discovery, the real quotes behind pages she follows, Nishiii's memory) and one score over every signal, with a reason on each card; also used for Insights, advice, captions and background words | Done |
 
 ## How the app is laid out
 
@@ -71,12 +72,32 @@ never suggested back.
 
 **The scorer** (`server/scorer.js`). It keeps its own lasting record of every suggestion and what
 became of it. For each thing a quote can be (theme, tone, source, author, length) it counts how
-often she picks that, with recent choices counting more. Before it may rank anything it needs 50
-picks and proof on her own past choices that its ranking beats chance; if it stops being that
-good it goes back to learning. Once live, Nishiii is asked for about twice as many quotes, the
-best matches are kept (never more than two on one theme or by one author) plus one "Something
-different" so her taste can keep growing. It is counting and arithmetic, not model training, and
-"Forget everything" in the Nishiii section wipes it.
+often she picks that, with recent choices counting more. It counts from her first pick or skip,
+and tests itself on her own past days (would it have put the quote she picked above the ones she
+passed?): proven, it is "live"; clearly worse than chance, "resting".
+
+**The engine** (`server/engine.js`, `server/tags.js`). Every suggestion comes from one pool (her
+own lines, lines found for her works, lines found on the web, the real quotes behind posts that do
+well on pages she follows, Nishiii from memory) and one score: the sum of seven parts, each a
+value of about -1 to 1 worked out from stored signals, times its starting weight, times n / (n + K)
+for the evidence n behind it.
+
+| Part | Weight | Evidence (K) | Value |
+|---|---|---|---|
+| picks | 1.0 | picks and skips (40); at least 0.8 once proven, a twentieth while resting | the scorer's counts |
+| taste | 1.0 | profile phrases plus twice her notes (2) | +1 for a loved phrase that fits (+1.2 for a note), -2 for an avoid |
+| own voice | 0.6 | her lines and rewordings (5) | theme and tone of her own lines, length near hers (shorter if she asks to shorten) |
+| pages | 0.8 | tagged posts from pages (6) | share of what she saved and what did well there, each post against its account's usual numbers, recent ones more, shared reels 1.5 |
+| audience | 0.9 | measured posts (10) | her posts per person reached (saves and shares x3, comments x2), per group of at least 3, shrunk |
+| trust | 0.5 | always | book text 1, on a page 0.9, two sites 0.9, unchecked -0.6 |
+| fresh | 0.4 | always | author, theme had in the last days: down; a theme not had lately: up |
+
+The five: best first, at most two per source, theme or author, one of her own lines, one
+"Something different", lines her avoids bury only if nothing else is left; shown in a random order.
+The reason on a card is its two strongest parts, in words that name only what really matched.
+Scoring 500 candidates takes about 4 ms in Node. Gemini and OpenAI are sent only themes from the
+shared vocabulary, titles, authors and the words of a public quote. It is counting and arithmetic,
+not model training, and "Forget everything" in the Nishiii section wipes it.
 
 ## How it looks after itself
 
@@ -91,6 +112,10 @@ included, of the 50 allowed.
 | `instagram-renew` | 24 h | Renews the Instagram sign-in in its last 30 days, adopting the new one only when Meta's own check proves it valid, for the same app and person, with every permission and a later end date |
 | `health-check` | 24 h | The seven lines about keys and connections |
 | `scorer` | 6 h | Gathers her choices, rebuilds and tests the scorer |
+| `engine-tags` | 2 h | Tags up to 40 new lines (her own, pages' posts, found on the web) with theme and tone, in one question to Claude |
+| `engine-found` | 3 h | Looks up one of her works never looked up (or due again), at most 4 a day |
+| `engine-discover` | 4 h | One web question (Gemini, else OpenAI) for real quotes on her themes, by her authors, from works close to hers or new; at most 4 + 2 a day |
+| `engine-echo` | 6 h | Asks Claude who really wrote up to 12 lines read off pages she follows, then checks one on the web; never a page's own writing |
 | `lovenotes-deliveries` | 1 h | Opens sealed deliveries of little notes (listed only while one is waiting) |
 | `upkeep-clean` | 6 h | Removes stored files that have outlived their lifetime (table below) |
 | `upkeep-backup` | 1 h look, daily copy | Copies the documents that cannot be made again to `backup/<day>/`, seven per run |
@@ -153,6 +178,8 @@ lifetime and a cleaner.
 | `data/looks.json`, `inspirations.json`, `taste.json`, `passkeys.json` | Saved looks, inspiration, taste profile and notes, Face ID devices | 12, 80, 30 notes, 10 |
 | `data/account.json` | Followers per day | 800 days |
 | `data/scorer/log.json`, `model.json`, `forgot.json` | The scorer's record and model | 1,500 rows, older ones folded into running counts |
+| `data/engine/bank.json` | Lines found on the web by the engine, the questions already asked, the day's counts | 300 lines, 200 questions |
+| `data/engine/tags.json` | Theme and tone of each line, by a fingerprint of its words | 2,500 |
 | `data/lovenotes.json`, `sealkey.json` | Little notes, and the key that opens sealed deliveries | 60 notes of 280 characters; never shown, listed or logged |
 | `data/errors.json` | The record of problems | Last 30 |
 | `data/insightcache/*`, and one each of `instagram`, `openverse`, `metriclists`, `report`, `jobstamps`, `health`, `healthnotes`, `upkeep`, `backupstate`, `claudeuse` | Small state | Overwritten in place |
