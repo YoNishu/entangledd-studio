@@ -19,6 +19,7 @@ export function env(PORT) {
   at = `http://localhost:${PORT}`;
   return { DDG_SITE: at + "/__ddg", BING_SITE: at + "/__bing", TAVILY_API: at + "/__tavily", SERPER_API: at + "/__serper", OPEN_DEV_HOSTS: `localhost:${PORT}`, MDL_SITE: at + "/__mdl",
     OPEN_SEARCH: process.env.OPEN_SEARCH === "on" ? "on" : "off",
+    ...(process.env.CLAUDE === "off" ? { ANTHROPIC_API_KEY: "" } : {}),      // Nishiii switched off: lines are picked without Claude
     ...(mode.tavily === "on" ? { TAVILY_API_KEY: TAVILY_KEY } : {}), ...(mode.serper === "on" ? { SERPER_API_KEY: SERPER_KEY } : {}) };
 }
 

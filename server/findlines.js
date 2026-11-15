@@ -470,7 +470,7 @@ async function pickFrom(env, kit, work, pg, about, taste, have, state) {
       const text = kit.flatten(q && q.text).replace(/^"+|"+$/g, "");
       // Kept only if the words are really on the page that was read.
       if (have.has(kit.norm(text))) O.agrees(have, kit.norm(text), pg);
-      if (text.length < 20 || text.length > 400 || !O.onPage(words, text) || have.has(kit.norm(text)) || HEADING.test(text)) { O.say(env, "rejected", { site: pg.site, why: "not on the page, too short or already kept", text: text.slice(0, 120) }); continue; }
+      if (!O.lineLike(text) || !O.onPage(words, text) || have.has(kit.norm(text)) || HEADING.test(text)) { O.say(env, "rejected", { site: pg.site, why: "not on the page, too short or already kept", text: text.slice(0, 120) }); continue; }
       const by = kit.oneLine(q.by, 80);
       const named = by && (q.fromPage || lower.includes(by.toLowerCase())) ? by : "";
       lines.push({ text, by: work.type === "book" ? pg.by || named : named, url: pg.url, site: pg.site, verify: !!pg.web,
@@ -888,6 +888,7 @@ async function lookUp(env, kit, item, need, about, taste, state) {
         const got = await O.linesForWork(env, kit, work, state, { want: more(), have, about });
         const why = Object.entries(got.dropped).map(([k, v]) => `${v} ${k}`).join(", ");
         step(state, "web", got.lines.length ? "found" : got.pages.length ? "no line passed" : "no page", { n: got.lines.length,
+          counts: { ...(got.counts || {}), dropped: got.dropped },
           read: [...new Set(got.pages.map((p) => p.site))].slice(0, 4), ...(why ? { why } : got.pages.length ? {} : { why: "no page that names this work" }) });
         if (got.lines.length && !where) where = got.lines[0].url;
         lines = lines.concat(got.lines);
@@ -915,7 +916,33 @@ async function lookUp(env, kit, item, need, about, taste, state) {
     tries: all.length ? 0 : (prior.tries || 0) + 1, trail: { at: Date.now(), said: sayTrail(steps, lines.length), steps } };
   if (resume === undefined) delete out.resume;
   keepTrail(state, work, steps, lines.length);
+  keepCoarse(state, item, steps, lines.length);
   return out;
+}
+// For the open health record (/api/health): the last look only, with no title and no line, only what each
+// step did and its counts, and whether the work was identified. So Nishith can see how it went without signing in.
+function keepCoarse(state, item, steps, n) {
+  if (!state.rec) return;
+  const k = item.known || {};
+  state.rec.coarse = { at: Date.now(), type: item.type, identified: !!item.known, kind: item.known ? k.kind || "" : "", year: item.known ? Number(k.year) || 0 : 0,
+    kept: n, steps: steps.slice(0, 16).map((s) => ({ where: String(s.where || "").slice(0, 20), what: String(s.what || "").slice(0, 20),
+      ...(Number.isFinite(s.n) ? { n: s.n } : {}), ...(s.counts ? { counts: coarseCounts(s.counts) } : {}) })) };
+  state.dirty = true;
+}
+const DROP_WORDS = /^[a-z ]{3,40}$/;
+const coarseCounts = (c) => ({ ...Object.fromEntries(["results", "read", "about", "tried"].filter((k) => Number.isFinite(c[k])).map((k) => [k, c[k]])),
+  dropped: Object.fromEntries(Object.entries(c.dropped || {}).filter(([why, v]) => DROP_WORDS.test(why) && Number.isFinite(v)).slice(0, 8)) });
+// The coarse record in words: "title: identified (series, 2026); wikiquote: no page; web: 5 results, 3 pages about
+// the work, 12 candidates, 2 kept (9 not on the page, 1 too short or too long)".
+export function coarseText(c) {
+  if (!c || !Array.isArray(c.steps)) return "";
+  const step = (s) => {
+    const k = s.counts;
+    if (!k) return `${s.where}: ${s.what}${Number.isFinite(s.n) && s.n ? ` (${s.n})` : ""}`;
+    const drops = Object.entries(k.dropped || {}).map(([why, v]) => `${v} ${why}`).join(", ");
+    return `${s.where}: ${k.results ?? 0} results, ${k.read ?? 0} pages read, ${k.about ?? 0} about the work, ${k.tried ?? 0} candidates, ${s.n || 0} kept${drops ? ` (${drops})` : ""}`;
+  };
+  return [`work identified: ${c.identified ? `yes (${[c.kind, c.year].filter(Boolean).join(", ")})` : "no"}`, ...c.steps.filter((s) => s.where !== "title").map(step), `lines kept: ${c.kept || 0}`].join("; ");
 }
 // The last few trails, in data/lookups.json, for Nishith.
 export function keepTrail(state, work, steps, n) {

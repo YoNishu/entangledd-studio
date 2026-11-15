@@ -336,10 +336,10 @@ const BEFORE = new RegExp(`(${NAME})\\s*(?:\\([^)]{0,30}\\))?\\s*(?:[:：]|,?\\s
 const AFTER = new RegExp(`^\\s*[,.]?\\s*(?:[-–—]\\s*|,?\\s*(?:said|says)\\s+)(${NAME})`, "u");
 const QUOTED = /“([^“”\n]{20,400})”|"([^"\n]{20,300})"|«\s?([^«»\n]{20,300}?)\s?»|「([^「」\n]{20,300})」|『([^『』\n]{20,300})』/g;
 
-// A piece of text worth offering as a line: four words or more, real words, not an address or a heading.
-function lineLike(t) {
-  const s = t.trim();
-  if (s.length < 20 || s.length > 400 || s.split(/\s+/).length < 4) return false;
+// A piece of text worth offering as a line: four to sixty words, real words, not an address, a heading or a title.
+export function lineLike(t) {
+  const s = String(t || "").trim(), n = s.split(/\s+/).length;
+  if (s.length < 20 || s.length > 400 || n < 4 || n > 60) return false;
   if (/https?:|www\.|\.com\b|@|#\w|\{|\}|<|>/.test(s) || !/[a-z]/.test(s)) return false;
   const caps = s.split(/\s+/).filter((w) => /^[A-Z]/.test(w)).length;
   return caps / s.split(/\s+/).length < 0.7;                      // a title or a list of names, not a line
@@ -466,11 +466,13 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
   const about_ = pages.map((p) => !work || namesWork(kit, work, p.text, p));
   const names = work ? [...(work.cast || []), ...(work.characters || [])] : [];
   const lines = [];
+  let tried = 0;
   const take = (q, i) => {
     const pg = pages[i];
+    tried += 1;
     const text = kit.flatten(q && q.text).replace(/^"+|"+$/g, ""), n = kit.norm(text);
     if (!pg) return drop("no page named", text);
-    if (text.length < 20 || text.length > 400) return drop("too short or too long", text, pg.site);
+    if (!lineLike(text)) return drop("too short or too long", text, pg.site);
     if (!onPage(words[i], text)) return drop("not on the page", text, pg.site);
     if (have.has(n)) { agrees(have, n, pg); return drop("already kept", text, pg.site); }
     const by = kit.oneLine(q.by, 80), from = kit.oneLine(q.from, 120);
@@ -502,7 +504,7 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
       for (const q of got) { if (lines.length >= want) break; take(q, i); }
     });
   }
-  return { lines, dropped, how };
+  return { lines, dropped, how, tried };
 }
 
 // Lines from the snippets alone: only a quoted line that two results on different sites carry in the same
@@ -551,22 +553,25 @@ export function queriesFor(work) {
 export async function linesForWork(env, kit, work, state, { want = 10, have = new Set(), about = "" } = {}) {
   if (!providers(env).length) return { lines: [], pages: [], dropped: {}, off: true };
   const { list } = await results(env, kit, state, queriesFor(work));
-  if (!list.length) return { lines: [], pages: [], dropped: {} };
+  const counts = { results: list.length, read: 0, about: 0, tried: 0 };
+  if (!list.length) return { lines: [], pages: [], dropped: {}, counts };
   const names = [work.real || work.title, work.original].filter(Boolean);
   const read = await readPages(env, kit, state, rank(list, names, (work.found && work.found.not) || []));
   const pages = read.filter((p) => namesWork(kit, work, p.text, p));
   for (const p of read) say(env, "about the work", { url: p.url, yes: pages.includes(p) });
   const dropped = {};
   if (read.length > pages.length) dropped["pages not about this work"] = read.length - pages.length;
+  Object.assign(counts, { read: read.length, about: pages.length });
   let lines = [];
   if (pages.length) {
     state.spent += 4;
     const got = await pickLines(env, kit, pages, { work, want, have, about, near: names });
     lines = got.lines;
+    counts.tried = got.tried;
     for (const [k, v] of Object.entries(got.dropped)) dropped[k] = (dropped[k] || 0) + v;
   }
   if (lines.length < want) lines = lines.concat(snippetLines(kit, list, work, have).slice(0, want - lines.length));
-  return { lines, pages, dropped };
+  return { lines, pages, dropped, counts };
 }
 
 // For the engine and other callers without a work: { lines, dropped } for a query, picked as "ask" says.
