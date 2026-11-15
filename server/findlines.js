@@ -1362,6 +1362,51 @@ export const jobs = [
 ];
 export const runClean = cleanJob;                // for the tests
 
+// ---------------------------------------------------------------- the proving run
+
+// GET /api/proof (open): the real look-up, where the app really runs, for a few fixed public titles that are not
+// in her Library, one round a call, so that what a change to the search does can be seen on the real services
+// without her phone. Bounded: PROOF_ROUNDS rounds a title for each PROOF_V, whoever calls, and never two within
+// 15 seconds; after that it only reads back what it has. It holds nothing of hers: the titles are fixed, the works
+// are kept apart from the Library (data/proof.json), and no taste or note is used.
+export const PROOF_V = 1;
+const PROOF_ROUNDS = 3;
+const PROOF_WORKS = [["The early spring", "series"], ["True beauty", "series"], ["Twisted love", "book"]];
+function proofView(rec, note) {
+  return { v: rec.v, note, works: rec.works.map((w) => ({ title: w.title, type: w.type, rounds: w.rounds, done: !!w.done,
+    known: w.item && w.item.known ? { real: w.item.known.real || "", year: w.item.known.year || 0, country: w.item.known.country || "", characters: (w.item.known.characters || []).length } : null,
+    kept: kept(w.item || {}).length, left: !!w.left, log: w.log,
+    lines: kept(w.item || {}).map((l) => ({ text: l.text, by: l.by || "", site: l.site || "", check: !!l.verify })) })) };
+}
+async function proofRound(env, kit) {
+  const doc = await kit.loadDoc(env, "proof", null);
+  const rec = doc && doc.v === PROOF_V ? doc : { v: PROOF_V, at: 0, works: PROOF_WORKS.map(([title, type], i) => ({ id: "proof-" + i, title, type, rounds: 0, log: [] })) };
+  const w = rec.works.find((x) => x.rounds < PROOF_ROUNDS && !x.done);
+  if (!w) return proofView(rec, "done");
+  if (Date.now() - rec.at < 15000) return proofView(rec, "a round is running or has just run: ask again in a moment");
+  rec.at = Date.now();
+  await kit.saveDoc(env, "proof", rec);                    // stamped first, so two calls at once do not both run a round
+  const state = newState(env);
+  const item = w.item || { id: w.id, title: w.title, type: w.type };
+  const before = kept(item).length, began = Date.now();
+  const entry = { round: w.rounds + 1 };
+  try {
+    item.found = await lookUp(env, kit, item, 10, "", null, state);
+    const t = item.found.trail || {};
+    Object.assign(entry, { said: t.said || "", steps: stepsText(t.steps || []), gate: t.gate ? t.gate.said : "", added: kept(item).length - before });
+  } catch (e) { entry.failed = tidy(e && e.message, env, 160); }
+  try { await closeRecord(env, kit, state); } catch (e) { /* the record of look-ups is not what is being proven */ }
+  entry.calls = state.spent; entry.ms = Date.now() - began;
+  w.item = item; w.rounds += 1; w.log.push(entry);
+  w.left = !!(item.found && item.found.more && O.leftToRead(env, withKnown(kit, item), item.found.more));
+  if (!w.left && !entry.added) w.done = true;              // nothing more to read and nothing new: its rounds are over
+  await kit.saveDoc(env, "proof", rec);
+  return proofView(rec, "ran a round for " + w.title);
+}
+export const open = {
+  proof: async (request, env, parts, kit) => (request.method === "GET" && parts.length === 1 ? kit.json(await proofRound(env, kit)) : kit.fail(404, "Not found.")),
+};
+
 // ---------------------------------------------------------------- for Nishith
 
 // GET /api/lookups (signed in): the whole record of looking things up: today's counts, which models were
