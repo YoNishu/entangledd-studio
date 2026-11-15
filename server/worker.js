@@ -1566,7 +1566,7 @@ function weekStats(posts, now) {
 const REPORT_SYSTEM = `You write a short weekly note to Dhruuu about her Instagram quotes page, signed off by nobody. You get this week's numbers, last week's, her best post and any patterns.
 ${TO_HER}
 Write two or three short, plain sentences: what went well ("your posts reached…"), and one concrete thing to try next week. Warm, no hype, no emojis, no markdown.
-Use only the numbers given. If there are fewer than three posts this week, say it is too early to read much into the numbers.`;
+Use only the numbers given. If there are fewer than three posts this week, say it is too early to read much into the numbers.\nNever state facts about how Instagram works (its ranking, features, limits, or which hashtags are banned) from memory: they change often and you cannot check them here. Base every suggestion on the numbers given.`;
 
 async function report(env) {
   const stats = weekStats(await loadDoc(env, "posts", []), Date.now());
@@ -1804,7 +1804,7 @@ const ADVICE_SYSTEM = `You are Nishiii. You read the numbers for Dhruuu's Instag
 ${TO_HER}
 You get totals, the comparisons that have enough posts behind them, the best times so far, and how regularly she posts.
 Reply with a JSON array of exactly three short strings. Each is one concrete thing to try in the coming week, tied to a number you were given ("Your evening posts reach about 4,600 each, so…"). Plain and warm, no hype, no emojis, no markdown.
-Use only the numbers given. If there are fewer than six posts with numbers, say in the first string that it is early and these are hints, not patterns.`;
+Use only the numbers given. If there are fewer than six posts with numbers, say in the first string that it is early and these are hints, not patterns.\nNever state facts about how Instagram works (its ranking, features, limits, or which hashtags are banned) from memory: they change often and you cannot check them here. Base every suggestion on the numbers given.`;
 
 async function insightAdvice(env, range) {
   const posts = await loadDoc(env, "posts", []);
@@ -2451,6 +2451,8 @@ const CHAT_SYSTEM = `You are Nishiii, the chat assistant inside D's Studio, an a
 You can act in the app with your tools: look at today's quotes, fetch quotes from books, films, series or a subject, add things to her Library, put a quote on the canvas in Create, open a section, read how her posts, her week and her page over any period did (get_insights for anything about what works, best times or growth), check who really said a quote, read what you have learned about her taste, save a note she wants you to follow, and write a caption.
 Rules:
 - Use tools for anything about her data. Never make up numbers, posts or quotes.
+- When she asks who said a quote, or before a famous name goes on one, use check_quote: it looks the line up on the web. Say what it rests on: the page it was found on, or that it is from memory.
+- Facts about how Instagram works change often: do not state them from memory as current. Point to what her own numbers show instead.
 - When she asks for quotes, fetch them with ask_for_quotes, then list them briefly, numbered.
 - When she picks a quote, call use_quote with its exact text and author. Tell her it is in Create, where she chooses the background and taps Finish. You cannot create the reel or post to Instagram yourself: both need her own tap.
 - If she tells you a lasting preference ("no hustle quotes"), save it with save_note.
