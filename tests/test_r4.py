@@ -14,8 +14,8 @@ with sync_playwright() as p:
     print("lock: faceid button hidden:", pg.evaluate("document.getElementById('faceid-unlock').hidden"))
     pg.fill("#passcode","letmein"); pg.click("#passcode-go"); pg.wait_for_timeout(1500)
     # ---- ask for quotes
-    pg.click("#nav-nishiii"); pg.wait_for_timeout(400)   # "Ask for quotes" lives in the Nishiii section
-    pg.click("#ask-open"); pg.wait_for_timeout(600)
+    pg.click("#nav-library"); pg.wait_for_timeout(400)   # "Find quotes" lives in the Library
+    pg.click("#find-open"); pg.wait_for_timeout(600)
     print("ask empty:", pg.inner_text("#ask-groups")[:60])
     pg.fill("#ask-new","Meditations"); pg.select_option("#ask-new-kind","book"); pg.click("#ask-add button[type=submit]"); pg.wait_for_timeout(500)
     pg.fill("#ask-new","Interstellar"); pg.select_option("#ask-new-kind","film"); pg.click("#ask-add button[type=submit]"); pg.wait_for_timeout(500)
@@ -23,14 +23,16 @@ with sync_playwright() as p:
     print("groups:", pg.inner_text("#ask-groups").replace("\n"," | "), "| selected:", pg.locator("#ask-groups button[aria-pressed=true]").count())
     pg.locator("#ask-groups button", has_text="Dark").click()   # deselect the series
     pg.fill("#ask-about","time"); pg.screenshot(path=S+"70_ask.png")
-    pg.click("#ask-go"); pg.wait_for_timeout(1500)
-    print("sheet closed:", pg.evaluate("document.getElementById('ask-sheet').hidden"))
-    cards=pg.locator("#asked-list .card")
+    pg.click("#ask-go"); pg.wait_for_timeout(2500)
+    print("in the sheet:", pg.locator("#ask-results .card").count(), "|", pg.inner_text("#ask-progress"))
+    pg.click("#ask-close"); pg.wait_for_timeout(500)
+    if pg.locator("#found-all").is_visible(): pg.click("#found-all"); pg.wait_for_timeout(300)
+    cards=pg.locator("#found-list .card")
     for i in range(3): print("  card", i, "|", cards.nth(i).inner_text().replace("\n"," | ")[:150])
-    print("asked chips:", pg.locator("#asked-list .chip.info").count(), "of", cards.count(), "cards")
+    print("asked chips:", pg.locator("#found-list .chip.info").count(), "of", cards.count(), "cards")
     pg.screenshot(path=S+"71_today_asked.png")
     # ---- author on/off
-    pg.locator("#asked-list .card", has_text="From the film Interstellar").first.locator("text=Use this").click()   # a card that names who said it; pg.wait_for_timeout(400)
+    pg.locator("#found-list .card", has_text="From the film Interstellar").first.locator("text=Create with this").click()   # a card that names who said it; pg.wait_for_timeout(400)
     pg.click("#tab-text"); pg.wait_for_timeout(200)
     blocks=lambda: [x["text"] for x in json.loads(pg.evaluate("localStorage.getItem('entangledd.draft.v1')"))["blocks"]]
     print("author row visible:", pg.evaluate("!document.getElementById('author-row').hidden"), "| blocks:", blocks())

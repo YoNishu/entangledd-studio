@@ -1,6 +1,9 @@
 // A pretend Wikiquote page for "Find quotes" (Agent 18): "The Lantern Years", a made-up series with 36 different
 // lines, enough to ask for ten and ten again and see only new ones. Every other request goes on to the other
 // stand-ins (server/devparts/findlines.mjs answers the rest of Wikiquote). Never part of the real app.
+//   GET /__askmore_calls[?reset=1]   every call the app made to any pretend outside service (the places lines are
+//                                    looked for, Claude, Meta, storage aside), so a test can count what one request
+//                                    spends against the free plan's 50; asked before every other stand-in
 const WHO = ["Edith", "Rafe", "Old Corran", "Mina", "The ferryman", "Isolde"];
 const LINES = [
   "A lantern is only brave because someone carried it outside",
@@ -51,7 +54,18 @@ const TEXT = (() => {
 })();
 const norm = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
+const SERVICES = /^\/__(anthropic|wikiquote|goodreads|imdb|imdbsug|gemini|openai|mdl|openlibrary|wikipedia|qi|bing|ddg|serper|tavily|web|media|graph|github|gutendex|openverse|pexels|pixabay)\//;
+let calls = [];
+
 export async function handle(req, res, url) {
+  if (url.pathname === "/__askmore_calls") {
+    const was = calls;
+    if (url.searchParams.get("reset")) calls = [];
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ n: was.length, what: was }));
+    return true;
+  }
+  // (A call one stand-in passes on to another, marked by a header or by "?plain", is the same call: counted once.)
+  if (SERVICES.test(url.pathname) && !req.headers["x-dev-forwarded"] && !url.searchParams.has("plain")) calls.push(url.pathname.split("/").slice(1, 3).join("/"));
   if (!url.pathname.startsWith("/__wikiquote/")) return false;
   const q = url.searchParams;
   const send = (out) => { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(out)); return true; };
