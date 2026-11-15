@@ -149,16 +149,37 @@ export function readBing(html) {
   return out;
 }
 
+// A question's words: a question is a string, or { q, sites } when it is for particular sites (Tavily only).
+const textOf = (query) => (typeof query === "string" ? query : String((query && query.q) || ""));
+// Sites with no lines to read: those that want signing in, and Wikipedia, whose page about a work has its plot,
+// its cast and a list of sources (article titles in quotation marks), never its lines.
+const NO_LINES_SITES = ["instagram.com", "tiktok.com", "facebook.com", "pinterest.com", "x.com", "twitter.com", "threads.net", "linkedin.com", "youtube.com", "wikipedia.org", "imdb.com"];
+const NO_LINES = /(^|\.)wikipedia\.org$/;
+// A result the app can read lines from.
+const readable = (r) => !!r.host && !SKIP.test(r.host) && !NO_LINES.test(r.host);
+// The sites where people write down a work's lines, by kind of work: asked for first, by name, where the search
+// can be told which sites to look on.
+const LINE_SITES = { book: ["goodreads.com", "wikiquote.org", "quotes.net", "azquotes.com", "quotefancy.com"],
+  screen: ["mydramalist.com", "wikiquote.org", "quotes.net", "fandom.com", "dramabeans.com", "asianwiki.com", "subslikescript.com"] };
+export function siteQuery(work) {
+  const name = `"${work.real || work.title}"`;
+  return { q: [name, work.year || "", work.type === "book" && work.author ? work.author : "", "quotes"].filter(Boolean).join(" "), sites: LINE_SITES[work.type === "book" ? "book" : "screen"] };
+}
+
 const PROVIDER_NAME = { tavily: "Tavily", serper: "Serper", duckduckgo: "DuckDuckGo", bing: "Bing" };
 export const providerName = (id) => PROVIDER_NAME[id] || id;
 
 // Tavily: { results: [{ url, title, content, raw_content }] }. One basic search is one credit; include_raw_content
 // "text" sends each page's whole text as plain text (Tavily's API reference, checked 15 Nov 2026), so the lines are
 // read from it without fetching the page again.
-async function tavily(env, kit, state, q) {
+// A question may be { q, sites } (only those sites: include_domains); a plain question leaves out the sites the
+// app cannot read lines from (exclude_domains): both are in Tavily's API reference (checked 16 Nov 2026).
+async function tavily(env, kit, state, query) {
+  const q = textOf(query), sites = query && Array.isArray(query.sites) ? query.sites : null;
   const got = await fetchCapped(env, state, `${env.TAVILY_API || "https://api.tavily.com"}/search`, { method: "POST", accept: "application/json", bytes: 900 * 1024, ms: 9000,
     headers: { Authorization: "Bearer " + env.TAVILY_API_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ query: q, search_depth: "basic", max_results: 8, include_raw_content: "text", include_answer: false }) });
+    body: JSON.stringify({ query: q, search_depth: "basic", max_results: 8, include_raw_content: "text", include_answer: false,
+      ...(sites ? { include_domains: sites } : { exclude_domains: NO_LINES_SITES }) }) });
   if (got.status === 401 || got.status === 432 || got.status === 433) throw blocked(`refused the key or its allowance (status ${got.status})`);
   if (got.status !== 200) throw new Error("answered " + got.status);
   const data = JSON.parse(got.text);
@@ -216,16 +237,20 @@ export async function results(env, kit, state, queries, { enough = 6 } = {}) {
   await F.openRecord(env, kit, state);
   const list = [], seen = new Set(), via = [];
   let keyless = 0;
+  // Enough: as many results the app can read as it reads pages (a list of sign-in sites is not enough, however long).
+  const full = () => list.filter(readable).length >= Math.min(enough, MAX_PAGES);
   for (const [id, run, cap] of providers(env)) {
-    if (list.length >= enough) break;
+    if (full()) break;
     if (F.resting(state, id)) { F.step(state, id, "not asked", { why: "it turned the app away earlier" }); continue; }
-    for (const q of queries.slice(0, cap === "results" ? MAX_RESULT_PAGES - keyless : KEYED_QUERIES)) {
-      if (list.length >= enough || Date.now() - state.began > state.limit) break;
+    const mine = id === "tavily" ? queries : queries.filter((q) => typeof q === "string");     // only Tavily can be told which sites
+    for (const query of mine.slice(0, cap === "results" ? MAX_RESULT_PAGES - keyless : KEYED_QUERIES)) {
+      const q = textOf(query);
+      if (full() || Date.now() - state.began > state.limit) break;
       if (cap === "results" && keyless >= MAX_RESULT_PAGES) break;
       if (!spend(state, kit, cap)) { F.step(state, id, "not asked", { why: "the app's daily limit for it" }); break; }
       if (cap === "results") keyless += 1;
       let got;
-      try { got = await run(env, kit, state, q); say(env, "results", { via: id, q, list: got.map((r) => [r.url, r.title, r.snippet]) }); }
+      try { got = await run(env, kit, state, query); say(env, "results", { via: id, q, list: got.map((r) => [r.url, r.title, r.snippet]) }); }
       catch (e) {
         say(env, "results", { via: id, q, failed: e && (e.blocked || e.message) });
         if (cap === "results") keyless -= 1;           // a results page that said no does not use up a search's share
@@ -239,7 +264,7 @@ export async function results(env, kit, state, queries, { enough = 6 } = {}) {
         seen.add(r.url); n += 1;
         list.push({ ...r, host: F.hostOf(r.url), via: id });
       }
-      F.step(state, id, n ? "answered" : "no page", { q: kit.oneLine(q, 90), n });
+      F.step(state, id, n ? "answered" : "no page", { q: kit.oneLine(q, 90), n, ...(query && query.sites ? { on: "the sites where lines are written down" } : {}) });
       if (n) { F.noteSite(state, id, ""); if (!via.includes(id)) via.push(id); }
     }
   }
@@ -496,6 +521,7 @@ export function namesWork(kit, work, text, pg = null) {
 const kindSaid = (work, t) => work.type === "book" ? /\b(novel|book|author)\b/i.test(t) : work.type === "film" ? /\b(film|movie)\b/i.test(t)
   : /\b(drama|episodes?|tv series|web series|c-?drama|k-?drama|series)\b/i.test(t);
 
+const QUOTE_SITES = /(^|\.)(goodreads\.com|wikiquote\.org|quotes\.net|azquotes\.com|quotefancy\.com)$/;      // their pages are lists of lines
 const PICK_SYSTEM = `You pick real, quotable lines from pages found on the web, for a quiet, reflective Instagram quotes page.
 Reply with a JSON array only: [{"page": the number of the page, "text": "...", "by": "...", "from": "...", "theme": "one or two words", "tone": "one word"}]
 - Copy each line exactly as the page has it: same words, same punctuation. One to three sentences, under 45 words.
@@ -553,7 +579,7 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
     if (work && q.other && !knownName(names, q.other)) return drop("credited to someone else", text, pg.site);
     if (!work && !credited && !(from && words[i].includes(sameWords(from)))) return drop("no one named for it", text, pg.site);
     // The gate (said.js): a line said in the work, never one said about it. Where it sat on the page counts.
-    const place = pg.site === "mydramalist.com" ? "mdl" : "page";
+    const place = pg.site === "mydramalist.com" ? "mdl" : QUOTE_SITES.test(pg.site) ? "quotes" : "page";
     const ctx = q.ctx ? { ...q.ctx, place } : S.contextOf(pg, text, place);
     const said = S.isSaid({ text, by: credited }, work, ctx);
     if (!said.ok) { S.count(refused, said.why); return say(env, "rejected", { why: "gate: " + said.why, site: pg.site, text: text.slice(0, 120) }); }
@@ -635,7 +661,8 @@ export const gateTally = (state) => (state.refused = state.refused || {});
 // agree on. Returns { lines, pages, dropped }. "work" holds only public facts.
 export async function linesForWork(env, kit, work, state, { want = 10, have = new Set(), about = "" } = {}) {
   if (!providers(env).length) return { lines: [], pages: [], dropped: {}, off: true };
-  const { list } = await results(env, kit, state, queriesFor(work));
+  const found = await results(env, kit, state, [siteQuery(work), ...queriesFor(work)]);
+  const list = found.list.filter((r) => !NO_LINES.test(r.host));
   const counts = { results: list.length, read: 0, about: 0, tried: 0 };
   if (!list.length) return { lines: [], pages: [], dropped: {}, counts };
   const names = [work.real || work.title, work.original].filter(Boolean);

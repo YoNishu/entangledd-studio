@@ -45,6 +45,30 @@ const HOPE = () => `<!doctype html><html><body><h1>Quotes about hope from books,
 const MDL = () => `<!doctype html><html><body><h1>The Late Thaw (2026)</h1><p>春迟 · Chinese Drama · 36 episodes. Starring Lin Qiao and Shen Mo.</p><p>A florist who left her town returns in the last week of winter.</p><p>${"Reviews and details. ".repeat(20)}</p></body></html>`;
 const PAGES = { "thaw-mdl": MDL, "thaw-blog": BLOG, "spring-season": SEASON, "thaw-huge": HUGE, "hope-quotes": HOPE };
 
+const HARBOUR_WIKI = `Harbour in March (Chinese: 三月的港) is a 2026 Chinese television series starring Lin Qiao and Shen Mo.
+Plot
+A ferry pilot returns to the harbour town she left ten years ago.
+Reception
+The series was praised for its quiet pacing.
+References
+1. ^ Zhao, Min (March 3, 2026). "Harbour dramas find a second wind with younger viewers". The Coast Daily. Retrieved March 9, 2026.
+2. ^ "Quiet romances lead the spring line-up". Screen Weekly. March 1, 2026.`;
+const HARBOUR_REVIEWS = `Harbour in March (2026) Reviews - MyDramaList
+Harbour in March (2026) 三月的港 Chinese Drama, 30 episodes
+Story 9.0 Acting/Cast 9.0 Music 8.5 Rewatch Value 8.0
+A slow one, and worth it. Significant Quotes
+Xu Wan: You can leave a harbour, but it keeps your place.
+Han Zhou: I waited for the tide so long that I forgot I could swim.
+“Some goodbyes are only the sea taking a breath.” said Xu Wan in the last episode, and I cried.
+The acting was fine and the pacing was slow in the middle. 8/10 from me.`;
+const HARBOUR_PLAIN = [
+  { url: "https://www.tiktok.com/@cdramalines/video/1", title: "TikTok", content: "Harbour in March lines", score: 0.8, raw_content: "Harbour in March 2026 " + "clip ".repeat(80) },
+  { url: "https://en.wikipedia.org/wiki/Harbour_in_March", title: "Harbour in March - Wikipedia", content: "Harbour in March is a 2026 Chinese television series.", score: 0.8, raw_content: HARBOUR_WIKI },
+  { url: "https://www.instagram.com/p/Harbour01/", title: "Instagram", content: "Harbour in March 2026", score: 0.7, raw_content: "Harbour in March 2026 " + "post ".repeat(80) },
+  { url: "https://www.facebook.com/harbourinmarch", title: "Facebook", content: "Harbour in March", score: 0.6, raw_content: null }];
+const HARBOUR_SITES = [
+  { url: "https://mydramalist.com/9911-san-yue-de-gang/reviews", title: "Harbour in March (2026) Reviews - MyDramaList", content: "Harbour in March (2026) 三月的港 reviews", score: 0.9, raw_content: HARBOUR_REVIEWS }];
+
 // The results for a query, in the order a search engine gives them.
 function resultsFor(q) {
   const s = q.toLowerCase();
@@ -151,6 +175,10 @@ export async function handle(req, res, url, tools) {
     entry.body = body;
     if (to === "tavily") {
       if (req.headers.authorization !== "Bearer " + TAVILY_KEY) return send(401, { detail: { error: "Unauthorized: missing or invalid API key." } });
+      // "Harbour in March" (a made-up 2026 drama): asked plainly, Tavily has only sign-in sites and its Wikipedia
+      // page (a plot and a list of sources); asked for the sites where lines are written down, its reviews page.
+      if (/harbour in march/i.test(body.query || "")) return send(200, { query: body.query, results: (Array.isArray(body.include_domains) && body.include_domains.includes("mydramalist.com") ? HARBOUR_SITES : HARBOUR_PLAIN)
+        .filter((r) => !(body.exclude_domains || []).some((d) => new URL(r.url).hostname.endsWith(d))) });
       return send(200, { query: body.query, results: resultsFor(body.query || "").map((r) => ({ url: r.url, title: r.title, content: r.snippet, score: 0.8,
         raw_content: r.url.includes("/__web/") && !r.url.includes("huge") ? plainText(PAGES[r.url.split("/").pop()]()) : null })) });
     }

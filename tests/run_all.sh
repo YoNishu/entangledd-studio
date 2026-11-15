@@ -69,6 +69,7 @@ run ig_blocked     ""                     ""                test_ig_blocked.mjs
 run posted_by_hand ""                     ""                test_posted_by_hand.py
 run ask_looks_again ""                    ""                test_ask_looks_again.py
 run save_draft_ui ""                     ""                test_save_draft_ui.py
+run sites_first    ""                     ""                test_sites_first.py
 run bottom_gap     ""                     ""                test_bottom_gap.py
 run keyboard_band  ""                     ""                test_keyboard_band.py
 
