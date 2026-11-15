@@ -1550,7 +1550,11 @@
   }
   $("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sayToNishiii($("chat-input").value); });
   $("chat-chips").addEventListener("click", (e) => { if (e.target.tagName === "BUTTON") sayToNishiii(e.target.textContent); });
-  $("chat-new").addEventListener("click", () => { if (!chatBusy) newChat(); });
+  $("chat-new").addEventListener("click", async () => {
+    if (chatBusy || !(await confirmDialog({ title: "Start a new chat?", yes: "Start a new chat",
+      body: "This conversation is cleared from this phone. What Nishiii knows about you stays." }))) return;
+    newChat();
+  });
   document.addEventListener("studio:forgot", (e) => { if (e.detail === "all" && !chatBusy) newChat(); });
   function startChat() {
     const on = !!S.server.ai;
