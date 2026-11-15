@@ -1,0 +1,49 @@
+name: Render tools
+description: >
+  Gets ffmpeg and Pillow ready for the reel renderer. When a copy kept by an earlier run is there, it is
+  unpacked in a few seconds. Otherwise they are installed the long way (20 to 45 seconds), exactly as
+  before, and a copy is made for next time. The copy is the very same files the install puts on the
+  machine, so the reel comes out the same either way. Python must already be set up.
+
+  The workflow that uses this keeps the copy itself, as its last step (so a reel never waits for that):
+  actions/cache/save with path ~/render-tools and the "key" output, when the "save" output is "yes".
+outputs:
+  source:
+    description: "cache (unpacked from a kept copy) or install (installed afresh)"
+    value: ${{ steps.tools.outputs.source }}
+  restored:
+    description: "yes when a kept copy was found, whether or not it could be used"
+    value: ${{ steps.tools.outputs.restored }}
+  save:
+    description: "yes when this run made a fresh copy that is worth keeping"
+    value: ${{ steps.tools.outputs.save }}
+  key:
+    description: "the name to keep that copy under"
+    value: ${{ steps.key.outputs.key }}
+runs:
+  using: composite
+  steps:
+    # A kept copy belongs to one version of GitHub's machine image, one Python and one version of tools.sh.
+    # It is looked up by that much of the name only; the run's own number on the end makes each kept copy's
+    # name new. A copy from another machine image is never used: its files could be older than the machine's.
+    - id: key
+      shell: bash
+      run: |
+        hash="$(sha256sum "$GITHUB_ACTION_PATH/tools.sh" | cut -c1-12)"
+        py="$(python3 -c 'import sys; print("py%d%d" % sys.version_info[:2])' 2>/dev/null || echo py0)"
+        prefix="render-tools-v2-${ImageOS:-linux}-${ImageVersion:-0}-${py}-${hash}-"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        echo "key=${prefix}${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-1}" >> "$GITHUB_OUTPUT"
+        # Should fetching the kept copy ever stall, give up after one minute (GitHub's own limit is ten) and
+        # install the long way instead.
+        echo "SEGMENT_DOWNLOAD_TIMEOUT_MINS=1" >> "$GITHUB_ENV"
+    - id: restore
+      uses: actions/cache/restore@v5
+      continue-on-error: true            # no copy, or fetching it failed: tools.sh installs the long way
+      with:
+        path: ~/render-tools
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+    - id: tools
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/tools.sh"

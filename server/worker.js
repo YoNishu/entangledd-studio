@@ -64,6 +64,16 @@ async function signedIn(request, env) {
 }
 const isRenderer = (request, env) => !!env.RENDER_SECRET && safeEqual(bearer(request), env.RENDER_SECRET);
 const reelsReady = (env) => !!(env.MEDIA && env.GITHUB_TOKEN && env.RENDER_SECRET && env.GITHUB_REPO);
+// What the app needs to know before it can show anything. Sent with /api/status and again with a successful
+// sign-in, so the app never has to ask twice.
+const statusOf = (env, isSignedIn) => ({ configured: !!env.APP_PASSCODE, signedIn: isSignedIn, reels: reelsReady(env),
+  ai: !!(env.ANTHROPIC_API_KEY && env.MEDIA), stock: !!stockProvider(env), instagram: igReady(env) });
+// Work that can finish after the answer has gone out (tidying up), so nobody waits for it.
+const later = (ctx, promise) => {
+  const p = promise.catch((e) => console.error("background work failed", e));
+  if (ctx && ctx.waitUntil) ctx.waitUntil(p);
+  return p;
+};
 
 const jobKey = (id, name) => `jobs/${id}/${name}`;
 async function readJob(env, id) {
@@ -93,18 +103,19 @@ async function login(request, env) {
     return fail(401, "That passcode isn't right.");
   }
   if (env.MEDIA && tries.n) await env.MEDIA.delete(key);
-  return json({ token: await sessionToken(env) });
+  return json({ token: await sessionToken(env), status: statusOf(env, true) });
 }
 
 // ---------- jobs, called by the app ----------
 async function purgeOld(env) {
   const cutoff = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
-  const lists = await Promise.all(["jobs/", "slides/", "data/stockcache/", "data/musiccache/"].map((prefix) => env.MEDIA.list({ prefix, limit: 500 })));
+  // "auth/" holds used unlock challenges and wrong-passcode counts; both are long dead after a week.
+  const lists = await Promise.all(["jobs/", "slides/", "data/stockcache/", "data/musiccache/", "auth/"].map((prefix) => env.MEDIA.list({ prefix, limit: 500 })));
   const old = lists.flatMap((l) => l.objects).filter((o) => new Date(o.uploaded).getTime() < cutoff).map((o) => o.key);
   if (old.length) await env.MEDIA.delete(old);
 }
 
-async function createJob(request, env) {
+async function createJob(request, env, ctx) {
   let b;
   try { b = await request.json(); } catch (e) { return fail(400, "Send the reel settings as JSON."); }
   const length = Number(b.length), bgSize = Number(b.bgSize);
@@ -114,13 +125,12 @@ async function createJob(request, env) {
   const ext = (bgName.match(/\.([a-z0-9]{2,5})$/i) || [])[1];
   if (!ext || !/^(mp4|mov|m4v|webm|jpg|jpeg|png)$/i.test(ext)) return fail(400, "That background file type isn't supported.");
 
-  await purgeOld(env);
+  later(ctx, purgeOld(env));            // tidy up old files without making her wait for it
   const job = {
     id: crypto.randomUUID(), created: Date.now(), state: "uploading", error: null,
     length, keepAudio: !!b.keepAudio, fade: !!b.fade, bgExt: ext.toLowerCase(),
   };
-  const upload = await env.MEDIA.createMultipartUpload(jobKey(job.id, "bg"));
-  await writeJob(env, job);
+  const [upload] = await Promise.all([env.MEDIA.createMultipartUpload(jobKey(job.id, "bg")), writeJob(env, job)]);
   return json({ id: job.id, uploadId: upload.uploadId, partSize: PART_SIZE });
 }
 
@@ -205,10 +215,10 @@ const stream = (obj, type) => new Response(obj.body, {
   headers: { "Content-Type": type, "Content-Length": String(obj.size), "Cache-Control": "no-store" },
 });
 
-async function appRoutes(request, env, parts) {
+async function appRoutes(request, env, parts, ctx) {
   const method = request.method;
   if (!reelsReady(env)) return fail(503, "Reels aren't set up yet.");
-  if (parts.length === 1 && method === "POST") return createJob(request, env);
+  if (parts.length === 1 && method === "POST") return createJob(request, env, ctx);
 
   const id = parts[1];
   if (!UUID.test(id || "")) return fail(404, "No such reel.");
@@ -492,9 +502,9 @@ function shuffle(a) {
 
 async function generateSuggestions(env, count) {
   const date = todayIST();
-  const [lib, history, day, taste, insp] = await Promise.all([
+  const [lib, history, day, taste, insp, ranker] = await Promise.all([
     loadDoc(env, "library", emptyLibrary()), loadDoc(env, "history", []), loadDoc(env, `suggestions/${date}`, []),
-    tasteBrief(env), loadDoc(env, "inspirations", []),
+    tasteBrief(env), loadDoc(env, "inspirations", []), scorer.ranker(env, kit),
   ]);
   const seen = new Set([...history, ...day].map((x) => norm(x.text)));
   const fresh = [];
@@ -508,8 +518,11 @@ async function generateSuggestions(env, count) {
 
   const want = count - fresh.length;
   if (want > 0) {
+    // Once the scorer is live (see scorer.js), Nishiii is asked for more quotes than needed, so there is
+    // something to choose from. Until then "ranker" is empty and everything here is as it always was.
+    const ask = ranker ? ranker.ask(want) : want;
     const brief = {
-      count: want,
+      count: ask,
       books: (lib.books || []).map((b) => ({ title: b.title, author: b.author })),
       films: (lib.screen || []).filter((x) => x.kind === "film").map((x) => x.title),
       series: (lib.screen || []).filter((x) => x.kind === "series").map((x) => x.title),
@@ -522,16 +535,18 @@ async function generateSuggestions(env, count) {
       lovedElsewhere: shuffle(insp.flatMap((i) => [i.quote, ...(i.top || []).map((t) => t.quote)]).filter(Boolean)).slice(0, 15),
     };
     const answer = parseJson(await claude(env, {
-      system: SUGGEST_SYSTEM, maxTokens: 3000,
-      messages: [{ role: "user", content: `Suggest ${want} quotes. Reader details as JSON:\n${JSON.stringify(brief)}` }],
+      system: SUGGEST_SYSTEM, maxTokens: ranker ? 4500 : 3000,
+      messages: [{ role: "user", content: `Suggest ${ask} quotes. Reader details as JSON:\n${JSON.stringify(brief)}` }],
     }));
+    const pool = [];
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
       if (!text || seen.has(norm(text))) continue;
-      fresh.push(cleanSuggestion(s, text));
+      pool.push(cleanSuggestion(s, text));
       seen.add(norm(text));
-      if (fresh.length >= count) break;
+      if (pool.length >= ask) break;
     }
+    fresh.push(...(ranker ? ranker.choose(pool, want, fresh) : pool));
   }
   const items = fresh.map((f) => ({ id: crypto.randomUUID(), state: "new", ...f }));
   await saveDoc(env, `suggestions/${date}`, [...day, ...items]);
@@ -550,9 +565,9 @@ async function suggestFrom(env, b, already) {
   const date = todayIST();
   const count = Math.min(8, Math.max(1, Number(b.count) || 5));
   const about = oneLine(b.about, 120);
-  const [lib, history, day, taste, insp] = await Promise.all([
+  const [lib, history, day, taste, insp, ranker] = await Promise.all([
     loadDoc(env, "library", emptyLibrary()), loadDoc(env, "history", []), loadDoc(env, `suggestions/${date}`, []),
-    tasteBrief(env), loadDoc(env, "inspirations", []),
+    tasteBrief(env), loadDoc(env, "inspirations", []), scorer.ranker(env, kit),
   ]);
   const ids = new Set((Array.isArray(b.sources) ? b.sources : []).map(String));
   const books = (lib.books || []).filter((x) => ids.has(x.id));
@@ -586,8 +601,9 @@ async function suggestFrom(env, b, already) {
   const want = count - fresh.length;
   if (want > 0 && fromWorks && (otherWorks || !fresh.length)) {
     const fallback = !otherWorks ? withText : [];      // the text gave nothing usable: fall back to memory for those books
+    const ask = ranker ? ranker.ask(want) : want;      // more than needed once the scorer is live, as for Today's five
     const brief = {
-      count: want,
+      count: ask,
       only: others.length || screen.length || fallback.length ? [...[...others, ...fallback].map((x) => ({ type: "book", title: x.title, author: x.author })), ...screen.map((x) => ({ type: x.kind, title: x.title }))] : undefined,
       inTheSpiritOf: pages.length ? pages.map((x) => ({ page: x.handle ? "@" + x.handle : "saved reel", look: x.style || "",
         linesSheLoved: [x.quote, ...(x.top || []).map((t) => t.quote)].filter(Boolean).slice(0, 6) })) : undefined,
@@ -595,15 +611,17 @@ async function suggestFrom(env, b, already) {
       avoid: [...history, ...day, ...already].slice(-120).map((x) => x.text),
       taste: taste || undefined,
     };
-    const answer = parseJson(await claude(env, { system: SUGGEST_SYSTEM, maxTokens: 2500,
-      messages: [{ role: "user", content: `Suggest ${want} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] }));
+    const answer = parseJson(await claude(env, { system: SUGGEST_SYSTEM, maxTokens: ranker ? 4000 : 2500,
+      messages: [{ role: "user", content: `Suggest ${ask} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] }));
+    const pool = [];
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
       if (!text || seen.has(norm(text))) continue;
-      fresh.push(cleanSuggestion(s, text));
+      pool.push(cleanSuggestion(s, text));
       seen.add(norm(text));
-      if (fresh.length >= count) break;
+      if (pool.length >= ask) break;
     }
+    fresh.push(...(ranker ? ranker.choose(pool, want, fresh) : pool));
   }
   if (!fresh.length) throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
   const now = Date.now();
@@ -612,8 +630,9 @@ async function suggestFrom(env, b, already) {
 
 // Marks each quote with what really happened to it: "posted", or "deleted" if the post made from it
 // was later removed on Instagram. "Used" alone only means it was opened in Create.
-async function withFate(env, items, checkInstagram) {
-  const posts = await loadDoc(env, "posts", []);
+// "posts" may be handed in by a caller that fetched it side by side with its own document.
+async function withFate(env, items, checkInstagram, posts) {
+  if (!posts) posts = await loadDoc(env, "posts", []);
   const ids = new Set(items.map((i) => i.id));
   const linked = posts.filter((p) => p.suggestionId && ids.has(p.suggestionId));
   if (checkInstagram && linked.some((p) => p.state === "published") && igReady(env)) {
@@ -640,19 +659,19 @@ const pastDates = (n) => Array.from({ length: n }, (_, i) => new Date(Date.now()
 const daily = (day) => day.filter((i) => !i.askedFor).slice(0, DAILY);
 async function suggestionRoutes(request, env, parts) {
   const method = request.method, date = todayIST();
-  const visible = async (day, checkInstagram) =>
-    json({ date, items: await withFate(env, daily(day).filter((i) => i.state !== "rejected"), checkInstagram) });
+  const visible = async (day, checkInstagram, posts) =>
+    json({ date, items: await withFate(env, daily(day).filter((i) => i.state !== "rejected"), checkInstagram, posts) });
   if (parts.length === 1 && method === "GET") {
-    const day = await loadDoc(env, `suggestions/${date}`, []);
-    if (daily(day).length || !env.ANTHROPIC_API_KEY) return visible(day, true);
-    return visible((await generateSuggestions(env, DAILY)).items, false);
+    const [day, posts] = await Promise.all([loadDoc(env, `suggestions/${date}`, []), loadDoc(env, "posts", [])]);
+    if (daily(day).length || !env.ANTHROPIC_API_KEY) return visible(day, true, posts);
+    return visible((await generateSuggestions(env, DAILY)).items, false, posts);
   }
   if (parts[1] === "history" && method === "GET") {
     // The previous seven days, newest first. Days with nothing left to show are left out.
     const dates = pastDates(HISTORY_DAYS);
-    const days = await Promise.all(dates.map((d) => loadDoc(env, `suggestions/${d}`, [])));
+    const [posts, ...days] = await Promise.all([loadDoc(env, "posts", []), ...dates.map((d) => loadDoc(env, `suggestions/${d}`, []))]);
     const kept = days.map((day) => daily(day).filter((i) => i.state !== "rejected"));
-    const marked = await withFate(env, kept.flat(), false);
+    const marked = await withFate(env, kept.flat(), false, posts);
     let at = 0;
     const out = dates.map((d, n) => ({ date: d, items: marked.slice(at, (at += kept[n].length)) })).filter((x) => x.items.length);
     return json({ days: out });
@@ -676,8 +695,9 @@ async function suggestionRoutes(request, env, parts) {
 const ASKED_KEEP = 40;
 async function askedRoutes(request, env, parts) {
   const method = request.method;
-  const list = await loadDoc(env, "asked", []);
-  const reply = async (items, checkInstagram) => json({ items: await withFate(env, items.slice().reverse(), checkInstagram) });
+  // Showing the list also needs the posts (to mark what was posted): both are fetched side by side.
+  const [list, posts] = await Promise.all([loadDoc(env, "asked", []), parts.length === 1 && method === "GET" ? loadDoc(env, "posts", []) : null]);
+  const reply = async (items, checkInstagram) => json({ items: await withFate(env, items.slice().reverse(), checkInstagram, posts) });
   if (parts.length === 1 && method === "GET") return reply(list, true);
   if (parts.length === 1 && method === "POST") {
     const fresh = await suggestFrom(env, await body(request), list);
@@ -698,7 +718,7 @@ async function askedRoutes(request, env, parts) {
 }
 
 // ---------- rewording a quote with Nishiii ----------
-const EDIT_SYSTEM = `You are Nishiii, the assistant inside Entangledd Studio, an app for making quote posts. You are talking with Dhruuu.
+const EDIT_SYSTEM = `You are Nishiii, the assistant inside D's Studio, an app for making quote posts. You are talking with Dhruuu.
 She has chosen a quote and wants help changing it. Do what she asks: shorten, reword, change tone, fix line breaks, translate, and so on.
 Reply with a JSON object only, no other text:
 {"reply": "one short friendly sentence about what you changed", "quote": "the full revised quote", "altered": true or false}
@@ -1183,8 +1203,7 @@ async function createContainer(env, ig, params, wantUser) {
 async function postRoutes(request, env, parts) {
   const method = request.method;
   if (!igReady(env)) return fail(503, "Instagram isn't set up yet.");
-  const ig = await loadIg(env);
-  const posts = await loadDoc(env, "posts", []);
+  const [ig, posts] = await Promise.all([loadIg(env), loadDoc(env, "posts", [])]);
 
   if (parts.length === 1 && method === "GET") {
     // Opening the list is when numbers are refreshed and posts deleted on Instagram are noticed.
@@ -1202,8 +1221,8 @@ async function postRoutes(request, env, parts) {
     const b = await body(request);
     if (Array.isArray(b.slides)) return postCarousel(request, env, ig, posts, b);
     if (!UUID.test(b.jobId || "")) return fail(400, "Create the reel first.");
-    const job = await readJob(env, b.jobId);
-    if (!job || job.state !== "done" || !(await env.MEDIA.head(jobKey(b.jobId, "reel.mp4")))) return fail(409, "That reel is no longer saved. Create it again, then post.");
+    const [job, saved] = await Promise.all([readJob(env, b.jobId), env.MEDIA.head(jobKey(b.jobId, "reel.mp4"))]);
+    if (!job || job.state !== "done" || !saved) return fail(409, "That reel is no longer saved. Create it again, then post.");
     if (posts.some((p) => p.jobId === b.jobId && (p.state === "processing" || p.state === "published"))) return fail(409, "This reel has already been posted.");
     let caption = String(b.caption || "").trim().slice(0, 2200);
     // A track whose licence asks for credit always carries it in the caption, even if the line was edited out.
@@ -1224,8 +1243,7 @@ async function postRoutes(request, env, parts) {
       made: cleanMade(b.made), created: Date.now(), published: null, permalink: "" };
     if (job.music) post.made = { ...(post.made || cleanMade({})), music: job.music.from, musicTitle: job.music.title };
     posts.push(post);
-    await saveDoc(env, "posts", posts.slice(-500));
-    const queue = await loadDoc(env, "queue", []);
+    const [, queue] = await Promise.all([saveDoc(env, "posts", posts.slice(-500)), loadDoc(env, "queue", [])]);
     if (queue.some((q) => q.jobId === b.jobId)) await saveDoc(env, "queue", queue.filter((q) => q.jobId !== b.jobId));
     return json(publicPost(post));
   }
@@ -1592,8 +1610,9 @@ function buildInsights(allPosts, range, now) {
 }
 
 // The account's own numbers: followers each day (kept by the app), and what Instagram reports for the page as a whole.
-async function snapshotAccount(env, ig, { force = false } = {}) {
-  const acct = await loadDoc(env, "account", { days: [] });
+// "acct" may be handed in by a caller that has just fetched the record itself.
+async function snapshotAccount(env, ig, { force = false, acct = null } = {}) {
+  if (!acct) acct = await loadDoc(env, "account", { days: [] });
   const today = todayIST();
   const have = acct.days.find((d) => d.d === today);
   if (have && !force && Date.now() - (have.at || 0) < 6 * 3600 * 1000) return acct;
@@ -1683,15 +1702,15 @@ async function insightRoutes(request, env, parts) {
   const asked = new URL(request.url).searchParams.get("range");
   const range = Object.prototype.hasOwnProperty.call(RANGE_DAYS, asked) ? asked : "all";
   if (parts[1] === "advice") return json(await insightAdvice(env, range));
-  const posts = await loadDoc(env, "posts", []);
-  const ig = igReady(env) ? await loadIg(env) : null;
-  let acct = await loadDoc(env, "account", { days: [] }), page = null, people = null;
+  const loaded = await Promise.all([loadDoc(env, "posts", []), igReady(env) ? loadIg(env) : null, loadDoc(env, "account", { days: [] })]);
+  const posts = loaded[0], ig = loaded[1];
+  let acct = loaded[2], page = null, people = null;
   if (ig) {
     // Bring the numbers up to date first, so everything below agrees with Instagram.
     // (Posts that were deleted on Instagram are noticed when the Posts section opens.)
     const linked = await adoptFromInstagram(env, ig, posts);
     if ((await refreshInsights(env, ig, posts, { max: 8 })) || linked) await saveDoc(env, "posts", posts.slice(-500));
-    acct = await snapshotAccount(env, ig);
+    acct = await snapshotAccount(env, ig, { acct });
     const followers = acct.days.length ? acct.days[acct.days.length - 1].followers : 0;
     [page, people] = await Promise.all([
       range === "7" || range === "30" ? accountNumbers(env, ig, Number(range), followers) : null,
@@ -2104,10 +2123,10 @@ async function tasteRoutes(request, env, parts) {
   const method = request.method;
   const taste = { ...emptyTaste(), ...(await loadDoc(env, "taste", emptyTaste())) };
   const out = async (t) => {
-    const [history, rewords] = await Promise.all([loadDoc(env, "history", []), loadDoc(env, "rewords", [])]);
+    const [history, rewords, scored] = await Promise.all([loadDoc(env, "history", []), loadDoc(env, "rewords", []), scorer.remembers(env, kit)]);
     return json({ profile: t.profile, notes: t.notes, updatedAt: t.updatedAt, evidence: evidenceCount(await gatherEvidence(env)),
-      // What each "forget" would actually erase right now.
-      canForget: { profile: !!t.profile, all: !!t.profile || t.notes.length > 0 || history.length > 0 || rewords.length > 0 } });
+      // What each "forget" would actually erase right now ("scored": the scorer's own count of picks and passes).
+      canForget: { profile: !!t.profile, all: !!t.profile || t.notes.length > 0 || history.length > 0 || rewords.length > 0 || scored } });
   };
   if (parts.length === 1 && method === "GET") {
     // A profile written before Nishiii spoke to her directly is rewritten once, the first time it is opened.
@@ -2122,7 +2141,8 @@ async function tasteRoutes(request, env, parts) {
     // "all": also erase the record of picks, skips and rewording requests, and her notes.
     const scope = new URL(request.url).searchParams.get("scope");
     if (scope === "all") {
-      await env.MEDIA.delete(["data/taste.json", "data/history.json", "data/rewords.json"]);
+      // The scorer's own record of picks and passes goes too, so its count starts again from nothing.
+      await Promise.all([env.MEDIA.delete(["data/taste.json", "data/history.json", "data/rewords.json"]), scorer.forget(env, kit)]);
       return out(emptyTaste());
     }
     if (scope !== "profile") return fail(400, "Say what to forget.");
@@ -2172,36 +2192,87 @@ function derToRaw(der) {
   raw.set(int(), 0); raw.set(int(), 32);
   return raw;
 }
-async function takeChallenge(env, id, clientDataB64, type, request) {
-  if (!UUID.test(id || "")) throw new UserError(400, "That unlock attempt has expired. Try again.");
-  const key = `auth/challenge-${id}.json`;
-  const obj = await env.MEDIA.get(key);
-  if (!obj) throw new UserError(400, "That unlock attempt has expired. Try again.");
-  const saved = await obj.json();
-  await env.MEDIA.delete(key);                       // each challenge works once
-  let client;
+// A challenge is 16 random bytes, the moment it stops working (6 bytes) and a seal only this server can make
+// (16 bytes), so handing one out needs no writing to storage and the phone can ask for it the instant the app
+// opens. Each still works only once: a used one is remembered until long after it would have stopped working.
+const CHALLENGE_MS = 5 * 60 * 1000;
+// The seal's key is 32 random bytes that the server makes for itself the first time one is needed, and keeps in
+// storage. It is never sent anywhere and has nothing to do with the passcode, so a challenge (which anyone may
+// ask for) gives away nothing that could help someone guess the passcode.
+const SEAL_KEY_AT = "secret/challenge-seal", SEAL_KEY_KEPT_MS = 60 * 60 * 1000;
+let sealKeyKept = null;                              // { key, at }: storage is asked about once an hour at most
+// Stores something only if nothing is stored under that name yet. Answers false when something already was.
+// "Already there" is believed only once a look confirms it. Should storage ever refuse the "only if new"
+// condition itself, or say "already there" about a name that holds nothing, it is stored plainly, as it
+// always used to be.
+async function putIfNew(env, key, value) {
+  try {
+    if ((await env.MEDIA.put(key, value, { onlyIf: new Headers({ "If-None-Match": "*" }) })) !== null) return true;
+    if (await env.MEDIA.head(key)) return false;
+  } catch (e) { /* stored plainly below */ }
+  await env.MEDIA.put(key, value);
+  return true;
+}
+async function sealKey(env) {
+  if (sealKeyKept && Date.now() - sealKeyKept.at < SEAL_KEY_KEPT_MS) return sealKeyKept.key;
+  let obj = await env.MEDIA.get(SEAL_KEY_AT), found = !!obj;
+  if (!obj) {
+    // Only the first copy ever written is stored ("If-None-Match: *"), and the stored copy is the one used.
+    await putIfNew(env, SEAL_KEY_AT, b64u.enc(crypto.getRandomValues(new Uint8Array(32))));
+    obj = await env.MEDIA.get(SEAL_KEY_AT);
+  }
+  const raw = b64u.dec(await obj.text());
+  if (raw.length !== 32) throw new Error("The stored seal key is damaged.");
+  const key = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  // Kept in memory only once it was found already stored, so two first-ever requests can't each keep their own.
+  if (found) sealKeyKept = { key, at: Date.now() };
+  return key;
+}
+async function challengeSeal(env, head) {
+  return new Uint8Array(await crypto.subtle.sign("HMAC", await sealKey(env), head)).slice(0, 16);
+}
+async function makeChallenge(env) {
+  const c = new Uint8Array(38);
+  crypto.getRandomValues(c.subarray(0, 16));
+  let exp = Date.now() + CHALLENGE_MS;
+  for (let i = 21; i >= 16; i--) { c[i] = exp % 256; exp = Math.floor(exp / 256); }
+  c.set(await challengeSeal(env, c.slice(0, 22)), 22);
+  return b64u.enc(c);
+}
+async function takeChallenge(env, clientDataB64, type, request) {
+  const expired = () => new UserError(400, "That unlock attempt has expired. Try again.");
+  let client, c;
   try { client = JSON.parse(new TextDecoder().decode(b64u.dec(clientDataB64))); } catch (e) { throw new UserError(400, "The device's reply couldn't be read."); }
-  if (Date.now() > saved.exp || client.type !== type || !safeEqual(String(client.challenge), saved.challenge) || client.origin !== new URL(request.url).origin) {
+  try { c = b64u.dec(client.challenge); } catch (e) { throw expired(); }
+  if (c.length !== 38) throw expired();
+  // The seal and the "already used?" look-up are fetched side by side; nothing is accepted until both are in.
+  const usedKey = `auth/used-${b64u.enc(c.slice(0, 16))}.json`;
+  const [seal, used] = await Promise.all([challengeSeal(env, c.slice(0, 22)), env.MEDIA.head(usedKey)]);
+  let diff = 0, exp = 0;
+  for (let i = 0; i < 16; i++) diff |= seal[i] ^ c[22 + i];
+  for (let i = 16; i < 22; i++) exp = exp * 256 + c[i];
+  if (diff !== 0 || client.type !== type || client.origin !== new URL(request.url).origin) {
     throw new UserError(401, "That unlock attempt wasn't valid. Try again.");
   }
+  if (Date.now() > exp || used) throw expired();      // each challenge works once, and only for five minutes
+  // Marked as used before anything else is looked at. Of two replies arriving in the same instant with the same
+  // challenge, only the first to be marked goes on.
+  if (!(await putIfNew(env, usedKey, JSON.stringify({ exp })))) throw expired();
 }
 
 async function passkeyRoutes(request, env, parts, authed) {
   const method = request.method;
   if (!env.APP_PASSCODE || !env.MEDIA) return fail(503, "The Face ID lock isn't set up yet.");
-  const keys = await loadDoc(env, "passkeys", []);
 
-  if (parts[1] === "challenge" && method === "POST") {
-    const id = crypto.randomUUID(), challenge = b64u.enc(crypto.getRandomValues(new Uint8Array(32)));
-    await env.MEDIA.put(`auth/challenge-${id}.json`, JSON.stringify({ challenge, exp: Date.now() + 5 * 60 * 1000 }));
-    return json({ id, challenge });
-  }
+  // Nothing is written here, and storage is read at most once an hour (for the seal's key), so this answers fast.
+  if (parts[1] === "challenge" && method === "POST") return json({ id: "sealed", challenge: await makeChallenge(env) });
 
   if (parts[1] === "login" && method === "POST") {
     const b = await body(request);
+    // The saved keys and the one-time check of the challenge are fetched side by side.
+    const [keys] = await Promise.all([loadDoc(env, "passkeys", []), takeChallenge(env, b.clientDataJSON, "webauthn.get", request)]);
     const saved = keys.find((k) => k.id === b.credentialId);
     if (!saved) return fail(401, "Face ID on this device isn't recognised any more. Use the passcode, then turn the lock on again in Settings.");
-    await takeChallenge(env, b.challengeId, b.clientDataJSON, "webauthn.get", request);
     let ok = false;
     try {
       const auth = b64u.dec(b.authenticatorData), client = b64u.dec(b.clientDataJSON);
@@ -2216,15 +2287,14 @@ async function passkeyRoutes(request, env, parts, authed) {
         await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, derToRaw(b64u.dec(b.signature)), signed);
     } catch (e) { ok = false; }
     if (!ok) return fail(401, "Face ID couldn't be confirmed. Try again or use the passcode.");
-    return json({ token: await sessionToken(env) });
+    return json({ token: await sessionToken(env), status: statusOf(env, true) });
   }
 
   if (!authed) return fail(401, "Enter the passcode to continue.");
-  if (parts.length === 1 && method === "GET") return json({ devices: keys.map((k) => ({ id: k.id, label: k.label, added: k.added })) });
   if (parts[1] === "register" && method === "POST") {
     const b = await body(request);
     if (Number(b.alg) !== -7) return fail(400, "Face ID on this device works in a way the app can't use.");
-    await takeChallenge(env, b.challengeId, b.clientDataJSON, "webauthn.create", request);
+    const [keys] = await Promise.all([loadDoc(env, "passkeys", []), takeChallenge(env, b.clientDataJSON, "webauthn.create", request)]);
     const id = String(b.credentialId || ""), publicKey = String(b.publicKey || "");
     if (!/^[A-Za-z0-9_-]{16,1400}$/.test(id) || !/^[A-Za-z0-9_-]{80,400}$/.test(publicKey)) return fail(400, "The device's reply couldn't be read.");
     try { await crypto.subtle.importKey("spki", b64u.dec(publicKey), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]); }
@@ -2234,6 +2304,8 @@ async function passkeyRoutes(request, env, parts, authed) {
     await saveDoc(env, "passkeys", next);
     return json({ ok: true });
   }
+  const keys = await loadDoc(env, "passkeys", []);
+  if (parts.length === 1 && method === "GET") return json({ devices: keys.map((k) => ({ id: k.id, label: k.label, added: k.added })) });
   if (parts[1] && method === "DELETE") {
     await saveDoc(env, "passkeys", keys.filter((k) => k.id !== parts[1]));
     return json({ ok: true });
@@ -2242,7 +2314,7 @@ async function passkeyRoutes(request, env, parts, authed) {
 }
 
 // ---------- Nishiii as a chat assistant that can do things in the app ----------
-const CHAT_SYSTEM = `You are Nishiii, the chat assistant inside Entangledd Studio, an app Dhruuu uses to run her Instagram quotes page. You are warm, brief and practical. You are talking with Dhruuu herself: say "you" and "your", and use her name now and then, not in every message.
+const CHAT_SYSTEM = `You are Nishiii, the chat assistant inside D's Studio, an app Dhruuu uses to run her Instagram quotes page. You are warm, brief and practical. You are talking with Dhruuu herself: say "you" and "your", and use her name now and then, not in every message.
 You can act in the app with your tools: look at today's quotes, fetch quotes from books, films, series or a subject, add things to her Library, put a quote on the canvas in Create, open a section, read how her posts, her week and her page over any period did (get_insights for anything about what works, best times or growth), check who really said a quote, read what you have learned about her taste, save a note she wants you to follow, and write a caption.
 Rules:
 - Use tools for anything about her data. Never make up numbers, posts or quotes.
@@ -2452,10 +2524,9 @@ async function renderRoutes(request, env, parts) {
 }
 
 // Decides which handler answers a request under /api/.
-async function route(request, env, parts) {
+async function route(request, env, parts, ctx) {
   if (parts[0] === "status" && request.method === "GET") {
-    return json({ configured: !!env.APP_PASSCODE, signedIn: await signedIn(request, env), reels: reelsReady(env),
-      ai: !!(env.ANTHROPIC_API_KEY && env.MEDIA), stock: !!stockProvider(env), instagram: igReady(env) });
+    return json(statusOf(env, await signedIn(request, env)));
   }
   if (parts[0] === "login" && request.method === "POST") return login(request, env);
   if (parts[0] === "passkey") return passkeyRoutes(request, env, parts, await signedIn(request, env));
@@ -2468,7 +2539,7 @@ async function route(request, env, parts) {
   }
   if (["jobs", "library", "suggestions", "asked", "edit", "scan", "stock", "instagram", "posts", "caption", "inspirations", "taste", "chat", "slides", "check", "report", "looks", "queue", "insights", "music", "handoffs"].includes(parts[0])) {
     if (!(await signedIn(request, env))) return fail(401, "Enter the passcode to continue.");
-    if (parts[0] === "jobs") return appRoutes(request, env, parts);
+    if (parts[0] === "jobs") return appRoutes(request, env, parts, ctx);
     if (parts[0] === "stock") return stockRoutes(request, env, parts);
     if (parts[0] === "music") return musicRoutes(request, env, parts, new URL(request.url));
     if (!env.MEDIA) return fail(503, "The app's storage isn't set up yet.");
@@ -2538,7 +2609,7 @@ export default {
     const parts = url.pathname.slice(5).split("/").filter(Boolean);
     try {
       // "await" matters here: without it, an error inside a handler would skip the catch below.
-      return await route(request, env, parts);
+      return await route(request, env, parts, ctx);
     } catch (e) {
       // What went wrong on the server, or at an outside service, goes into the short record of problems
       // that the health record counts. (Kept after the answer is sent, where Cloudflare allows it.)

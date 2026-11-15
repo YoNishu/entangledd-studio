@@ -3,37 +3,54 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<title>Entangledd Studio</title>
+<title>D's Studio</title>
+<link rel="preload" href="fonts/NothingYouCouldDo-Regular.ttf" as="font" type="font/ttf" crossorigin>
 <meta name="theme-color" content="#0E1B24">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Entangledd">
+<meta name="apple-mobile-web-app-title" content="D's Studio">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-180.png">
 <link rel="manifest" href="manifest.webmanifest">
+<script>
+// With the Face ID lock on, ask the server for its one-time challenge before anything else loads (this sits
+// above the stylesheet on purpose: a script below it would wait for it), so Face ID can begin the moment the app appears. (app.js picks this up.)
+try {
+  if (localStorage.getItem("entangledd.faceid.v1") && window.PublicKeyCredential) {
+    window.__challenge = fetch("/api/passkey/challenge", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+  }
+} catch (e) { /* no storage: the app asks later instead */ }
+</script>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
+<!-- The wordmark, drawn once as outlines so it is sharp at every size and needs no font to load. -->
+<svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false"><symbol id="wm" viewBox="0 0 206.21 34.48"><path fill="currentColor" d="M13.32 3.52Q18.12 3.52 21.74 5.32Q25.36 7.12 27.38 10.48Q29.4 13.84 29.4 18.48Q29.4 23.24 27.56 26.62Q25.72 30 22.36 31.76Q19 33.52 14.44 33.52H1Q0.4 33.52 0.4 32.92V31.72Q0.4 31.12 1 31.12H1.28Q2.6 31.12 3.28 30.12Q3.96 29.12 3.96 27.32V9.72Q3.96 5.92 1.04 5.92H1Q0.4 5.92 0.4 5.32V4.12Q0.4 3.52 1 3.52ZM10.32 27.52Q10.32 29.08 10.84 30Q11.36 30.92 13.28 30.92Q18.04 30.92 20.68 27.96Q23.32 25 23.32 18.48Q23.32 12.68 20.6 9.3Q17.88 5.92 12.2 5.92H10.32Z M60.13 19.72Q59.89 19.84 59.73 19.84Q59.45 19.84 59.21 19.56Q57.41 17.28 55.45 16.36Q53.49 15.44 52.05 15.44Q51.01 15.44 50.13 15.88Q49.25 16.32 49.25 17.48Q49.25 18.36 49.91 18.94Q50.57 19.52 51.61 19.88Q52.65 20.24 53.73 20.52Q55.29 20.88 56.87 21.36Q58.45 21.84 59.77 22.62Q61.09 23.4 61.91 24.56Q62.73 25.72 62.73 27.48Q62.73 29.36 61.71 30.84Q60.69 32.32 58.81 33.18Q56.93 34.04 54.33 34.04Q53.09 34.04 51.91 33.74Q50.73 33.44 49.69 32.96Q49.45 32.84 49.33 32.84Q49.05 32.84 49.05 33.12Q49.05 33.2 49.13 33.44Q49.21 33.68 49.21 33.76Q49.21 34.08 48.73 34.08H47.29Q46.85 34.08 46.61 33.68L43.17 27.24Q43.05 27 43.05 26.88Q43.05 26.6 43.37 26.4L44.61 25.68Q44.85 25.56 44.97 25.56Q45.21 25.56 45.41 25.92Q47.37 28.84 49.71 30.08Q52.05 31.32 54.49 31.32Q58.33 31.32 58.33 29.04Q58.33 28 57.39 27.32Q56.45 26.64 55.07 26.2Q53.69 25.76 52.29 25.44Q49.73 24.8 48.21 23.98Q46.69 23.16 45.93 22.22Q45.17 21.28 44.91 20.34Q44.65 19.4 44.65 18.52Q44.65 16.12 46.49 14.56Q48.33 13 51.49 13Q53.37 13 54.81 13.5Q56.25 14 56.81 14.32Q56.97 14.4 57.05 14.4Q57.17 14.4 57.17 14.24Q57.17 14.12 57.05 13.76Q57.01 13.56 56.99 13.46Q56.97 13.36 56.97 13.28Q56.97 12.88 57.49 12.88H58.53Q59.05 12.88 59.21 13.32L61.21 18.4Q61.33 18.64 61.33 18.8Q61.33 19.08 61.01 19.24Z M98.49 12.6Q98.37 12.64 98.25 12.7Q98.13 12.76 98.01 12.76Q97.69 12.76 97.33 12.28Q94.77 9.08 92.29 7.68Q89.81 6.28 87.17 6.28Q85.57 6.28 84.43 7.12Q83.29 7.96 83.29 9.76Q83.29 11.24 84.21 12.2Q85.13 13.16 86.59 13.78Q88.05 14.4 89.57 14.84Q91.85 15.48 94.07 16.28Q96.29 17.08 98.09 18.18Q99.89 19.28 100.97 20.86Q102.05 22.44 102.05 24.68Q102.05 27.4 100.67 29.52Q99.29 31.64 96.69 32.84Q94.09 34.04 90.41 34.04Q88.61 34.04 87.03 33.58Q85.45 33.12 83.97 32.4Q83.65 32.24 83.37 32.24Q83.01 32.24 83.01 32.64Q83.01 32.76 83.09 33.08Q83.21 33.36 83.21 33.56Q83.21 34 82.53 34H80.53Q79.81 34 79.53 33.44L74.69 24.36Q74.53 24.04 74.53 23.88Q74.53 23.44 74.97 23.2L76.73 22.2Q76.85 22.12 76.97 22.08Q77.09 22.04 77.21 22.04Q77.61 22.04 77.89 22.52Q80.61 26.64 83.91 28.64Q87.21 30.64 90.65 30.64Q93.25 30.64 94.65 29.46Q96.05 28.28 96.05 26.48Q96.05 24.72 95.17 23.72Q94.29 22.72 92.45 22.04Q90.61 21.36 87.73 20.52Q85.77 19.96 83.85 19.16Q81.93 18.36 80.37 17.22Q78.81 16.08 77.87 14.5Q76.93 12.92 76.93 10.76Q76.93 8.12 78.27 6.4Q79.61 4.68 81.89 3.86Q84.17 3.04 87.05 3.04Q89.29 3.04 90.85 3.6Q92.41 4.16 93.25 4.64Q93.93 5.04 94.17 5.04Q94.37 5.04 94.37 4.8Q94.37 4.6 94.27 4.24Q94.17 3.88 94.17 3.48Q94.17 2.88 94.89 2.88H96.33Q97.05 2.88 97.33 3.56L100.13 10.72Q100.21 10.88 100.25 11.02Q100.29 11.16 100.29 11.28Q100.29 11.64 99.85 11.88ZM118.53 30.64Q118.65 30.8 118.65 31Q118.65 31.24 118.33 31.44L117.13 32.2Q116.05 32.88 114.53 33.46Q113.01 34.04 111.49 34.04Q110.29 34.04 109.23 33.48Q108.17 32.92 107.53 31.58Q106.89 30.24 106.89 27.88V20.48Q106.89 19.4 106.77 18.34Q106.65 17.28 106.03 16.6Q105.41 15.92 103.97 15.92Q103.37 15.92 103.37 15.32V14.12Q103.37 13.52 103.97 13.52H106.89V10.84Q106.89 10.32 107.25 10.12Q108.13 9.64 109.57 8.78Q111.01 7.92 112.13 6.8Q112.21 6.72 112.33 6.72H112.41Q112.49 6.72 112.49 6.84V13.52H117.85Q118.45 13.52 118.45 14.12V15.84Q118.45 16.44 117.85 16.44H112.49V27.88Q112.49 29.44 112.97 30.02Q113.45 30.6 114.17 30.6Q114.85 30.6 115.61 30.22Q116.37 29.84 117.01 29.44Q117.29 29.28 117.45 29.28Q117.69 29.28 117.89 29.6ZM142.17 25.44Q142.17 26.48 142.31 27.5Q142.45 28.52 142.95 29.22Q143.45 29.92 144.53 30.04Q144.85 30.08 144.91 30.22Q144.97 30.36 144.97 30.56V31.88Q144.97 32.44 144.41 32.44Q142.45 32.44 141.15 32.66Q139.85 32.88 138.91 33.22Q137.97 33.56 137.05 33.96Q136.89 34.04 136.73 34.04H136.65Q136.57 34.04 136.57 33.92Q136.57 33.8 136.71 32.7Q136.85 31.6 137.21 28.88Q136.65 30 135.65 31.2Q134.65 32.4 133.23 33.22Q131.81 34.04 129.97 34.04Q127.81 34.04 126.47 33.38Q125.13 32.72 124.41 31.62Q123.69 30.52 123.43 29.14Q123.17 27.76 123.17 26.32V19.72Q123.17 18.08 122.43 17Q121.69 15.92 120.21 15.92H120.05Q119.45 15.92 119.45 15.32V14.12Q119.45 13.52 120.05 13.52H128.17Q128.77 13.52 128.77 14.12V26.56Q128.77 27.64 128.97 28.54Q129.17 29.44 129.79 29.98Q130.41 30.52 131.65 30.52Q132.65 30.52 133.65 30.02Q134.65 29.52 135.43 28.74Q136.21 27.96 136.53 27.12V19.72Q136.53 18.08 135.79 17Q135.05 15.92 133.61 15.92H133.53Q132.93 15.92 132.93 15.32V14.12Q132.93 13.52 133.53 13.52H141.57Q142.17 13.52 142.17 14.12ZM166.73 26.12Q166.73 27.56 167.17 28.7Q167.61 29.84 169.09 30.04Q169.57 30.08 169.57 30.56V31.88Q169.57 32.44 168.97 32.44Q167.01 32.44 165.71 32.66Q164.41 32.88 163.47 33.22Q162.53 33.56 161.61 33.96Q161.45 34.04 161.33 34.04H161.25Q161.13 34.04 161.13 33.92Q161.21 33 161.31 32.12Q161.41 31.24 161.57 30.36Q161.37 30.88 160.71 31.76Q160.05 32.64 158.79 33.34Q157.53 34.04 155.49 34.04Q154.13 34.04 152.59 33.48Q151.05 32.92 149.69 31.68Q148.33 30.44 147.47 28.42Q146.61 26.4 146.61 23.48Q146.61 19.76 147.95 17.46Q149.29 15.16 151.43 14.08Q153.57 13 155.97 13Q159.01 13 161.13 14.88V12.32Q161.13 11.24 160.99 10.24Q160.85 9.24 160.37 8.54Q159.89 7.84 158.77 7.72Q158.29 7.68 158.29 7.2V5.84Q158.29 5.6 158.45 5.5Q158.61 5.4 158.89 5.32Q162.05 4.28 163.83 3.24Q165.61 2.2 166.41 1.6Q166.53 1.52 166.61 1.52H166.65Q166.73 1.52 166.73 1.6ZM161.13 20.56Q161.13 18.68 159.91 17.36Q158.69 16.04 156.69 16.04Q154.77 16.04 153.69 16.88Q152.61 17.72 152.19 19.12Q151.77 20.52 151.77 22.2Q151.77 26.04 153.31 28.28Q154.85 30.52 157.29 30.52Q158.37 30.52 159.17 29.98Q159.97 29.44 160.47 28.64Q160.97 27.84 161.13 27.12ZM182.85 31.12Q183.45 31.12 183.45 31.72V32.92Q183.45 33.52 182.77 33.52H171.45Q170.77 33.52 170.77 32.92V31.72Q170.77 31.12 171.37 31.12H171.45Q172.93 31.12 173.63 30.02Q174.33 28.92 174.33 27.32V23.08Q174.33 22.16 174.19 21.24Q174.05 20.32 173.57 19.64Q173.09 18.96 171.97 18.84Q171.49 18.8 171.49 18.32V16.96Q171.49 16.72 171.65 16.62Q171.81 16.52 172.09 16.44Q175.25 15.4 176.95 14.3Q178.65 13.2 179.45 12.36Q179.53 12.28 179.61 12.28H179.73Q179.81 12.28 179.81 12.36V27.28Q179.81 28.88 180.53 30Q181.25 31.12 182.73 31.12ZM177.13 3.92Q178.17 3.92 179.17 4.92Q180.17 5.92 180.17 6.92Q180.17 7.92 179.17 8.92Q178.17 9.92 177.13 9.92Q176.17 9.92 175.13 8.92Q174.13 7.96 174.13 6.92Q174.13 5.92 175.13 4.92Q176.13 3.92 177.13 3.92ZM195.29 13Q197.57 13 199.51 13.9Q201.45 14.8 202.85 16.34Q204.25 17.88 205.03 19.78Q205.81 21.68 205.81 23.72Q205.81 26.68 204.41 29.02Q203.01 31.36 200.73 32.7Q198.45 34.04 195.77 34.04Q193.49 34.04 191.57 33.16Q189.65 32.28 188.23 30.78Q186.81 29.28 186.03 27.34Q185.25 25.4 185.25 23.28Q185.25 20.36 186.61 18.04Q187.97 15.72 190.25 14.36Q192.53 13 195.29 13ZM197.01 30.8Q197.77 30.8 198.69 30.4Q199.61 30 200.31 29Q201.01 28 201.01 26.24Q201.01 24.84 200.47 23.14Q199.93 21.44 198.99 19.86Q198.05 18.28 196.79 17.26Q195.53 16.24 194.05 16.24Q192.41 16.24 191.21 17.46Q190.01 18.68 190.01 20.8Q190.01 22.16 190.55 23.88Q191.09 25.6 192.03 27.18Q192.97 28.76 194.25 29.78Q195.53 30.8 197.01 30.8Z"/></symbol></svg>
+
 <header class="bar">
   <div class="top">
-    <h1 class="wordmark" id="wordmark">Entangledd Studio</h1>
+    <h1 class="wordmark" id="wordmark"><svg viewBox="0 0 206.21 34.48" role="img" aria-label="D's Studio"><use href="#wm"/><path class="wm-heart" d="M32.54 15.90C33.15 12.46 29.44 9.01 30.14 5.07C30.64 2.24 32.69 0.70 34.78 1.07C36.26 1.33 37.21 2.38 37.44 3.95C38.24 2.31 39.79 1.44 41.39 1.72C43.48 2.09 44.51 4.18 44.03 6.89C43.27 11.19 36.61 11.54 32.54 15.90Z"/></svg></h1>
     <div class="top-actions">
-      <button class="settings" id="chat-open" hidden>Chat</button>
-      <button class="settings" id="settings-open">Settings</button>
+      <button class="iconbtn ic ic-chat" id="chat-open" aria-label="Chat with Nishiii" hidden>Chat</button>
+      <button class="iconbtn ic ic-settings" id="settings-open" aria-label="Settings">Settings</button>
     </div>
   </div>
-  <p class="hello" id="hello">Hi Dhruuu, what are we posting today? <span class="sig">Nishiii</span></p>
-  <nav class="views" aria-label="Sections">
-    <button id="nav-today" aria-pressed="false">Today</button>
-    <button id="nav-create" aria-pressed="true">Create</button>
-    <button id="nav-library" aria-pressed="false">Library</button>
-    <button id="nav-posts" aria-pressed="false">Posts</button>
-    <button id="nav-insights" aria-pressed="false">Insights</button>
-    <button id="nav-nishiii" aria-pressed="false">Nishiii</button>
-  </nav>
 </header>
 
-<section class="page" id="view-today" hidden>
+<nav class="views" aria-label="Sections">
+  <button class="ic ic-today" id="nav-today" aria-pressed="false">Today</button>
+  <button class="ic ic-create" id="nav-create" aria-pressed="true">Create</button>
+  <button class="ic ic-library" id="nav-library" aria-pressed="false">Library</button>
+  <button class="ic ic-posts" id="nav-posts" aria-pressed="false">Posts</button>
+  <button class="ic ic-insights" id="nav-insights" aria-pressed="false">Insights</button>
+  <button class="ic ic-heart" id="nav-nishiii" aria-pressed="false">Nishiii</button>
+</nav>
+
+<section class="page" id="view-today" aria-label="Today" hidden>
+  <!-- Nishiii's note: the first thing on Today. It moves up and away with the quotes, so only the name stays put. -->
+  <p class="hello" id="hello" hidden>Hi Dhruuu, what are we posting today? <span class="sig">Nishiii</span></p>
   <header class="dayhead">
     <p class="weekday" id="today-weekday"></p>
     <p class="fulldate" id="today-date"></p>
@@ -47,82 +64,101 @@
   </div>
 </section>
 
-<section class="page" id="view-library" hidden>
+<section class="page" id="view-library" aria-label="Library" hidden>
   <p class="note" id="library-note" role="status" hidden></p>
 
-  <h2>Your own quotes</h2>
-  <p class="note">Lines you wrote or copied down. Nishiii includes them in your daily five, word for word.</p>
-  <form class="add" id="add-quote">
-    <label class="stack"><span>Quote</span><textarea id="q-text" rows="3" required></textarea></label>
-    <label class="stack"><span>Who said it (leave empty if it's yours)</span><input id="q-author" type="text"></label>
-    <label class="stack"><span>Where it's from, such as a book or your notebook</span><input id="q-from" type="text"></label>
-    <button class="btn primary" type="submit">Save quote</button>
-  </form>
-  <label class="btn file" id="scan-label">
-    Scan a page with the camera
-    <input type="file" id="scan" accept="image/*" capture="environment">
-  </label>
+  <h2 class="ic ic-quote">Your own quotes</h2>
+  <p class="note">Nishiii uses these in your daily five, word for word.</p>
+  <details class="more">
+    <summary class="ic ic-plus">Add a quote</summary>
+    <div class="more-body">
+      <form class="add" id="add-quote">
+        <label class="stack"><span>Quote</span><textarea id="q-text" rows="3" required></textarea></label>
+        <label class="stack"><span>Who said it</span><input id="q-author" type="text" placeholder="Leave empty if it's yours"></label>
+        <label class="stack"><span>Where it's from</span><input id="q-from" type="text" placeholder="A book, your notebook…"></label>
+        <button class="btn primary" type="submit">Save quote</button>
+      </form>
+      <div class="tiles2">
+        <label class="btn tall file ic ic-camera" id="scan-label">
+          Scan a page
+          <input type="file" id="scan" accept="image/*" capture="environment">
+        </label>
+        <label class="btn tall file ic ic-upload">
+          Import highlights
+          <input type="file" id="import" accept=".txt,.html,.htm,text/plain,text/html">
+        </label>
+      </div>
+      <p class="note">Import takes a Kindle highlights file, or any text file with one quote per paragraph.</p>
+    </div>
+  </details>
   <div class="cards" id="scan-results"></div>
-  <label class="btn file">
-    Import highlights from a file
-    <input type="file" id="import" accept=".txt,.html,.htm,text/plain,text/html">
-  </label>
-  <p class="note">Works with a Kindle highlights file ("My Clippings.txt", or the notebook the Kindle app emails you) and with any text file that has one quote per paragraph.</p>
   <ul class="list" id="list-quotes"></ul>
 
-  <h2>Books you've read</h2>
-  <p class="note">Nishiii picks lines from these for your daily five. When an older book is free to read online, its lines are copied straight from the text, so the wording is exact.</p>
-  <form class="add row2" id="add-book">
-    <label class="stack"><span>Title</span><input id="b-title" type="text" required></label>
-    <label class="stack"><span>Author</span><input id="b-author" type="text"></label>
-    <button class="btn primary" type="submit">Add book</button>
-  </form>
+  <h2 class="ic ic-library">Books you've read</h2>
+  <p class="note">Nishiii picks lines from these. Older books that are free to read online are quoted exactly.</p>
+  <details class="more">
+    <summary class="ic ic-plus">Add a book</summary>
+    <div class="more-body">
+      <form class="add row2" id="add-book">
+        <label class="stack"><span>Title</span><input id="b-title" type="text" required></label>
+        <label class="stack"><span>Author</span><input id="b-author" type="text"></label>
+        <button class="btn primary" type="submit">Add book</button>
+      </form>
+    </div>
+  </details>
   <ul class="list" id="list-books"></ul>
 
-  <h2>Films and series</h2>
-  <p class="note">Nishiii picks lines from these too.</p>
-  <form class="add row2" id="add-screen">
-    <label class="stack"><span>Title</span><input id="s-title" type="text" required></label>
-    <label class="stack"><span>Kind</span><select id="s-kind"><option value="film">Film</option><option value="series">Series</option></select></label>
-    <button class="btn primary" type="submit">Add</button>
-  </form>
+  <h2 class="ic ic-film">Films and series</h2>
+  <details class="more">
+    <summary class="ic ic-plus">Add a film or series</summary>
+    <div class="more-body">
+      <form class="add row2" id="add-screen">
+        <label class="stack"><span>Title</span><input id="s-title" type="text" required></label>
+        <label class="stack"><span>Kind</span><select id="s-kind"><option value="film">Film</option><option value="series">Series</option></select></label>
+        <button class="btn primary" type="submit">Add</button>
+      </form>
+    </div>
+  </details>
   <ul class="list" id="list-screen"></ul>
 
-  <h2>Reels and pages you love</h2>
-  <p class="note">Paste a link to a reel or post, or an account's username. For a reel, a screenshot works best: Nishiii reads the words and notes the look you liked.</p>
-  <form class="add row2" id="add-inspiration">
-    <label class="stack"><span>Link or username</span><input id="i-input" type="text" autocapitalize="none" autocorrect="off" placeholder="instagram.com/reel/… or @username" required></label>
-    <button class="btn primary" type="submit">Add</button>
-  </form>
-  <label class="btn file">
-    Add a screenshot of a reel
-    <input type="file" id="i-shot" accept="image/*">
-  </label>
+  <h2 class="ic ic-heart">Reels and pages you love</h2>
+  <p class="note">Nishiii reads the words and notes the look you liked.</p>
+  <details class="more">
+    <summary class="ic ic-plus">Add a reel or a page</summary>
+    <div class="more-body">
+      <form class="add row2" id="add-inspiration">
+        <label class="stack"><span>Link or username</span><input id="i-input" type="text" autocapitalize="none" autocorrect="off" placeholder="instagram.com/reel/… or @username" required></label>
+        <button class="btn primary" type="submit">Add</button>
+      </form>
+      <label class="btn file ic ic-photo">
+        Add a screenshot of a reel
+        <input type="file" id="i-shot" accept="image/*">
+      </label>
+      <p class="note">For a reel, a screenshot works best.</p>
+    </div>
+  </details>
   <p class="note" id="inspiration-note" role="status" hidden></p>
   <div class="cards" id="list-inspirations"></div>
 </section>
 
-<section class="page" id="view-posts" hidden>
-  <h2>Posts</h2>
+<section class="page" id="view-posts" aria-label="Posts" hidden>
   <article class="card week" id="week-card" hidden></article>
-  <div id="handoff-wrap" hidden>
-    <h2>Being finished in Instagram</h2>
-    <p class="note">Reels you took into Instagram to add a song. Once you post one there, it moves down to Posted by itself, usually within a few minutes.</p>
+  <div class="group" id="handoff-wrap" hidden>
+    <h2 class="ic ic-insta">Being finished in Instagram</h2>
+    <p class="note">Once you post one there, it moves down to Posted by itself, usually within a few minutes.</p>
     <div class="cards" id="list-handoffs"></div>
   </div>
-  <div id="queue-wrap" hidden>
-    <h2>Waiting to be posted</h2>
+  <div class="group" id="queue-wrap" hidden>
+    <h2 class="ic ic-later">Waiting to be posted</h2>
     <p class="note" id="queue-note"></p>
     <div class="cards" id="list-queue"></div>
   </div>
-  <h2 id="posted-head" hidden>Posted</h2>
+  <h2 class="ic ic-check" id="posted-head" hidden>Posted</h2>
   <p class="note" id="posts-note" role="status"></p>
   <div class="cards" id="list-posts"></div>
-
 </section>
 
-<section class="page" id="view-insights" hidden>
-  <h2>Insights</h2>
+<section class="page" id="view-insights" aria-label="Insights" hidden>
   <div class="seg four" id="ins-range" role="group" aria-label="Period">
     <button type="button" data-range="7" aria-pressed="false">7 days</button>
     <button type="button" data-range="30" aria-pressed="false">30 days</button>
@@ -142,11 +178,11 @@
     <article class="card" id="ins-reach"></article>
     <article class="card" id="ins-audience"></article>
     <article class="card" id="ins-rhythm"></article>
-    <button class="btn" id="ins-download">Download every post's numbers</button>
-    <p class="note">A spreadsheet file with one row per post. Instagram forgets its numbers after about 90 days; the app keeps yours.</p>
-    <details class="explain">
+    <button class="btn ic ic-save" id="ins-download">Download every post's numbers</button>
+    <p class="note">One row per post. Instagram forgets its numbers after about 90 days; the app keeps yours.</p>
+    <details class="more explain">
       <summary>What the numbers mean</summary>
-      <dl>
+      <dl class="more-body">
         <dt>Reach</dt><dd>How many different people saw a post.</dd>
         <dt>Views</dt><dd>How many times it was played or shown. One person can count several times.</dd>
         <dt>Engagement rate</dt><dd>Likes, comments, saves and shares together, as a share of the people reached.</dd>
@@ -158,34 +194,41 @@
   </div>
 </section>
 
-<section class="page" id="view-nishiii" hidden>
+<section class="page" id="view-nishiii" aria-label="Nishiii" hidden>
   <h2>Ask Nishiii for quotes</h2>
-  <p class="note">Five quotes right now, from any book, film, series or page you choose. They stay here, apart from Today's five.</p>
-  <button class="btn primary" id="ask-open">Ask for quotes</button>
+  <p class="note">Five quotes right now, from any book, film, series or page you choose.</p>
+  <button class="btn primary ic ic-sparkle" id="ask-open">Ask for quotes</button>
+  <button class="btn ic ic-chat" id="nishiii-chat" type="button" hidden>Chat with Nishiii</button>
   <p class="note" id="asked-note" role="status" hidden></p>
   <div class="cards" id="asked-list"></div>
 
-  <h2>What Nishiii has learned about your taste</h2>
+  <div class="headrow">
+    <h2>Your taste</h2>
+    <button class="btn small quiet ic ic-refresh" id="taste-refresh">Update now</button>
+  </div>
   <p class="note" id="taste-note" role="status"></p>
   <div class="card" id="taste-card" hidden>
     <p class="q" id="taste-summary"></p>
     <div id="taste-lists"></div>
   </div>
-  <button class="btn" id="taste-refresh">Update now</button>
   <div id="scorer-slot"></div>
 
-  <h2>Tell Nishiii directly</h2>
-  <p class="note">Nishiii always follows what you write here. For example: "no quotes about hustle" or "I love lines about the sea".</p>
-  <form class="add" id="add-note">
-    <label class="stack"><span>Note</span><input id="note-text" type="text" required></label>
-    <button class="btn primary" type="submit">Add note</button>
+  <h2>Notes for Nishiii</h2>
+  <p class="note">Nishiii always follows these. For example "no quotes about hustle" or "I love lines about the sea".</p>
+  <form class="inline" id="add-note">
+    <label class="stack"><span class="vh">Note</span><input id="note-text" type="text" placeholder="Write a note" required></label>
+    <button class="btn" type="submit">Add note</button>
   </form>
   <ul class="list" id="list-notes"></ul>
 
-  <h2>Make Nishiii forget</h2>
-  <p class="note">You'll be asked to confirm before anything is erased. Your Library, the reels you added and your posts are never touched here; remove those in their own sections.</p>
-  <button class="btn" id="forget-profile">Forget the profile</button>
-  <button class="btn quiet" id="forget-all">Forget everything and start fresh</button>
+  <details class="more">
+    <summary>Make Nishiii forget</summary>
+    <div class="more-body">
+      <p class="note">You'll be asked to confirm first. Your Library, the reels you added and your posts are never touched here.</p>
+      <button class="btn" id="forget-profile">Forget the profile</button>
+      <button class="btn quiet" id="forget-all">Forget everything and start fresh</button>
+    </div>
+  </details>
 </section>
 
 <main class="work" id="view-create">
@@ -204,35 +247,42 @@
     </nav>
 
     <div class="pane" id="pane-bg" role="tabpanel" aria-labelledby="tab-bg" hidden>
-      <label class="btn primary file">
-        Choose photo or video
-        <input type="file" id="file" accept="image/*,video/*">
-      </label>
-      <button class="btn" id="stock" disabled>Search photos and videos</button>
+      <div class="tiles2">
+        <label class="btn tall file ic ic-photo">
+          From your phone
+          <input type="file" id="file" accept="image/*,video/*">
+        </label>
+        <button class="btn tall ic ic-search" id="stock" disabled>Search for one</button>
+      </div>
       <p class="note" id="stock-note">Photo and video search isn't set up yet.</p>
-      <button class="btn quiet" id="clear-bg" hidden>Remove background</button>
       <div id="video-opts" hidden>
         <label class="check"><input type="checkbox" id="mute" checked> Mute the video's own sound</label>
       </div>
+      <button class="btn quiet" id="clear-bg" hidden>Remove background</button>
     </div>
 
     <div class="pane" id="pane-music" role="tabpanel" aria-labelledby="tab-music" hidden>
-      <p class="note" id="tune-state">No music yet. Add your own, pick a free track, or leave this empty and choose Instagram's music when you post.</p>
+      <p class="note" id="tune-state">No music yet. Add your own or a free track, or leave this empty and pick a song in Instagram.</p>
       <div id="tune-opts" hidden>
         <p class="main" id="tune-name"></p>
         <p class="note" id="tune-licence"></p>
-        <button class="btn" id="tune-play">Play from the start point</button>
+        <button class="btn ic ic-play" id="tune-play">Play from the start point</button>
         <label class="stack"><span>Start the music at <output id="tune-start-out">0:00</output></span><input type="range" id="tune-start" min="0" max="0" step="1" value="0"></label>
         <label class="stack"><span>Music volume <output id="tune-vol-out">80%</output></span><input type="range" id="tune-vol" min="5" max="100" step="5" value="80"></label>
       </div>
-      <label class="btn primary file">
-        <span id="tune-file-label">Choose your own music</span>
-        <input type="file" id="tune-file" accept="audio/*,video/*,.mp3,.m4a,.aac,.wav">
-      </label>
-      <button class="btn" id="tune-search" disabled>Search free music</button>
+      <div class="tiles2">
+        <label class="btn tall file ic ic-music">
+          <span id="tune-file-label">Your own music</span>
+          <input type="file" id="tune-file" accept="audio/*,video/*,.mp3,.m4a,.aac,.wav">
+        </label>
+        <button class="btn tall ic ic-search" id="tune-search" disabled>Search free music</button>
+      </div>
       <button class="btn quiet" id="tune-clear" hidden>Remove music</button>
       <p class="note" id="tune-say" role="status"></p>
-      <p class="note">Music is added to reels, not to pictures. A song you don't own the rights to can be muted by Instagram when it's part of the video. For a popular song, leave this empty and tap "Add a song in Instagram" once the reel is made.</p>
+      <details class="more">
+        <summary>About songs and Instagram</summary>
+        <p class="note more-body">Music is added to reels, not to pictures. Instagram can mute a song you don't own the rights to when it's part of the video. For a popular song, leave this empty and tap "Add a song" once the reel is made.</p>
+      </details>
     </div>
 
     <div class="pane" id="pane-text" role="tabpanel" aria-labelledby="tab-text" hidden>
@@ -240,14 +290,12 @@
         <span>Words</span>
         <textarea id="words" rows="3" placeholder="Write the line here"></textarea>
       </label>
-      <label class="check" id="author-row" hidden><input type="checkbox" id="show-author" checked> Show the author's name</label>
-      <button class="btn" id="reword-open" hidden>Reword with Nishiii</button>
-      <button class="btn" id="check-open" hidden>Check who said this</button>
-      <div id="check-result" role="status" hidden></div>
-      <div class="pair">
-        <button class="btn" id="add">Add a separate line</button>
-        <button class="btn quiet" id="remove">Remove this line</button>
+      <div class="tiles2 slim">
+        <button class="btn ic ic-sparkle" id="reword-open" hidden>Reword</button>
+        <button class="btn ic ic-check" id="check-open" hidden>Who said this?</button>
       </div>
+      <div id="check-result" role="status" hidden></div>
+      <label class="check" id="author-row" hidden><input type="checkbox" id="show-author" checked> Show the author's name</label>
       <label class="row"><span>Size <output id="size-out"></output></span>
         <input type="range" id="size" min="16" max="120" step="1"></label>
       <label class="row"><span>Line width <output id="width-out"></output></span>
@@ -257,46 +305,46 @@
         <div class="swatches" id="swatches" role="group" aria-labelledby="colour-label"></div>
       </div>
       <div class="stack"><span id="align-label">Alignment</span>
-        <div class="seg" id="align" role="group" aria-labelledby="align-label">
-          <button data-align="left">Left</button>
-          <button data-align="center">Centre</button>
-          <button data-align="right">Right</button>
+        <div class="seg icons" id="align" role="group" aria-labelledby="align-label">
+          <button class="ic ic-left" data-align="left" aria-label="Left">Left</button>
+          <button class="ic ic-centre" data-align="center" aria-label="Centre">Centre</button>
+          <button class="ic ic-right" data-align="right" aria-label="Right">Right</button>
         </div>
       </div>
       <label class="check"><input type="checkbox" id="lower"> Show in lowercase</label>
       <label class="check"><input type="checkbox" id="shadow"> Soft shadow behind the text</label>
+      <div class="pair">
+        <button class="btn ic ic-plus" id="add">Add a line</button>
+        <button class="btn quiet" id="remove">Remove this line</button>
+      </div>
     </div>
 
     <div class="pane" id="pane-style" role="tabpanel" aria-labelledby="tab-style" hidden>
       <div class="stack"><span id="shape-label">Shape</span>
         <div class="seg two" id="shape" role="group" aria-labelledby="shape-label">
-          <button type="button" data-shape="reel" aria-pressed="true">Reel, tall (9:16)</button>
-          <button type="button" data-shape="post" aria-pressed="false">Post or carousel (4:5)</button>
+          <button type="button" data-shape="reel" aria-pressed="true">Reel 9:16</button>
+          <button type="button" data-shape="post" aria-pressed="false">Post or carousel 4:5</button>
         </div>
       </div>
-      <p class="note">A style sets the font, size, colour and position in one tap. You can adjust anything afterwards.</p>
+      <p class="note">One tap sets the font, size, colour and position. Adjust anything afterwards.</p>
       <div class="styles" id="styles"></div>
       <div class="stack" id="looks-wrap" hidden>
         <span>Your saved looks</span>
         <ul class="list looks" id="looks"></ul>
         <form class="inline" id="look-form">
-          <label class="stack"><span>Name for the look on the canvas</span><input id="look-name" type="text" maxlength="30" placeholder="A name, such as Evening sea" required></label>
+          <label class="stack"><span class="vh">Name for the look on the canvas</span><input id="look-name" type="text" maxlength="30" placeholder="Name this look, such as Evening sea" required></label>
           <button class="btn" type="submit">Save look</button>
         </form>
-        <p class="note" id="look-note" role="status">A look remembers the font, size, colour and where each line sits. Tap one to apply it to the words on the canvas.</p>
+        <p class="note" id="look-note" role="status">A look remembers the font, size, colour and where each line sits.</p>
       </div>
     </div>
 
     <div class="pane" id="pane-save" role="tabpanel" aria-labelledby="tab-save" hidden>
-      <div id="save-image">
-        <button class="btn" id="save-img">Save as a picture</button>
-        <p class="note">Saves exactly what you see, as a still picture.</p>
-      </div>
       <div id="carousel" hidden>
-        <button class="btn primary" id="slide-add">Add this picture to the carousel</button>
+        <button class="btn primary ic ic-plus" id="slide-add">Add this picture to the carousel</button>
         <p class="note" id="slide-note">A carousel is one post people swipe through, with 2 to 10 pictures. Add this one, change the words or background, then add the next.</p>
         <div class="tray" id="slide-tray"></div>
-        <button class="btn primary" id="carousel-post" hidden>Post the carousel to Instagram</button>
+        <button class="btn primary ic ic-send" id="carousel-post" hidden>Post the carousel to Instagram</button>
         <button class="btn quiet" id="carousel-clear" hidden>Clear the carousel</button>
       </div>
       <div id="reel-setup">
@@ -305,9 +353,11 @@
           <input type="range" id="len" min="5" max="30" step="1" value="8">
         </label>
         <label class="check"><input type="checkbox" id="fade"> Fade the text in</label>
-        <button class="btn primary" id="make-reel">Create reel</button>
-        <p class="note">This takes a minute or two. Then you can post it to Instagram, keep it for later, or save it to your phone.</p>
+        <button class="btn primary ic ic-reel" id="make-reel">Create reel</button>
         <p class="note" id="reel-note" hidden></p>
+      </div>
+      <div id="save-image">
+        <button class="btn ic ic-save" id="save-img">Save as a picture</button>
       </div>
       <div id="reel-progress" hidden>
         <p class="status" id="progress" role="status"></p>
@@ -315,10 +365,12 @@
       </div>
       <div id="reel-result" hidden>
         <p class="status">Your reel is ready.</p>
-        <button class="btn primary" id="post-open" hidden>Post to Instagram</button>
-        <button class="btn" id="handoff-open">Add a song in Instagram</button>
-        <button class="btn" id="queue-add" hidden>Keep it to post later</button>
-        <button class="btn" id="save-reel">Save to phone</button>
+        <button class="btn primary ic ic-send" id="post-open" hidden>Post to Instagram</button>
+        <div class="tiles3">
+          <button class="btn tall ic ic-music" id="handoff-open">Add a song</button>
+          <button class="btn tall ic ic-later" id="queue-add" hidden>Post later</button>
+          <button class="btn tall ic ic-save" id="save-reel">Save</button>
+        </div>
         <video id="result" controls playsinline loop></video>
         <button class="btn quiet" id="again">Start a new one</button>
       </div>
@@ -328,12 +380,13 @@
 </main>
 
 <form class="lock" id="lock" hidden>
-  <h2 class="wordmark">Entangledd Studio</h2>
-  <button class="btn primary" type="button" id="faceid-unlock" hidden>Unlock with Face ID</button>
+  <h2 class="wordmark"><svg viewBox="0 0 206.21 34.48" role="img" aria-label="D's Studio"><use href="#wm"/><path class="wm-heart" d="M32.54 15.90C33.15 12.46 29.44 9.01 30.14 5.07C30.64 2.24 32.69 0.70 34.78 1.07C36.26 1.33 37.21 2.38 37.44 3.95C38.24 2.31 39.79 1.44 41.39 1.72C43.48 2.09 44.51 4.18 44.03 6.89C43.27 11.19 36.61 11.54 32.54 15.90Z"/></svg></h2>
+  <p class="tagline">Made for Dhruuu, by <span class="sig">Nishiii</span></p>
+  <button class="btn primary ic ic-faceid" type="button" id="faceid-unlock" hidden>Unlock with Face ID</button>
   <p class="note" id="lock-or" hidden>Or use the passcode:</p>
   <label class="stack">
-    <span>Passcode</span>
-    <input type="password" id="passcode" autocomplete="current-password" required>
+    <span class="vh">Passcode</span>
+    <input type="password" id="passcode" placeholder="Passcode" autocomplete="current-password" required>
   </label>
   <button class="btn primary" type="submit" id="passcode-go">Open the studio</button>
   <p class="oops" id="lock-error" role="alert" hidden></p>
@@ -343,7 +396,7 @@
   <div class="sheet-body">
     <header class="sheet-head">
       <h2 id="reword-title">Reword with Nishiii</h2>
-      <button class="btn quiet close" id="reword-close">Close</button>
+      <button class="iconbtn close ic ic-close" id="reword-close" aria-label="Close">Close</button>
     </header>
     <div class="compare">
       <div><p class="tag">Original</p><p class="q small" id="reword-original"></p></div>
@@ -358,7 +411,7 @@
       <button type="button">Break it into short lines</button>
     </div>
     <form class="ask" id="reword-form">
-      <label class="stack"><span>Tell Nishiii what to change</span><input id="reword-input" type="text" autocomplete="off" required></label>
+      <label class="stack"><span class="vh">Tell Nishiii what to change</span><input id="reword-input" type="text" autocomplete="off" placeholder="Tell Nishiii what to change" required></label>
       <button class="btn" type="submit" id="reword-send">Send</button>
     </form>
     <button class="btn primary" id="reword-use">Use this version</button>
@@ -369,18 +422,23 @@
   <div class="sheet-body">
     <header class="sheet-head">
       <h2 id="ask-title">Get quotes from…</h2>
-      <button class="btn quiet close" id="ask-close">Close</button>
+      <button class="iconbtn close ic ic-close" id="ask-close" aria-label="Close">Close</button>
     </header>
-    <p class="note">Tap whatever you want quotes from right now. Pick one or several. Everything here also stays in your Library and shapes future suggestions.</p>
+    <p class="note">Tap what you want quotes from, one or several. It all stays in your Library too.</p>
     <div id="ask-groups"></div>
-    <form class="add row3" id="ask-add">
-      <label class="stack"><span>Add something new</span><input id="ask-new" type="text" placeholder="A title" required></label>
-      <label class="stack"><span>Kind</span><select id="ask-new-kind"><option value="book">Book</option><option value="film">Film</option><option value="series">Series</option></select></label>
-      <button class="btn" type="submit">Add</button>
-    </form>
-    <label class="stack"><span>What should they be about? Optional. For example "letting go" or "the sea"</span><input id="ask-about" type="text"></label>
+    <details class="more">
+      <summary class="ic ic-plus">Add something new</summary>
+      <div class="more-body">
+        <form class="add row3" id="ask-add">
+          <label class="stack"><span>Title</span><input id="ask-new" type="text" placeholder="A title" required></label>
+          <label class="stack"><span>Kind</span><select id="ask-new-kind"><option value="book">Book</option><option value="film">Film</option><option value="series">Series</option></select></label>
+          <button class="btn" type="submit">Add</button>
+        </form>
+      </div>
+    </details>
+    <label class="stack"><span>About (optional)</span><input id="ask-about" type="text" placeholder="Such as letting go, or the sea"></label>
     <p class="status" id="ask-status" role="status"></p>
-    <button class="btn primary" id="ask-go">Get five quotes</button>
+    <button class="btn primary ic ic-sparkle" id="ask-go">Get five quotes</button>
   </div>
 </div>
 
@@ -388,17 +446,17 @@
   <div class="sheet-body">
     <header class="sheet-head">
       <h2 id="handoff-title">Finish in Instagram</h2>
-      <button class="btn quiet close" id="handoff-close">Close</button>
+      <button class="iconbtn close ic ic-close" id="handoff-close" aria-label="Close">Close</button>
     </header>
-    <p class="note">For when you want a song from Instagram's own library. The reel opens in Instagram's editor, you add the song and post it there, and the app then finds the post by itself and tracks it like any other.</p>
-    <label class="stack"><span>Caption, copied for you to paste in Instagram</span><textarea id="handoff-caption" rows="4"></textarea></label>
-    <button class="btn" id="handoff-write" hidden>Write a caption with Nishiii</button>
+    <p class="note">Add a song from Instagram's own library and post it there. It shows up in Posts by itself.</p>
+    <label class="stack"><span>Caption, copied for you to paste</span><textarea id="handoff-caption" rows="4"></textarea></label>
+    <button class="btn small ic ic-sparkle" id="handoff-write" hidden>Write a caption with Nishiii</button>
     <ol class="steps">
-      <li>Tap "Share to Instagram" below. Your caption is copied and the phone's share menu opens.</li>
+      <li>Tap "Share to Instagram". Your caption is copied.</li>
       <li>Choose Instagram, then Reel.</li>
-      <li>In Instagram, tap the music note to pick a song, paste the caption, and share.</li>
+      <li>Tap the music note to pick a song, paste the caption, and share.</li>
     </ol>
-    <button class="btn primary" id="handoff-go">Share to Instagram</button>
+    <button class="btn primary ic ic-share" id="handoff-go">Share to Instagram</button>
     <button class="btn quiet" id="handoff-copy" hidden>Copy the caption again</button>
     <p class="status" id="handoff-status" role="status"></p>
   </div>
@@ -408,17 +466,17 @@
   <div class="sheet-body">
     <header class="sheet-head">
       <h2 id="tune-title">Find free music</h2>
-      <button class="btn quiet close" id="tune-close">Close</button>
+      <button class="iconbtn close ic ic-close" id="tune-close" aria-label="Close">Close</button>
     </header>
     <form class="ask" id="tune-form">
-      <label class="stack"><span>What kind of music</span><input id="tune-q" type="search" value="calm piano" maxlength="80"></label>
-      <button class="btn" type="submit">Search</button>
+      <label class="stack"><span class="vh">What kind of music</span><input id="tune-q" type="search" value="calm piano" maxlength="80"></label>
+      <button class="btn ic ic-search" type="submit">Search</button>
     </form>
     <div class="chips" id="tune-ideas"></div>
     <p class="status" id="tune-status" role="status"></p>
     <ul class="list tunes" id="tune-list"></ul>
     <button class="btn" id="tune-more" hidden>Show more</button>
-    <p class="note">Tracks come from <a href="https://openverse.org" target="_blank" rel="noopener">Openverse</a>, a catalogue of music its makers have shared for free use. If a track asks for credit, a short credit line is added to your caption for you.</p>
+    <p class="note">From <a href="https://openverse.org" target="_blank" rel="noopener">Openverse</a>, music its makers have shared for free use. If a track asks for credit, the credit is added to your caption for you.</p>
   </div>
 </div>
 
@@ -426,7 +484,7 @@
   <div class="sheet-body">
     <header class="sheet-head">
       <h2 id="comments-title">Comments</h2>
-      <button class="btn quiet close" id="comments-close">Close</button>
+      <button class="iconbtn close ic ic-close" id="comments-close" aria-label="Close">Close</button>
     </header>
     <p class="note" id="comments-note" role="status"></p>
     <div class="cards" id="comments-list"></div>
@@ -437,17 +495,17 @@
   <div class="sheet-body">
     <header class="sheet-head">
       <h2 id="settings-title">Settings</h2>
-      <button class="btn quiet close" id="settings-close">Close</button>
+      <button class="iconbtn close ic ic-close" id="settings-close" aria-label="Close">Close</button>
     </header>
 
-    <h3>Face ID lock</h3>
+    <h3 class="ic ic-faceid">Face ID lock</h3>
     <p class="note" id="faceid-status" role="status"></p>
     <button class="btn" id="faceid-toggle" hidden></button>
 
-    <h3>Instagram connection</h3>
+    <h3 class="ic ic-insta">Instagram</h3>
     <p class="note" id="ig-status" role="status"></p>
     <form class="add" id="ig-connect" hidden>
-      <p class="note">This step is for whoever set the app up. Paste a user access token from Meta's Graph API Explorer; the app exchanges it for a long-lasting one and stores it safely.</p>
+      <p class="note">For Nishith: paste a user access token from Meta's Graph API Explorer. The app swaps it for a long-lasting one and keeps it safe.</p>
       <label class="stack"><span>Access token</span><input id="ig-token" type="password" autocomplete="off" required></label>
       <button class="btn primary" type="submit">Connect Instagram</button>
     </form>
@@ -456,7 +514,7 @@
     <div id="settings-lovenotes"></div>
     <div id="settings-health"></div>
 
-    <h3>This device</h3>
+    <h3 class="ic ic-leave">This device</h3>
     <button class="btn" id="sign-out">Sign out on this device</button>
   </div>
 </div>
@@ -465,9 +523,9 @@
   <div class="sheet-body">
     <header class="sheet-head">
       <h2 id="chat-title">Chat with Nishiii</h2>
-      <button class="btn quiet close" id="chat-close">Close</button>
+      <button class="iconbtn close ic ic-close" id="chat-close" aria-label="Close">Close</button>
     </header>
-    <p class="note" id="chat-intro">Ask me for quotes, have one placed in Create, or ask how your posts are doing. I never post for you: creating the reel and posting always wait for your tap.</p>
+    <p class="note" id="chat-intro">Ask me for quotes, have one placed in Create, or ask how your posts are doing. I never post for you: that always waits for your tap.</p>
     <div class="log" id="chat-log" aria-live="polite"></div>
     <div class="chips" id="chat-chips">
       <button type="button">What should I post today?</button>
@@ -475,8 +533,8 @@
       <button type="button">How did my last posts do?</button>
     </div>
     <form class="ask" id="chat-form">
-      <label class="stack"><span>Message</span><input id="chat-input" type="text" autocomplete="off" required></label>
-      <button class="btn primary" type="submit" id="chat-send">Send</button>
+      <label class="stack"><span class="vh">Message</span><input id="chat-input" type="text" autocomplete="off" placeholder="Message Nishiii" required></label>
+      <button class="btn primary ic ic-send" type="submit" id="chat-send">Send</button>
     </form>
   </div>
 </div>
@@ -496,20 +554,20 @@
   <div class="sheet-body">
     <header class="sheet-head">
       <h2 id="post-title">Post to Instagram</h2>
-      <button class="btn quiet close" id="post-close">Close</button>
+      <button class="iconbtn close ic ic-close" id="post-close" aria-label="Close">Close</button>
     </header>
     <div id="post-form">
       <label class="stack"><span>Caption</span><textarea id="post-caption" rows="5"></textarea></label>
-      <button class="btn" id="post-write" hidden>Write a caption with Nishiii</button>
+      <button class="btn small ic ic-sparkle" id="post-write" hidden>Write a caption with Nishiii</button>
 
       <p class="note" id="post-credit-note" hidden>The last line credits the musician, which the track's licence asks for. Please keep it.</p>
       <p class="note" id="post-own-music" hidden></p>
       <div id="post-music">
-      <h3>Music</h3>
-      <p class="note" id="music-note">Instagram adds the music when the reel is posted, so you can't hear it on the reel here.</p>
+      <h3 class="ic ic-music">Music</h3>
+      <p class="note" id="music-note">Instagram adds the song as it posts. Search with nothing typed to see what's trending.</p>
       <form class="ask" id="music-form">
-        <label class="stack"><span>Search Instagram's music</span><input id="music-q" type="search" placeholder="Leave empty for trending"></label>
-        <button class="btn" type="submit">Search</button>
+        <label class="stack"><span class="vh">Search Instagram's music</span><input id="music-q" type="search" placeholder="Song or artist"></label>
+        <button class="btn ic ic-search" type="submit">Search</button>
       </form>
       <ul class="list" id="music-list"></ul>
       <div id="music-chosen" hidden>
@@ -519,10 +577,10 @@
         <button class="btn quiet" id="music-clear">Post without music</button>
       </div>
       </div>
-      <button class="btn primary" id="post-go">Post to Instagram</button>
+      <button class="btn primary ic ic-send" id="post-go">Post to Instagram</button>
     </div>
     <p class="status" id="post-status" role="status"></p>
-    <a class="btn" id="post-link" target="_blank" rel="noopener" hidden>View on Instagram</a>
+    <a class="btn ic ic-open" id="post-link" target="_blank" rel="noopener" hidden>View on Instagram</a>
   </div>
 </div>
 
@@ -530,11 +588,11 @@
   <div class="sheet-body">
     <header class="sheet-head">
       <h2 id="stock-title">Find a background</h2>
-      <button class="btn quiet close" id="stock-close">Close</button>
+      <button class="iconbtn close ic ic-close" id="stock-close" aria-label="Close">Close</button>
     </header>
     <form class="ask" id="stock-form">
-      <label class="stack"><span>Search for</span><input id="stock-q" type="search" value="ocean waves" required></label>
-      <button class="btn" type="submit">Search</button>
+      <label class="stack"><span class="vh">Search for</span><input id="stock-q" type="search" value="ocean waves" required></label>
+      <button class="btn ic ic-search" type="submit">Search</button>
     </form>
     <div class="seg two" id="stock-kind" role="group" aria-label="Photos or videos">
       <button type="button" data-kind="video" aria-pressed="true">Videos</button>
@@ -543,7 +601,7 @@
     <p class="note" id="stock-status" role="status"></p>
     <div class="grid" id="stock-grid"></div>
     <button class="btn" id="stock-more" hidden>Show more</button>
-    <p class="note" id="stock-credit" hidden>Photos and videos from <a id="stock-provider" href="#" target="_blank" rel="noopener"></a>, free to use. Tap one to make it your background.</p>
+    <p class="note" id="stock-credit" hidden>From <a id="stock-provider" href="#" target="_blank" rel="noopener"></a>, free to use. Tap one to make it your background.</p>
   </div>
 </div>
 
