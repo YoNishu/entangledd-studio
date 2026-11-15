@@ -752,3 +752,22 @@ details.lovenotes-edit .list li { background: var(--ink); }
 .part { display: grid; gap: var(--gap); align-content: start; min-width: 0; }
 .part[hidden] { display: none; }
 #posts-parts .count { margin-left: 6px; color: var(--glass); font-weight: 500; }
+
+/* ---------- the Nishiii tab in two parts (#nishiii-parts): Chat, and What Nishiii knows ---------- */
+#nishiii-parts { order: -1; }                       /* written last in the section, shown first */
+#view-nishiii[data-part="chat"] > :not(#nishiii-parts):not(#nishiii-chat-part) { display: none; }
+#view-nishiii[data-part="knows"] > #nishiii-chat-part { display: none; }
+/* Chat is a screen of its own: the conversation fills the room between the header and the section bar and
+   scrolls by itself; the message box stays at the bottom, in view. */
+#view-nishiii[data-part="chat"] { overflow: hidden; grid-template-rows: auto minmax(0, 1fr); padding-bottom: 0; }
+.chatpart { display: flex; flex-direction: column; min-height: 0; }
+.chat-scroll {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  display: grid; gap: var(--gap); align-content: start; padding: 4px 0 12px;
+}
+#chat-new { justify-self: end; margin: -6px 0 -8px; }
+#chat-form { flex: none; padding: 8px 0 10px; border-top: 1px solid var(--tide); }
+/* With the keyboard open (web/studio.js, fitChat): the app is as tall as the room above the keyboard. */
+html.chat-kb, html.chat-kb body { height: var(--chat-h); }
+html.chat-kb .views { display: none; }
+html.chat-down body { transform: translateY(var(--chat-top)); }

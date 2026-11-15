@@ -1464,15 +1464,48 @@
     finally { posting = false; $("post-go").disabled = false; }
   });
 
-  // ---------- Chat with Nishiii: she can fetch quotes, fill Create, and report on posts ----------
+  // ---------- Chat with Nishiii, in the Nishiii tab: she can fetch quotes, fill Create, and report on posts ----------
+  // The tab has two parts, Chat (first) and What Nishiii knows. The conversation is kept on this phone only
+  // (CHAT_KEY), so it is still there after the app was closed, until she starts a new chat.
+  const CHAT_KEY = "studio.chat.v1", CHAT_KEEP = 40;
   const talk = [];        // the conversation so far, as plain {role, content}
-  let chatBusy = false;
+  let chatBusy = false, chatPart = "chat", chatAt = 0, atNewest = true;
+  const chatScroll = $("chat-scroll");
+  const toNewest = () => { chatScroll.scrollTop = chatScroll.scrollHeight; atNewest = true; };
+  chatScroll.addEventListener("scroll", () => {
+    if (!chatScroll.offsetParent) return;                     // hidden: the place it had is kept
+    chatAt = chatScroll.scrollTop;
+    atNewest = chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop < 24;
+  }, { passive: true });
+  function keepChat() {
+    try {
+      if (talk.length) localStorage.setItem(CHAT_KEY, JSON.stringify(talk.slice(-CHAT_KEEP)));
+      else localStorage.removeItem(CHAT_KEY);
+    } catch (e) { /* not kept on this phone: it still lasts while the app is open */ }
+  }
+  function chatEmpty() {
+    const empty = !$("chat-log").children.length;
+    $("chat-chips").hidden = !empty || !S.server.ai;
+    $("chat-new").hidden = empty || !S.server.ai;
+  }
   function chatLine(cls, text) {
     const p = el("p", { className: cls, textContent: text });
     $("chat-log").append(p);
-    p.scrollIntoView({ block: "nearest" });
+    chatEmpty(); toNewest();
     return p;
   }
+  function nishiiiPart(name) {
+    chatPart = name;
+    $("view-nishiii").dataset.part = name;
+    $("nishiii-part-chat").setAttribute("aria-pressed", String(name === "chat"));
+    $("nishiii-part-knows").setAttribute("aria-pressed", String(name === "knows"));
+    if (name === "chat") { if (atNewest) toNewest(); else chatScroll.scrollTop = chatAt; }   // where it was
+  }
+  $("nishiii-part-chat").addEventListener("click", () => nishiiiPart("chat"));
+  $("nishiii-part-knows").addEventListener("click", () => nishiiiPart("knows"));
+  document.addEventListener("studio:view", (e) => { if (e.detail === "nishiii") nishiiiPart(S.server.ai ? chatPart : "knows"); });
+  // Going somewhere else in the app from the chat: the keyboard goes away first.
+  function leaveChat(view) { if (document.activeElement === $("chat-input")) $("chat-input").blur(); show(view); }
   // Things Nishiii did in the app while answering.
   function applyChatActions(actions) {
     for (const a of actions) {
@@ -1480,10 +1513,10 @@
         onCanvas = { author: a.author || "", theme: "", tone: "", source: "chat", suggestionId: "" };
         S.setQuote(a.text, a.author || "");
         const go = el("button", { className: "btn act ic ic-create", type: "button", textContent: "Open Create" });
-        go.addEventListener("click", () => { $("chat").hidden = true; show("create"); });
-        $("chat-log").append(go);
+        go.addEventListener("click", () => leaveChat("create"));
+        $("chat-log").append(go); toNewest();
       } else if (a.type === "open" && VIEWS.includes(a.section)) {
-        $("chat").hidden = true; show(a.section);
+        leaveChat(a.section);
       } else if (a.type === "refresh") {
         if (a.what === "asked" && current === "nishiii") loadAsked();
         if (a.what === "taste" && current === "nishiii") loadTaste();
@@ -1496,7 +1529,6 @@
     if (!mine || chatBusy) return;
     chatBusy = true; $("chat-send").disabled = true;
     $("chat-input").value = "";
-    $("chat-intro").hidden = true; $("chat-chips").hidden = true;
     talk.push({ role: "user", content: mine });
     chatLine("me", mine);
     const waiting = chatLine("her", "Thinking…");
@@ -1504,18 +1536,58 @@
       const r = await send("chat", "POST", { messages: talk });
       talk.push({ role: "assistant", content: r.reply });
       waiting.textContent = r.reply;
+      keepChat();
       applyChatActions(r.actions || []);
     } catch (e) {
       talk.pop();
       waiting.className = "err"; waiting.textContent = friendly(e);
-    } finally { chatBusy = false; $("chat-send").disabled = false; }
+    } finally { chatBusy = false; $("chat-send").disabled = false; if (atNewest) toNewest(); }
   }
-  $("chat-open").addEventListener("click", () => { $("chat").hidden = false; $("chat-input").focus(); });
-  $("nishiii-chat").addEventListener("click", () => $("chat-open").click());   // the same chat, by name, in the Nishiii section
-  $("chat-close").addEventListener("click", () => { $("chat").hidden = true; });
-  $("chat").addEventListener("click", (e) => { if (e.target === $("chat")) $("chat").hidden = true; });
+  function newChat() {
+    talk.length = 0; keepChat();
+    $("chat-log").replaceChildren(); chatEmpty();
+    chatScroll.scrollTop = 0; atNewest = true;
+  }
   $("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sayToNishiii($("chat-input").value); });
   $("chat-chips").addEventListener("click", (e) => { if (e.target.tagName === "BUTTON") sayToNishiii(e.target.textContent); });
+  $("chat-new").addEventListener("click", () => { if (!chatBusy) newChat(); });
+  document.addEventListener("studio:forgot", (e) => { if (e.detail === "all" && !chatBusy) newChat(); });
+  function startChat() {
+    const on = !!S.server.ai;
+    $("chat-off").hidden = on;
+    $("chat-intro").hidden = !on; $("chat-form").hidden = !on;
+    let kept = [];
+    try { kept = JSON.parse(localStorage.getItem(CHAT_KEY) || "[]"); } catch (e) { kept = []; }
+    if (on && Array.isArray(kept)) for (const m of kept) {
+      if (!m || typeof m.content !== "string" || !m.content) continue;
+      talk.push({ role: m.role === "assistant" ? "assistant" : "user", content: m.content });
+      chatLine(m.role === "assistant" ? "her" : "me", m.content);
+    }
+    chatEmpty();
+    if (!on) nishiiiPart("knows");
+  }
+
+  // While she types to Nishiii with the keyboard open, the app fits the part of the screen the keyboard leaves,
+  // so the message box sits just above the keyboard and the header stays in place (the section bar is under the
+  // keyboard anyway). Everything else keeps the full height (see --app-h and heal() in index.html).
+  function fitChat() {
+    const vv = window.visualViewport, root = document.documentElement;
+    const full = Math.max(window.innerHeight, parseFloat(root.style.getPropertyValue("--app-h")) || 0);
+    const short = !!vv && document.activeElement === $("chat-input") && vv.height < full - 1;
+    root.classList.toggle("chat-kb", short);
+    if (short) {
+      root.style.setProperty("--chat-h", Math.round(vv.height) + "px");
+      if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+      const down = Math.max(0, Math.round(vv.offsetTop));       // iOS may still have the view moved down: follow it
+      root.style.setProperty("--chat-top", down + "px");
+      root.classList.toggle("chat-down", down > 0);
+    } else { root.classList.remove("chat-down"); root.style.removeProperty("--chat-h"); root.style.removeProperty("--chat-top"); }
+    if (atNewest) toNewest();
+  }
+  if (window.visualViewport) { window.visualViewport.addEventListener("resize", fitChat); window.visualViewport.addEventListener("scroll", fitChat); }
+  window.addEventListener("resize", fitChat);
+  $("chat-input").addEventListener("focus", () => { fitChat(); setTimeout(fitChat, 300); });
+  $("chat-input").addEventListener("blur", () => setTimeout(fitChat, 0));
 
   // For web/drafts.js: post or hand over a reel kept in Posts, and where the quote on the canvas came from.
   Object.assign(window.StudioKit, { openPost, openHandoff, show,
@@ -1527,8 +1599,7 @@
   document.addEventListener("studio:ready", () => {
     if (started) { if (current === "today") loadToday(true); return; }
     started = true;
-    $("chat-open").hidden = !S.server.ai;
-    $("nishiii-chat").hidden = !S.server.ai;
+    startChat();
     loadLooks();
     show(S.server.ai ? "today" : "create");
   });
