@@ -484,7 +484,7 @@ async function tagJob(env, kit) {
 async function foundJob(env, kit) {
   const [lib, bank0] = await Promise.all([kit.loadDoc(env, "library", null), kit.loadDoc(env, "engine/bank", null)]);
   const bank = today(soundBank(bank0), kit);
-  if (!lib || (bank.used.found || 0) >= A_DAY.found) return null;
+  if (!lib || !env.ANTHROPIC_API_KEY || (bank.used.found || 0) >= A_DAY.found) return null;
   const works = [...(lib.books || []), ...(lib.screen || [])];
   if (!works.length) return null;
   bank.used.found = (bank.used.found || 0) + 1;
@@ -612,10 +612,15 @@ export const routes = {
     return kit.json(status(e.P, e.sig));
   },
 };
+// Nishiii resting for the day (the ceiling on questions) or switched off is no fault: the job simply waits for its next turn.
+const quietly = (run) => async (env, kit) => {
+  try { return await run(env, kit); }
+  catch (e) { if (e instanceof kit.UserError && [429, 503].includes(e.status)) return null; throw e; }
+};
 export const jobs = [
-  { name: "engine-tags", everyHours: 2, run: tagJob },
-  { name: "engine-found", everyHours: 3, run: foundJob },
-  { name: "engine-discover", everyHours: 4, run: discoverJob },
-  { name: "engine-echo", everyHours: 6, run: echoJob },
+  { name: "engine-tags", everyHours: 2, run: quietly(tagJob) },
+  { name: "engine-found", everyHours: 3, run: quietly(foundJob) },
+  { name: "engine-discover", everyHours: 4, run: quietly(discoverJob) },
+  { name: "engine-echo", everyHours: 6, run: quietly(echoJob) },
 ];
 export const run = { tagJob, foundJob, discoverJob, echoJob };

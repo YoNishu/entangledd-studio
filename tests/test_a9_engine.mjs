@@ -2,7 +2,7 @@
 // way; an avoid buries a line; a small account's hit outranks a big account's ordinary post; day one gives a varied
 // five from several sources; one source alone still gives five; reasons are true; picks are trusted from the first
 // pick, smoothly, with a safety net; 500 candidates are scored in a few milliseconds.
-import { build, score, choose, gather, questions, works, hashtagsThatWork, bgWordsThatWork, PARTS } from "../server/engine.js";
+import { build, score, choose, gather, questions, works, hashtagsThatWork, bgWordsThatWork, jobs, PARTS } from "../server/engine.js";
 import * as tags from "../server/tags.js";
 import { keyOf, nextState, decide, statusOf, pickScorer, worse } from "../server/scorer.js";
 
@@ -158,6 +158,19 @@ check("and the page where a theme does well, by name", w.phrases.includes("hope 
 check("hashtags that did well for her: only hers, only better than usual, best first", JSON.stringify(hashtagsThatWork(wp)) === JSON.stringify(["#hope"]), hashtagsThatWork(wp));
 check("background words that did well for her", JSON.stringify(bgWordsThatWork(wp)) === JSON.stringify(["misty sea"]), bgWordsThatWork(wp));
 check("one post is not enough for a hashtag", hashtagsThatWork([pub("x", 90, "#once", "a")]).length === 0);
+
+// ---- a timed job waits quietly when Nishiii is resting for the day (the ceiling on questions)
+class UE extends Error { constructor(status, m) { super(m); this.status = status; } }
+const docs = { library: { quotes: [{ text: "an untagged line of hers" }], books: [], screen: [] } };
+const jkit = { ...kit, UserError: UE, loadDoc: async (env, n, f) => docs[n] ?? f, saveDoc: async (env, n, d) => { docs[n] = d; }, oneLine: (x) => String(x || ""), parseJson: JSON.parse,
+  claude: async () => { throw new UE(429, "resting"); } };
+const tagJob = jobs.find((j) => j.name === "engine-tags");
+let outcome;
+try { outcome = await tagJob.run({ ANTHROPIC_API_KEY: "x" }, jkit); } catch (e) { outcome = e; }
+check("a timed job with Nishiii resting ends quietly (no problem recorded)", outcome === null, String(outcome));
+jkit.claude = async () => { throw new Error("storage on fire"); };
+try { outcome = await tagJob.run({ ANTHROPIC_API_KEY: "x" }, jkit); } catch (e) { outcome = e; }
+check("but a real fault still surfaces", outcome instanceof Error && outcome.message === "storage on fire");
 
 // ---- timing: 500 candidates
 const big500 = Array.from({ length: 500 }, (_, i) => q(`Candidate number ${i} about ${tags.THEME_LIST[i % tags.THEME_LIST.length]} and more words here`, tags.THEME_LIST[i % tags.THEME_LIST.length], { author: "Au" + (i % 40) }));
