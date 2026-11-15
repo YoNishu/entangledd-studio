@@ -775,17 +775,23 @@ async function suggestFrom(env, b, already, out = {}) {
   const named = [...others.map((x) => ({ ...x, type: "book" })), ...screen.map((x) => ({ ...x, type: x.kind }))];
   let short = named;           // the works that still lack lines after that
   let dry = [];                // of those, the ones with nothing new left to find for now
+  let reading = [], waiting = [];      // ... the ones with pages still to read, and those waiting for a resting service
   if (named.length && count > fresh.length) {
     const got = await findlines.forWorks(env, kit, lib, named, { room: count - fresh.length, also: pages.length ? 1 : 0, about, taste, seen, ranker });
     fresh.push(...got.items);
-    short = got.short;
+    reading = got.reading || [];
+    waiting = got.waiting || [];
+    // A work with pages still to read gets its lines from them in the next rounds, not from memory.
+    short = got.short.filter((w) => !reading.includes(w) && !waiting.some((x) => x.work === w));
+    if (reading.length) out.reading = got.said;
     dry = got.dry || [];
     searchedFor = { works: named.map((x) => x.title), paid: false,
       trail: short.map((x) => x.found && x.found.trail && x.found.trail.said).find(Boolean) || "" };
   }
   const want = count - fresh.length;
   const more = short.length + pages.length > 0 || !!about && !withText.length && !named.length;
-  if (want > 0 && fromWorks && (more || !fresh.length)) {
+  const pending = reading.length + waiting.length > 0;          // works whose lines come from pages still to read
+  if (want > 0 && fromWorks && (more || (!fresh.length && !pending))) {
     const fallback = !more ? withText : [];            // the text gave nothing usable: fall back to memory for those books
     const ask = Math.min(10, want + 3);                // a few more than needed, so the engine has a choice
     const brief = {
@@ -828,12 +834,22 @@ async function suggestFrom(env, b, already, out = {}) {
   // Fewer than asked because works that were looked up (now or a moment ago) have nothing new left: said plainly,
   // naming every one of them, and only those (a work not tried this time is never named).
   const spent = dry;
+  out.left = reading.length > 0;              // the phone asks again: there are pages left to read
   if (fresh.length < count && spent.length) {
     out.said = `That's every line I could find from ${andTitles(spent.map((w) => w.title))} for now. I'll keep looking.`;
     out.dry = spent.map((w) => w.id);
     // Nothing at all, from works she has had lines from: the plain sentence, not an error.
     if (!fresh.length && spent.some((w) => shown.shownFor(shownDoc, [w.id]).length)) return [];
   }
+  // Pages left to read, but the service that reads them rests until tomorrow: said plainly, naming it.
+  if (fresh.length < count && waiting.length) {
+    const w = waiting[0].wait;
+    const why = w.why === "limit" ? "I've read as many pages as I may today" : w.why === "used up" ? "Tavily, which reads the pages for me, has used up today's allowance" : "Tavily, which reads the pages for me, is resting";
+    out.said = [out.said, `${why}. I'll read more of ${andTitles(waiting.map((x) => x.work.title))} ${w.why === "resting" && w.until - Date.now() < 3 * 3600 * 1000 ? "soon" : "tomorrow"}.`].filter(Boolean).join(" ");
+    out.waiting = waiting.map((x) => x.work.id);
+  }
+  // Nothing this round, but pages are left to read (or wait for tomorrow): no error, the phone goes on or says why.
+  if (!fresh.length && (reading.length || waiting.length)) return [];
   if (!fresh.length) {
     if (searchedFor) {
       // Nothing anywhere: said plainly, with the one thing that always works.
@@ -959,7 +975,7 @@ async function askedRoutes(request, env, parts) {
     shown.note(shownDoc, fresh.map((f) => [f.workId || "other", norm(f.text)]));
     await Promise.all([saveDoc(env, "asked", next), fresh.length ? saveDoc(env, "asked-shown", shownDoc) : null]);
     // "fresh": only the quotes found now, newest first; "said": why fewer came back, when nothing new was left.
-    return reply(next, false, { fresh: fresh.slice().reverse().map((f) => f.id), said: out.said || "" });
+    return reply(next, false, { fresh: fresh.slice().reverse().map((f) => f.id), said: out.said || "", left: !!out.left, reading: out.left ? out.reading || "" : "" });
   }
   if (parts[2] === "feedback" && method === "POST") {
     const b = await body(request);

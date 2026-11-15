@@ -347,38 +347,60 @@
   // Closing loses nothing: every quote found (and not skipped) is already kept, and shown in the Library.
   function closeAsk() {
     if ($("ask-sheet").hidden) return;
+    asking.stop = true;                    // no more rounds once she has closed it
     $("ask-sheet").hidden = true;
     if (askedData) renderAsked(askedData); else loadAsked();
   }
-  // Finds the chosen number, a round at a time; each round's quotes go on top as they come. Carries on while a
-  // round still brings something; stops early, saying why, when nothing new is left.
+  // Finds the chosen number, a round at a time; each round's quotes go on top as they come. Carries on until she
+  // has the number she asked for, while a round brings something or the server says there are pages left to read
+  // ("left"), and says what it is doing ("Found 6 of 10. Reading more reviews of …"). It ends saying why: every
+  // page read and nothing more, a service resting until tomorrow, or her own "Stop".
+  const ROUNDS = 24, EMPTY_ROUNDS = 6;
+  function stopButton() {
+    let b = $("ask-stop");
+    if (!b) {
+      b = el("button", { type: "button", id: "ask-stop", className: "btn quiet", textContent: "Stop" });
+      b.addEventListener("click", () => { asking.stop = true; b.disabled = true; });
+      $("ask-progress").after(b);
+    }
+    return b;
+  }
   async function findQuotes() {
     if (asking.busy) return;
     const sources = [...asking.picked], about = $("ask-about").value, want = asking.count;
-    asking.busy = true;
+    asking.busy = true; asking.stop = false;
     $("ask-go").disabled = true; $("ask-more").disabled = true;
     $("ask-status").textContent = "";
     $("ask-progress").textContent = `Finding ${want} quotes…`;
-    let got = 0, said = "";
+    const stop = stopButton();
+    stop.hidden = false; stop.disabled = false;
+    let got = 0, said = "", left = false, empty = 0;
     try {
-      for (let round = 0; got < want && round < 8; round++) {
+      for (let round = 0; got < want && round < ROUNDS && !asking.stop; round++) {
         const data = await send("asked", "POST", { sources, about, count: Math.min(ROUND, want - got) });
         askedData = data;
         const fresh = (data.fresh || []).map((id) => data.items.find((i) => i.id === id)).filter(Boolean);
         if (fresh.length) choosing(false);
         $("ask-results").prepend(...fresh.map((i) => card(i, "asked")));
         got += fresh.length;
-        if (data.said) said = data.said;        // a work with nothing new left; the others may still have more
-        if (!fresh.length) break;
-        if (got < want) $("ask-progress").textContent = `Found ${got} of ${want}…`;
+        said = data.said || "";                 // why this round brought fewer: nothing new left, or a service resting
+        left = !!data.left;
+        empty = fresh.length ? 0 : empty + 1;
+        if (!left && !fresh.length) break;
+        if (empty >= EMPTY_ROUNDS) break;
+        if (got < want) $("ask-progress").textContent = left && data.reading ? `Found ${got} of ${want}. ${data.reading}` : `Found ${got} of ${want}…`;
       }
-      $("ask-progress").textContent = said ? (got ? `Found ${got}. ${said}` : said)
-        : got >= want ? `Found ${got} quotes. They stay in your Library too.` : `Found ${got} of ${want}. That's all Nishiii could find just now.`;
+      $("ask-progress").textContent = asking.stop ? `Stopped. Found ${got} of ${want}.`
+        : got >= want ? `Found ${got} of ${want}. They stay in your Library too.`
+        : said ? (got ? `Found ${got} of ${want}. ${said}` : said)
+        : left ? `Found ${got} of ${want}. There are more pages to read: tap Find more in a while.`
+        : `Found ${got} of ${want}. That's all Nishiii could find just now.`;
     } catch (e) {
       $("ask-progress").textContent = got ? `Found ${got} of ${want}.` : "";
       $("ask-status").textContent = friendly(e);
     } finally {
       asking.busy = false;
+      stop.hidden = true;
       $("ask-go").disabled = false; $("ask-more").disabled = false;
       if ($("ask-sheet").hidden && askedData) renderAsked(askedData);
     }
@@ -527,6 +549,11 @@
     catch (e) { if (button) { button.disabled = false; button.textContent = "Look for its full text"; note(friendly(e)); } }
     finally { textBusy -= 1; }
     if (lib) renderLibrary(lib);
+    return lib;
+  }
+  // A work she has just added: its first pages are read now, in the background (one look, as "Look again" does).
+  function firstLook(kind, id) {
+    titleRun = titleRun.then(() => send(`library/${kind}/${id}/look`, "POST", {})).then((lib) => { if (lib) renderLibrary(lib); }, () => {});
   }
 
   async function loadLibrary() {
@@ -537,10 +564,10 @@
     try { renderInspirations(await getJson("inspirations")); } catch (e) { inspNote(friendly(e)); }
   }
 
-  function addForm(formId, kind, read, clear) {
+  function addForm(formId, kind, read, clear, then = null) {
     $(formId).addEventListener("submit", async (e) => {
       e.preventDefault();
-      try { renderLibrary(await send(`library/${kind}`, "POST", read())); clear(); note(""); }
+      try { const lib = await send(`library/${kind}`, "POST", read()); renderLibrary(lib); clear(); note(""); if (then) then(lib); }
       catch (err) { note(friendly(err)); }
     });
   }
@@ -554,12 +581,14 @@
       renderLibrary(lib);
       $("b-title").value = ""; $("b-author").value = ""; note("");
       const added = lib.books[lib.books.length - 1];
-      // In the background, one after the other: the title is checked on the web, then the book's text is looked for.
-      if (added && !added.textChecked) titleRun.then(() => findText(added.id));
+      // In the background, one after the other: the title is checked on the web, then the book's text is looked for,
+      // then (for a book without free text) its first pages of quotes are read, so her first ask is answered at once.
+      if (added && !added.textChecked) titleRun.then(() => findText(added.id)).then((now) => { const b = now && now.books.find((x) => x.id === added.id); if (b && !b.textUrl) firstLook("books", b.id); });
     } catch (err) { note(friendly(err)); }
   });
 
-  addForm("add-screen", "screen", () => { titleTries = 0; return { title: $("s-title").value, kind: $("s-kind").value }; }, () => { $("s-title").value = ""; });
+  addForm("add-screen", "screen", () => { titleTries = 0; return { title: $("s-title").value, kind: $("s-kind").value }; }, () => { $("s-title").value = ""; },
+    (lib) => { const added = (lib.screen || [])[(lib.screen || []).length - 1]; if (added && !added.found) firstLook("screen", added.id); });
 
   // Scan: let Claude read a photographed page, then she picks which lines to keep.
   $("scan").addEventListener("change", async () => {
