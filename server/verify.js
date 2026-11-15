@@ -86,6 +86,7 @@ async function wikiquoteEvidence(env, kit, state, quote, author, until) {
     if (!at) continue;
     const section = at.path[at.path.length - 1];
     out.push({ site: "wikiquote.org", url: wikiUrl(pg.title) + (section ? "#" + encodeURIComponent(section.replace(/ /g, "_")) : ""), title: pg.title,
+      first: at.path.some((h) => /misattribut|disputed|attributed/i.test(h)),
       text: `Wikiquote, the page "${pg.title}"${at.path.length ? `, under the heading "${at.path.join(" > ")}"` : ""}:\n${at.context}` });
   }
   return out;
@@ -109,7 +110,7 @@ async function qiEvidence(env, kit, state, quote, until) {
   const text = F.plain((post.content || {}).rendered || "").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
   if (text.length < 200) return [];
   const end = text.search(/\bIn conclusion\b|\bIn summary\b/i);
-  return [{ site: "quoteinvestigator.com", url: kit.foundAt(post.link) || kit.foundAt(best.url), title,
+  return [{ site: "quoteinvestigator.com", url: kit.foundAt(post.link) || kit.foundAt(best.url), title, first: true,
     text: `Quote Investigator, the article "${title}". It begins: ${text.slice(0, 450)}\nIts conclusion: ${end >= 0 ? text.slice(end, end + 900) : text.slice(-900)}` }];
 }
 
@@ -165,7 +166,8 @@ export async function checkLine(env, kit, quote, author) {
   let evidence = free.flat();
   if (!evidence.length) evidence = await helperEvidence(env, kit, state, quote, author, until);
   await F.closeRecord(env, kit, state);
-  evidence = evidence.slice(0, 4);
+  // Pages about misattribution (Wikiquote's "Misattributed" and "Disputed" sections, Quote Investigator) first.
+  evidence = evidence.sort((a, b) => !!b.first - !!a.first).slice(0, 4);
   const told = evidence.length ? `\n\nEvidence found on the web just now:\n${evidence.map((e, i) => `[${i + 1}] ${e.text}`).join("\n\n")}`
     : "\n\nNothing about this line could be found on the web just now: answer from what you know.";
   const a = kit.parseJson(await kit.claude(env, { system: CHECK_SYSTEM, maxTokens: 600,
