@@ -27,12 +27,29 @@ try {
 // is set to the screen's own (the shorter side when the phone is on its side).
 (function () {
   if (!navigator.standalone) return;
-  var fit = function () {
-    var a = screen.width, b = screen.height, wide = window.innerWidth > window.innerHeight;
-    var full = wide ? Math.min(a, b) : Math.max(a, b);
-    if (full > window.innerHeight) document.documentElement.style.setProperty("--app-h", full + "px");
-    else document.documentElement.style.removeProperty("--app-h");
+  // Which way up the phone is comes from the phone itself, never from the window's shape: with the keyboard open
+  // the window is wider than it is tall, and taking that for "on its side" once left the app half the screen high.
+  var sideways = function () {
+    var o = (screen.orientation && typeof screen.orientation.angle === "number") ? screen.orientation.angle : window.orientation;
+    return o === 90 || o === -90 || o === 270;
   };
+  var tallestSeen = [0, 0];
+  var fit = function () {
+    var a = screen.width, b = screen.height, side = sideways(), now = side ? Math.min(a, b) : Math.max(a, b);
+    tallestSeen[side ? 1 : 0] = Math.max(tallestSeen[side ? 1 : 0], now);          // the height never shrinks for one way up
+    document.documentElement.style.setProperty("--app-h", tallestSeen[side ? 1 : 0] + "px");
+    // The page itself must never be scrolled (only the lists inside it): iOS sometimes leaves it pushed up after
+    // the keyboard or a text selection, which showed as the whole app sitting high with a gap underneath.
+    settle();
+  };
+  // While she types, iOS moves the page to keep the field above the keyboard: that is left alone.
+  var inField = function () { var e = document.activeElement; return !!e && /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName); };
+  var settle = function () { if (!inField() && (window.scrollY || window.scrollX)) window.scrollTo(0, 0); };
+  window.addEventListener("scroll", settle, { passive: true });
+  document.addEventListener("focusout", function () { setTimeout(settle, 60); setTimeout(settle, 400); }, true);
+  document.addEventListener("selectionchange", function () { setTimeout(settle, 0); });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) setTimeout(fit, 50); });
+  if (window.visualViewport) { window.visualViewport.addEventListener("resize", fit); window.visualViewport.addEventListener("scroll", fit); }
   fit(); window.addEventListener("resize", fit); window.addEventListener("orientationchange", function () { setTimeout(fit, 300); });
 
   // An iOS bug in Home Screen apps: once the keyboard has been open (the passcode, a quote, a search), the app's

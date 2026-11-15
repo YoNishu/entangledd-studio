@@ -21,6 +21,16 @@ with sync_playwright() as p:
             check("Home Screen: the section bar ends at the bottom of the screen", abs(bar[1] - 844) < 1, bar)
         else:
             check("in Safari: unchanged, the page fits the window", body_h == 785 and abs(bar[1] - 785) < 1, (body_h, bar))
+        if standalone:
+            # the keyboard opens: the window is much shorter; the app must keep the screen's full height
+            pg.set_viewport_size({"width": 390, "height": 460}); pg.wait_for_timeout(300)
+            check("keyboard open: the app keeps the screen's height", pg.evaluate("document.body.getBoundingClientRect().height") == 844, pg.evaluate("document.body.getBoundingClientRect().height"))
+            pg.set_viewport_size({"width": 390, "height": 785}); pg.wait_for_timeout(300)
+            # the page itself got pushed up (as iOS does after a selection): it settles back
+            pg.evaluate("window.scrollTo(0, 40)"); pg.wait_for_timeout(300)
+            check("a pushed-up page settles back to the top", pg.evaluate("window.scrollY") == 0, pg.evaluate("window.scrollY"))
+            bar2 = pg.evaluate("document.querySelector('.views').getBoundingClientRect().bottom")
+            check("and the section bar is at the bottom of the screen again", abs(bar2 - 844) < 1, bar2)
         pg.evaluate("document.querySelector('.views').scrollIntoView()")
         check("no page errors", not errs, errs)
         ctx.close()
