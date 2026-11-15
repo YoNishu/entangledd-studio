@@ -66,6 +66,7 @@ run igmusic        ""                     ""                test_igmusic.py
 run handoff_api    ""                     ""                test_handoff_api.py
 run handoff_ui     ""                     ""                test_handoff_ui.py
 run ig_blocked     ""                     ""                test_ig_blocked.mjs
+run posted_by_hand ""                     ""                test_posted_by_hand.py
 run ask_looks_again ""                    ""                test_ask_looks_again.py
 run bottom_gap     ""                     ""                test_bottom_gap.py
 run keyboard_band  ""                     ""                test_keyboard_band.py

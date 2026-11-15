@@ -1343,7 +1343,7 @@ async function publicReel(request, env, parts) {
 const musicName = (m) => (typeof m === "string" ? m : m && typeof m === "object" ? oneLine(m.title || m.name || "", 120) || "a song" : "");
 const publicPost = (p) => ({ id: p.id, state: p.state, error: p.error, caption: p.caption, quote: p.quote, author: p.author,
   music: musicName(p.music) || null, via: p.via || "app", created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null,
-  kind: p.kind || "reel", slides: p.slides || 0 });
+  kind: p.kind || "reel", slides: p.slides || 0, unlinked: !!(p.byHand && !p.mediaId) });
 const tokenFor = (ig, post) => (post.tokenKind === "user" ? ig.userToken : ig.pageToken);
 
 // Moves a post forward: once Instagram has finished processing the video, publish it.
@@ -1934,6 +1934,21 @@ async function lookRoutes(request, env, parts) {
 }
 
 // ---------- reels made now, to post later (each still needs her tap) ----------
+// "I posted it in Instagram": she posted the reel from the Instagram app herself (her own share, or while
+// Instagram is not answering this app). It moves to Posted at once, on her word. When the app can next see the
+// page, adoptFromInstagram finds the real reel and fills in its link and numbers.
+async function postedByHand(env, from) {
+  const posts = await loadDoc(env, "posts", []);
+  const post = { id: crypto.randomUUID(), jobId: from.jobId, via: "instagram", byHand: true, state: "published", error: null, caption: lines(from.caption, 2200),
+    music: from.made && from.made.music ? null : "chosen in Instagram", quote: from.quote, author: from.author, theme: from.theme, tone: from.tone, source: from.source,
+    suggestionId: from.suggestionId, made: from.made || null, mediaId: "", tokenKind: "page", created: from.created || from.at || Date.now(), published: Date.now(), permalink: "" };
+  posts.push(post);
+  const [queue, handoffs] = await Promise.all([loadDoc(env, "queue", []), loadDoc(env, "handoffs", [])]);
+  await Promise.all([saveDoc(env, "posts", posts.slice(-500)), saveDoc(env, "queue", queue.filter((q) => q.jobId !== from.jobId)),
+    saveDoc(env, "handoffs", handoffs.filter((h) => h.jobId !== from.jobId))]);
+  return post;
+}
+
 async function queueRoutes(request, env, parts) {
   let queue = await loadDoc(env, "queue", []);
   // A finished reel is kept on the server for a week; anything older has gone.
@@ -1941,7 +1956,7 @@ async function queueRoutes(request, env, parts) {
   if (alive.length !== queue.length) { queue = alive; await saveDoc(env, "queue", queue); }
   const out = () => json({ queue: queue.map((q) => ({ ...q, keptUntil: q.created + KEEP_DAYS * 24 * 3600 * 1000 })) });
   if (request.method === "GET") return out();
-  if (request.method === "POST") {
+  if (request.method === "POST" && parts.length === 1) {
     const b = await body(request);
     if (!UUID.test(b.jobId || "")) return fail(400, "Create the reel first.");
     const job = await readJob(env, b.jobId);
@@ -1953,6 +1968,12 @@ async function queueRoutes(request, env, parts) {
       made: cleanMade(b.made) });
     await saveDoc(env, "queue", queue);
     return out();
+  }
+  if (request.method === "POST" && parts[1] && parts[2] === "posted") {
+    const q = queue.find((x) => x.id === parts[1]);
+    if (!q) return fail(404, "That reel is no longer in the list.");
+    await postedByHand(env, q);
+    return json({ ok: true });
   }
   if (request.method === "DELETE" && parts[1]) {
     queue = queue.filter((q) => q.id !== parts[1]);
@@ -1980,7 +2001,9 @@ async function loadHandoffs(env) {
 // Returns how many were linked. "posts" is changed in place; the caller saves it.
 async function adoptFromInstagram(env, ig, posts) {
   const handoffs = await loadHandoffs(env);
-  if (!handoffs.length) return 0;
+  // Posts she marked as posted by hand, still without their Instagram reel (see postedByHand).
+  const byHand = posts.filter((p) => p.byHand && !p.mediaId && Date.now() - (p.published || 0) < 30 * 24 * 3600 * 1000);
+  if (!handoffs.length && !byHand.length) return 0;
   let media;
   try {
     media = (await graphAny(env, ig, "GET", `/${ig.igId}/media`, { fields: "id,caption,media_type,media_product_type,permalink,timestamp", limit: "15" })).data || [];
@@ -1996,6 +2019,13 @@ async function adoptFromInstagram(env, ig, posts) {
     return (words.length >= 12 && said.includes(words)) || (quote.length >= 12 && said.includes(quote));
   };
   for (const m of fresh) {
+    // A reel she already marked as posted by hand: this is it if its caption carries the quote, or failing
+    // that if it is the only one waiting and went up within a day of her saying so.
+    const said = squash(m.caption);
+    const mine = byHand.filter((p) => !p.mediaId);
+    const hit = mine.find((p) => squash(p.quote).length >= 12 && said.includes(squash(p.quote).slice(0, 40)))
+      || (mine.length === 1 && !left.length && Math.abs(m.at - mine[0].published) < 24 * 3600 * 1000 ? mine[0] : null);
+    if (hit) { Object.assign(hit, { mediaId: String(m.id), permalink: oneLine(m.permalink, 300), published: m.at, caption: hit.caption || lines(m.caption, 2200) }); linked += 1; continue; }
     // Only hand-overs made before this reel was posted can be its source. If the caption she copied (or the quote)
     // is in the reel's caption, that settles it; otherwise it is the reel she handed over most recently.
     const before = left.filter((h) => h.at - 60000 < m.at);
@@ -2040,6 +2070,12 @@ async function handoffRoutes(request, env, parts) {
       theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20), source: oneLine(b.source, 20), suggestionId: UUID.test(b.suggestionId || "") ? b.suggestionId : "", made: cleanMade(b.made) });
     await saveDoc(env, "handoffs", handoffs);
     return out();
+  }
+  if (request.method === "POST" && parts[1] && parts[2] === "posted") {
+    const h = handoffs.find((x) => x.id === parts[1]);
+    if (!h) return fail(404, "That reel is no longer in the list.");
+    await postedByHand(env, h);
+    return json({ ok: true });
   }
   if (request.method === "DELETE" && parts[1]) {
     handoffs = handoffs.filter((h) => h.id !== parts[1]);
@@ -2848,13 +2884,15 @@ export default {
       const posts = await loadDoc(env, "posts", []);
       const waiting = posts.filter((p) => p.state === "processing");
       const handed = await loadDoc(env, "handoffs", []);
-      if (!waiting.length && !handed.length) return;
+      // also: reels she marked as posted by hand that still wait for their Instagram link (looked for hourly)
+      const unlinked = posts.some((p) => p.byHand && !p.mediaId && Date.now() - (p.published || 0) < 30 * 24 * 3600 * 1000) && new Date().getUTCMinutes() < 5;
+      if (!waiting.length && !handed.length && !unlinked) return;
       const ig = igReady(env) ? await loadIg(env) : null;
       if (!ig) return;
       let changed = false;
       for (const p of waiting) changed = (await advancePost(env, ig, p)) || changed;
       // A reel she took into Instagram to finish there: has it been posted yet?
-      if (handed.length) changed = (await adoptFromInstagram(env, ig, posts)) > 0 || changed;
+      if (handed.length || unlinked) changed = (await adoptFromInstagram(env, ig, posts)) > 0 || changed;
       if (changed) await saveDoc(env, "posts", posts.slice(-500));
     })().catch((e) => { console.error("finishing posts failed", e); return upkeep.noteError(env, kit, "finishing posts", e); }));
   },

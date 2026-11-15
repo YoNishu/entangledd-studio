@@ -919,7 +919,8 @@
     if (m && Object.keys(m).length) {
       const names = [["reach", "Reach"], ["views", "Views"], ["likes", "Likes"], ["comments", "Comments"], ["saved", "Saves"], ["shares", "Shares"]];
       kids.push(el("dl", { className: "nums" }, ...names.filter(([k]) => m[k] != null).map(([k, name]) => el("div", {}, el("dt", { textContent: name }), el("dd", { textContent: compact(m[k]) })))));
-    } else if (p.state === "published") kids.push(el("p", { className: "src", textContent: "Numbers appear a little while after posting." }));
+    } else if (p.unlinked) kids.push(el("p", { className: "src", textContent: "You posted this in Instagram. Its link and numbers appear once the app can see it there." }));
+    else if (p.state === "published") kids.push(el("p", { className: "src", textContent: "Numbers appear a little while after posting." }));
     const links = el("div", { className: "links" });
     if (p.permalink) links.append(el("a", { href: p.permalink, target: "_blank", rel: "noopener", className: "ic ic-insta", textContent: "Open" }));
     if (p.state === "published") {
@@ -960,6 +961,17 @@
   }
 
   // Reels made earlier and kept to post later.
+  // "I posted it in Instagram": she posted this reel from the Instagram app herself. It moves to Posted at once;
+  // the app links the real reel (and its numbers) when it can next see the page.
+  function postedByHand(path, id) {
+    const b = el("button", { className: "btn quiet ic ic-check", type: "button", id, textContent: "I posted it in Instagram" });
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await send(path + "/posted", "POST", {}); $("posts-note").textContent = "Moved to Posted."; loadPosts(); }
+      catch (e) { b.disabled = false; $("posts-note").textContent = friendly(e); }
+    });
+    return b;
+  }
   function queueCard(q) {
     const go = el("button", { className: "btn primary ic ic-send", type: "button", textContent: "Post this now" });
     go.addEventListener("click", () => openPost("reel", q));
@@ -970,7 +982,8 @@
     const song = el("button", { className: "btn ic ic-music", type: "button", textContent: "Add a song in Instagram" });
     song.addEventListener("click", () => openHandoff(q));
     return el("article", { className: "card" }, el("p", { className: "q", textContent: q.quote || "A reel" }), chip("wait", "Made, not posted"),
-      el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that you'd need to create it again.` }), el("div", { className: "acts tall" }, go, song, drop));
+      el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that you'd need to create it again.` }),
+      el("div", { className: "acts tall" }, go, song, postedByHand("queue/" + q.id, "posted-queue-" + q.id), drop));
   }
   const showPostedHead = () => { $("posted-head").hidden = $("queue-wrap").hidden && $("handoff-wrap").hidden; };
   function renderQueue(queue) {
@@ -999,7 +1012,7 @@
       try { renderHandoffs((await send("handoffs/" + h.id, "DELETE")).handoffs); } catch (e) { $("posts-note").textContent = friendly(e); }
     });
     return el("article", { className: "card" }, el("p", { className: "q", textContent: h.quote || "A reel" }), chip("info", "Waiting for you to post it in Instagram"),
-      el("p", { className: "src", textContent: `The app keeps looking for it until ${day(h.until)}.` }), el("div", { className: "acts tall" }, look, drop));
+      el("p", { className: "src", textContent: `The app keeps looking for it until ${day(h.until)}.` }), el("div", { className: "acts tall" }, look, postedByHand("handoffs/" + h.id, "posted-handoff-" + h.id), drop));
   }
   function renderHandoffs(list) {
     $("handoff-wrap").hidden = !list.length;
