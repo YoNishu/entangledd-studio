@@ -85,24 +85,52 @@ const writeJob = (env, job) => env.MEDIA.put(jobKey(job.id, "job.json"), JSON.st
 });
 
 // ---------- sign in ----------
+// The passcode is never compared as it stands. What was typed and the real passcode both go through the same
+// keyed hash first, so the comparison always handles two strings of one length: how long it takes says
+// nothing about the passcode, not even how long it is.
+async function passcodeIs(env, typed) {
+  const tried = String(typed || "");
+  if (!tried || tried.length > 256) return false;
+  const [a, b] = await Promise.all([hmacHex(env.APP_PASSCODE, "passcode|" + tried), hmacHex(env.APP_PASSCODE, "passcode|" + env.APP_PASSCODE)]);
+  return safeEqual(a, b);
+}
+// Wrong tries are counted per address (ten in 15 minutes), and every try is counted across all addresses
+// together, so someone who keeps changing address still gets only so many guesses: after LOGIN_ALL_TRIES in
+// one clock hour, sign-in by passcode rests until that hour is over. Face ID, and anyone already signed in,
+// carry on as usual. Each try leaves a small marker in storage before the passcode is even looked at, and the
+// markers are counted after that, so a burst of guesses sent in the same instant can't slip past the count.
+// (A sign-in that succeeds takes its marker away again; the rest are cleaned up within a day.)
+const LOGIN_ALL_TRIES = 60, LOGIN_ALL_WINDOW_MS = 60 * 60 * 1000;
+const LOGIN_RESTING = "Too many wrong tries. Wait an hour and try again.";
 async function login(request, env) {
   if (!env.APP_PASSCODE) return fail(503, "The passcode hasn't been set up yet.");
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   const key = `auth/${await hmacHex(env.APP_PASSCODE, "ip:" + ip)}.json`;
+  const hour = `auth/try/${Math.floor(Date.now() / LOGIN_ALL_WINDOW_MS)}/`, mark = hour + crypto.randomUUID();
+  const triesThisHour = async () => ((await env.MEDIA.list({ prefix: hour, limit: LOGIN_ALL_TRIES + 1 })).objects || []).length;
   let tries = { n: 0, since: Date.now() };
   if (env.MEDIA) {
-    const obj = await env.MEDIA.get(key);
+    const [obj, all] = await Promise.all([env.MEDIA.get(key), triesThisHour()]);
+    if (all >= LOGIN_ALL_TRIES) return fail(429, LOGIN_RESTING);
     if (obj) tries = await obj.json();
     if (Date.now() - tries.since > LOGIN_WINDOW_MS) tries = { n: 0, since: Date.now() };
     if (tries.n >= LOGIN_TRIES) return fail(429, "Too many wrong tries. Wait 15 minutes and try again.");
   }
   let body;
   try { body = await request.json(); } catch (e) { return fail(400, "Send the passcode as JSON."); }
-  if (!safeEqual(String(body.passcode || ""), env.APP_PASSCODE)) {
+  let all = 0;
+  if (env.MEDIA) {
+    await env.MEDIA.put(mark, "1");
+    all = await triesThisHour();
+    if (all > LOGIN_ALL_TRIES) return fail(429, LOGIN_RESTING);
+  }
+  if (!(await passcodeIs(env, body.passcode))) {
     if (env.MEDIA) await env.MEDIA.put(key, JSON.stringify({ n: tries.n + 1, since: tries.since }));
+    // The guess that uses up the hour's allowance goes into the record of problems, so the health check hears of it.
+    if (all >= LOGIN_ALL_TRIES) await upkeep.noteError(env, kit, "sign-in", { message: "so many wrong passcodes were tried within an hour that sign-in by passcode rested" });
     return fail(401, "That passcode isn't right.");
   }
-  if (env.MEDIA && tries.n) await env.MEDIA.delete(key);
+  if (env.MEDIA) await Promise.all([env.MEDIA.delete(mark), tries.n ? env.MEDIA.delete(key) : null]);
   return json({ token: await sessionToken(env), status: statusOf(env, true) });
 }
 
@@ -2299,7 +2327,7 @@ async function makeChallenge(env) {
   c.set(await challengeSeal(env, c.slice(0, 22)), 22);
   return b64u.enc(c);
 }
-async function takeChallenge(env, clientDataB64, type, request) {
+async function takeChallenge(env, clientDataB64, type, request, worthMarking = async () => true) {
   const expired = () => new UserError(400, "That unlock attempt has expired. Try again.");
   let client, c;
   try { client = JSON.parse(new TextDecoder().decode(b64u.dec(clientDataB64))); } catch (e) { throw new UserError(400, "The device's reply couldn't be read."); }
@@ -2315,6 +2343,9 @@ async function takeChallenge(env, clientDataB64, type, request) {
     throw new UserError(401, "That unlock attempt wasn't valid. Try again.");
   }
   if (Date.now() > exp || used) throw expired();      // each challenge works once, and only for five minutes
+  // A reply that names no saved device is turned away by the caller whatever happens here, so it is not
+  // written down: nobody can make the server write to storage just by asking for a challenge and answering it.
+  if (!(await worthMarking())) return;
   // Marked as used before anything else is looked at. Of two replies arriving in the same instant with the same
   // challenge, only the first to be marked goes on.
   if (!(await putIfNew(env, usedKey, JSON.stringify({ exp })))) throw expired();
@@ -2330,7 +2361,9 @@ async function passkeyRoutes(request, env, parts, authed) {
   if (parts[1] === "login" && method === "POST") {
     const b = await body(request);
     // The saved keys and the one-time check of the challenge are fetched side by side.
-    const [keys] = await Promise.all([loadDoc(env, "passkeys", []), takeChallenge(env, b.clientDataJSON, "webauthn.get", request)]);
+    const saving = loadDoc(env, "passkeys", []);
+    const [keys] = await Promise.all([saving, takeChallenge(env, b.clientDataJSON, "webauthn.get", request,
+      async () => (await saving).some((k) => k.id === b.credentialId))]);
     const saved = keys.find((k) => k.id === b.credentialId);
     if (!saved) return fail(401, "Face ID on this device isn't recognised any more. Use the passcode, then turn the lock on again in Settings.");
     let ok = false;

@@ -218,7 +218,8 @@ export async function upkeepState(env, kit) {
     kit.loadDoc(env, "upkeep", null), kit.loadDoc(env, "backupstate", null), kit.loadDoc(env, "errors", { list: [] })]);
   const list = Array.isArray(errors && errors.list) ? errors.list : [];
   const lastDay = list.filter((x) => x && Date.now() - x.at < DAY);
-  return { cleaned, backed, errorsLastDay: lastDay.length, latestError: lastDay.length ? lastDay[lastDay.length - 1] : null, STORAGE_WARN_BYTES };
+  return { cleaned, backed, errorsLastDay: lastDay.length, latestError: lastDay.length ? lastDay[lastDay.length - 1] : null, STORAGE_WARN_BYTES,
+    guessing: lastDay.find((x) => x.where === "sign-in") || null };       // someone tried a great many wrong passcodes (see login in worker.js)
 }
 
 export const routes = { backups, oops };

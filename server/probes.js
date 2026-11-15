@@ -278,6 +278,13 @@ function probeErrors(env, kit, ctx) {
   const n = ctx.upkeep.errorsLastDay, latest = ctx.upkeep.latestError;
   ctx.errorsLastDay = n;
   if (!n) return { title, state: "ok", brief: "", line: "None in the last day." };
+  if (ctx.upkeep.guessing) {
+    return { title, state: "soon", brief: "someone tried many wrong passcodes",
+      line: `On ${dayIST(ctx.upkeep.guessing.at)} so many wrong passcodes were tried within an hour that sign-in by passcode rested for the remainder of that hour. Nobody got in that way.`,
+      fix: ["If that was you or Dhruuu, nothing is needed: this clears itself in a day.",
+        "If not, choose a longer passcode. In Cloudflare: Workers & Pages, entangledd-studio, Settings, Variables and Secrets. Edit APP_PASSCODE, type the new one, then Deploy.",
+        "Dhruuu then signs in once with the new passcode. Face ID keeps working."] };
+  }
   const what = latest ? ` The latest, at ${latest.where}: ${latest.what}` : "";
   if (n >= 10) {
     return { title, state: "soon", brief: `${n} problems in the last day`, line: `${n} problems in the last day.${what}`,
