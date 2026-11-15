@@ -229,13 +229,20 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
 - A book, film or series added to the Library is checked once (`POST
   /api/library/<books|screen>/<id>/title`; `{accept: true}` or `{keep: true}` answers the offer):
   Open Library's search for books, Wikipedia's search with each page's short description, then
-  Gemini or OpenAI if those found nothing. Kept on the item: `titleChecked`, `known` (`title`,
-  `by`, `year`, `kind`, `page`, `site`) when her title is a real one, `maybe` when a real title
+  Gemini or OpenAI if those found nothing (asked which work it is: proper title, original title,
+  other titles, year, country, creators, lead actors, kind). Kept on the item: `titleChecked`,
+  `known` (`title` hers, `real` the proper title, `by`, `year`, `kind`, `page`, `site`, and when
+  found `original`, `aka`, `country`, `cast`, `about`) when her title is a real one (case and words
+  such as "cdrama", "series", "(2026)" aside), `maybe` when a real title
   is close to hers or of the other kind (offered as "Did you mean ...?", applied only by her
   tap; accepting fills an empty author, sets the kind, and drops lines found under the old title),
   `titleKept` when she kept hers. The Library checks at most two older unchecked titles per
   visit. findlines uses `known`: the author for Goodreads and Wikiquote when she gave none, and
-  the year to choose between same-named titles (IMDb, within a year; Wikiquote's "(2016 film)").
+  the year to choose between same-named titles (IMDb, within a year; Wikiquote's "(2016 film)"),
+  and every fact in each question to Gemini and OpenAI. A look at a work without `known` (never
+  checked, or checked over a day ago with no result) checks the title first, within the look's own
+  budget. `POST .../<id>/merge {into}` folds a second entry for the same work into the first (found
+  lines, facts, her own lines "from" it); the Library offers it on the later entry, never on its own.
 - Quotes on request for a named book (without free full text), film or series are real lines
   looked up for her (`server/findlines.js`). The places are tried in this order, the next one
   only when those before gave too few: lines already kept for that work in the Library (found
@@ -247,8 +254,22 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
   no key and cost nothing.
 - A line from a page is kept only if its exact words are on that page, and only from the page of
   the right work (title, kind and, for a book, the author she gave). Lines from Gemini and OpenAI
-  are kept only with a page that was really read, and are marked to check unless two sites agree.
-  Gemini and OpenAI are told the title, kind, author and number of lines, nothing about her.
+  are kept only with a page that was really read standing behind them (a grounding support, or the
+  page the answer names on a site that was read), and only when the answer credits them to this
+  work (`from`, matched against its titles); they are marked to check unless two sites agree.
+  Google's grounding links are redirects: the site comes from the chunk's title (a domain, or a
+  name such as "Instagram"); a supported line behind a page whose site Google did not name takes
+  its site from the page the answer names, marked to check. Gemini and OpenAI are told the work's
+  public facts and the number of lines, nothing about her. Up to three questions per look: its
+  quotes, its original title (when known), its best lines and dialogue; Gemini then OpenAI for
+  each; MyDramaList and social posts are named as places to read for new or East Asian works.
+- Every look leaves a trail (`found.trail` on the work: `{at, said, steps}`; each step `{where,
+  what, model?, status?, said?, n?, read?, why?}`, `what` one of found, no page, wrong work, blocked,
+  no answer, key refused, may not search, no model, used up, no line passed, not asked, models,
+  models unknown, known, unknown, close title). `said` is one sentence for her, shown on the Library
+  row with "Look again" (`POST .../<id>/look`, at most once a minute) and in the message when
+  nothing was found. A look that found nothing is due again after 2, 12, 48 hours, then 30 days
+  (`found.tries`); the timed look-up retries such works too.
 - What is found is kept on the work in the Library (`found`: at most 30 lines, each with its
   page), so a title is looked up once: again when the kept lines run short, or after 30 days.
   Today's five may use kept lines too. The Library shows "12 real lines found" on the work, with
@@ -257,10 +278,19 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
   you are human" page, a page without quotes) has nothing that day; `data/lookups.json` notes
   when each site last worked or failed (also Quote Investigator, Wikipedia and Open Library),
   holds the day's count for Gemini and OpenAI, and in `last` how each one's last question went
-  (`worked`, `limit`, `used up`, `refused`, `no model`, `no answer`). It is not backed up: it
-  rebuilds itself within a day, and an old copy could wrongly rest a site. Gemini's default models
-  are `gemini-3.8-flash`, then `gemini-3.5-flash-lite` (Google keeps the 2.5 models only for keys
-  that used them before); a key Google does not know (400 "API key not valid") counts as refused.
+  (`worked`, `limit`, `used up`, `refused`, `may not search`, `no model`, `no answer`); `models`
+  the models chosen by reading `GET /v1beta/models` (newest `gemini-N-flash`, then `-flash-lite`,
+  that support generateContent) and `GET /v1/models` (gpt-6-luna, gpt-6.1-terra, gpt-6.1-sol,
+  gpt-6-astra, else the newest plain GPT model), each `{list, at, worked}`, read again after a week
+  or when none worked; `uses` the last outcome per feature (`lookup`, `title`, `check`, `discover`,
+  `echo`); `trails` the last six trails. `GEMINI_MODEL` / `OPENAI_MODEL` replace the choice; the
+  built-in names (`gemini-3.8-flash`, `gemini-3.5-flash-lite`; `gpt-6-luna`, `gpt-6.1-terra`) are
+  tried when the list can't be read. 429 rests the helper for the day; 401, 403 and a 400 naming the
+  key mean the key is refused; a 400 or 403 naming search, grounding or a tool means this model may
+  not search and the next is tried; 404 means not offered, next. The service's own words are kept,
+  one line, with anything key-shaped cut out. `GET /api/lookups` (signed in) returns the record with
+  the trails in full. It is not backed up: it rebuilds itself within a day, and an old copy could
+  wrongly rest a site.
   Goodreads and IMDb do not offer this as a service and may refuse a server; the app then moves on.
 - Book text comes from Project Gutenberg through the Gutendex catalogue, so only books old
   enough to be free have it. Lines taken from a book's text are kept only if the exact words

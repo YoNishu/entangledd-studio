@@ -87,11 +87,15 @@ photos from the search, the reel maker's self-test, looking things up, her posts
 post numbers, comments, backups, tidying up, and problems noticed.
 
 "Looking things up" gives each place's last outcome (worked, turned the app away, didn't answer)
-and, for Gemini and OpenAI, whether the key is accepted (checked by reading the model's details,
-which asks nothing and costs nothing), the day's count and how the last search went (worked,
-the app's daily limit, the account's allowance used up, refused). A refused key needs
-attention; a site that turns the app away, a model no longer offered, or a key that may not
-search is "soon".
+and, for Gemini and OpenAI, whether the key is accepted and which models it may use (checked by
+reading the list of models, which asks nothing and costs nothing), the day's count and how the
+last search went. Then one entry per feature that searches (quotes from a work, checking a
+title, "Who said this?", finding new lines, checking new lines): worked, refused (the key, or
+the search tool), no model, answered but every line was left out, with the service's own short
+words. Last comes the last look at a work, step by step. A refused key needs attention; a site
+that turns the app away, a model no longer offered, or a search that was refused is "soon".
+The same record, with the last few trails in full, is at `GET /api/lookups` (signed in).
+`POST /api/checkup?part=services` (signed in) renews the line at once.
 
 ### The weekly check
 
@@ -126,15 +130,27 @@ their key is set in Cloudflare, and only when the free ones gave too few lines:
 - `GEMINI_API_KEY`: Gemini with Google Search. Make the key at aistudio.google.com (Get API
   key, Create API key) in a project with **no billing account**, so it can never be charged.
   The app asks at most 40 times a day. Google decides which models a free key may search with,
-  and at present may allow none; then this place is quietly skipped. `GEMINI_MODEL` can name
-  another model.
+  and may allow none; the app reads the list of models the key may use (once a week), takes the
+  newest flash models, and passes to the next when one is refused the search tool. Every refusal
+  is on the trail with Google's own words. `GEMINI_MODEL` (up to three names, with commas)
+  replaces the choice.
 - `OPENAI_API_KEY`: OpenAI with web search (about one cent a search, plus a little for the
   words). Make the key at platform.openai.com (API keys) and set a monthly budget under
-  Settings, Limits. The app asks at most 20 times a day. `OPENAI_MODEL` can name another model.
+  Settings, Limits. The app asks at most 20 times a day. The model is chosen from the list the key
+  may use (gpt-6-luna, then gpt-6.1-terra, gpt-6.1-sol, gpt-6-astra). `OPENAI_MODEL` replaces it.
 
 Anthropic's own paid web search stays off unless `CLAUDE_WEB_SEARCH` is `on`. Whatever is found
-is kept in the Library on that work, so a title is looked up once. `data/lookups.json` in
-storage shows the day's counts and whether each site answered; the health record shows it.
+is kept in the Library on that work, so a title is looked up once (a look that found nothing is
+tried again after 2, 12 and 48 hours, then after 30 days; "Look again" on the Library row looks at
+once). Before the first look at a work the app does not know, its title is checked, and its facts
+(year, country, original title, lead actors) go into every question, so "The early spring" is
+searched as the 2026 Chinese drama and not as the season. A line must be credited to the work; one
+found only on social posts (Instagram, Pinterest, Tumblr) is kept, marked to check, with its site.
+Each work is asked about in up to three ways (its quotes, its original title, its best lines), at
+most three questions in all. Every look leaves a trail: the Library row says in one sentence where
+Nishiii looked ("Looked on Wikiquote, IMDb and Google: nothing yet."), and so does her message.
+`data/lookups.json` in storage holds the day's counts, the models chosen, each site's last answer,
+the last outcome per feature and the last trails; the health record shows it.
 
 The same places check two more things (`server/verify.js`), sharing the daily limits:
 
@@ -147,8 +163,10 @@ The same places check two more things (`server/verify.js`), sharing the daily li
 - **A work added to the Library**: the title is checked on Open Library (books) and Wikipedia
   (with Wikidata's short descriptions, such as "2010 film by Christopher Nolan"), then Gemini or
   OpenAI if those found nothing. A title close to hers is offered ("Did you mean ...?"), never
-  put in her place; a real one is kept with its year, author or creator and kind, which help the
-  lookups above pick the right page. Each title is checked once.
+  put in her place; a real one is kept with its year, author or creator and kind (and, from the
+  search question, its original title, other titles, country and lead actors), which help the
+  lookups above pick the right page. Words people add to say what a work is ("cdrama", "series",
+  "(2026)") don't count, and two Library entries for one work offer "Same as ...? Keep one".
 
 ## How quotes are chosen
 
