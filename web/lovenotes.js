@@ -206,8 +206,11 @@
     finally { $("lovenotes-save").disabled = false; }
   }
 
+  // The notes are a surprise: she meets them one at a time, so Settings never lists them. Nishith edits them by
+  // opening the app's address with #notes at the end (in a browser, not from the Home Screen icon).
+  const mayEdit = () => location.hash === "#notes";
   function build() {
-    if (!slot || $("lovenotes-edit")) return;
+    if (!slot || $("lovenotes-edit") || !mayEdit()) return;
     const text = el("textarea", { id: "lovenotes-text", rows: 3, required: true, maxLength: 280 });
     const date = el("input", { id: "lovenotes-date", type: "date" });
     const form = el("form", { className: "add", id: "lovenotes-form" },

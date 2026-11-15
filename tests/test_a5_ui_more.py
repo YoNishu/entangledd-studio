@@ -25,7 +25,7 @@ def deploy(*boxes):
     assert status == 204, status
 
 def sign_in(pg):
-    pg.goto(B)
+    pg.goto(B + "/#notes")
     pg.wait_for_selector("#lock:not([hidden])", timeout=20000)
     pg.fill("#passcode", "letmein"); pg.click("#passcode-go")
     pg.wait_for_selector("#view-today:not([hidden])", timeout=20000)
