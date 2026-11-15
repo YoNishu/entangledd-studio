@@ -13,7 +13,12 @@
   "use strict";
   const K = window.StudioKit;
   const $ = (id) => document.getElementById(id);
-  const mount = () => $("settings-reminders");
+  // Its place in Settings: right under the Face ID lock, before Instagram. Made here, so the page's own markup stays as it is.
+  function mount() {
+    const after = $("faceid-toggle");
+    if (!$("settings-reminders") && after) after.insertAdjacentElement("afterend", K.el("div", { id: "settings-reminders" }));
+    return $("settings-reminders");
+  }
   const DEFAULT_TIME = "11:11";
   const MEMO = "ds.reminder.v1";          // kept on this phone: that the reminder is on, its time, and the day it was last looked after
   const WORKER = "/sw.js";
