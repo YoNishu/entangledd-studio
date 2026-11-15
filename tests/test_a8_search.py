@@ -38,7 +38,7 @@ check("a line whose page was never read is left out", not any("never read" in l[
 check("each carries the page and its site", all(i["source"]["url"].startswith("https://www.") and i["source"]["site"] in ("goodreads.com", "imdb.com") for i in got), [i["source"] for i in got])
 body = g[0]["body"]
 sent = json.dumps(body)
-check("the question goes to a model with free Google Search, with the search tool", g[0]["model"] == "gemini-2.5-flash" and body["tools"] == [{"google_search": {}}], g[0]["model"])
+check("the question goes to a model with free Google Search, with the search tool", g[0]["model"] == "gemini-3.8-flash" and body["tools"] == [{"google_search": {}}], g[0]["model"])
 check("it names the work: title, kind and author", '\\"Twisted Love\\"' in sent and "by Ana Huang" in sent and " book " in sent, sent[:300])
 check("and nothing personal: no notes, taste, own lines, subject or name", not any(x in sent for x in ("PRIVATE", "Dhruuu", "longing", "hustle", "taste")), sent)
 check("only the question, the tool and one setting are sent", sorted(body) == ["contents", "generationConfig", "tools"] and len(body["contents"]) == 1, sorted(body))
@@ -83,7 +83,7 @@ T = login()
 a = add_book(T, "A Brand New Novel", "")
 calls()
 s, got = ask(T, [a], 3)
-check("a model that is gone is passed over for the next", [x["model"] for x in to(calls(), "gemini")] == ["gemini-2.5-flash", "gemini-2.5-flash-lite"] and s == 200 and len(kept(a)) == 3, (s, kept(a)))
+check("a model that is gone is passed over for the next", [x["model"] for x in to(calls(), "gemini")] == ["gemini-3.8-flash", "gemini-3.5-flash-lite"] and s == 200 and len(kept(a)) == 3, (s, kept(a)))
 check("both questions are counted", used()["gemini"]["calls"] == 2, used())
 
 # ---- an answer from memory (no pages read) is not kept

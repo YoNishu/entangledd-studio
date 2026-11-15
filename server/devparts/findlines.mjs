@@ -217,7 +217,7 @@ function gemini(body, model) {
   const fail = (code, status, message) => ({ status: code, body: { error: { code, message, status } } });
   if (mode.gemini === "429") return fail(429, "RESOURCE_EXHAUSTED", "You exceeded your current quota, please check your plan and billing details.");
   if (mode.gemini === "refused") return fail(403, "PERMISSION_DENIED", "Grounding with Google Search is not available on the free tier for this project.");
-  if (mode.gemini === "gone" && model === "gemini-2.5-flash") return fail(404, "NOT_FOUND", "This model models/gemini-2.5-flash is no longer available to new users. Please update your code to use a newer model.");
+  if (mode.gemini === "gone" && model === "gemini-3.8-flash") return fail(404, "NOT_FOUND", "This model models/gemini-3.8-flash is no longer available to new users. Please update your code to use a newer model.");
   const title = titleIn(body.contents[0].parts[0].text);
   const lines = unknown(title) ? [] : [
     { text: `Google found this first line from ${title}, word for word.`, by: "Someone in it", page: "https://www.goodreads.com/work/quotes/1", also: "" },
