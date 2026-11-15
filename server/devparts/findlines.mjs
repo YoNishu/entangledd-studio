@@ -228,9 +228,11 @@ const TITLES = [
   { id: "nm7000009", l: "Quiet Harbour Jones", s: "Actor" },
   { id: "tt7000001", l: "Quiet Harbour", q: "feature", qid: "movie", y: 1999, s: "Per Lund, Aino Sarv", rank: 90211 },
   { id: "tt7000002", l: "Quiet Harbour", q: "TV series", qid: "tvSeries", y: 2022, yr: "2022-2024", s: "Sigrid Aune, Olav Berg", rank: 1422 },
+  { id: "tt7000003", l: "Quiet Harbour", q: "feature", qid: "movie", y: 2012, s: "Lene Dahl", rank: 30400 },     // a remake: only its year tells it apart
 ];
 const SAID = {
   tt7000001: [[["Edvard", "A film line that belongs to the old picture, not the series."]]],
+  tt7000003: [[["Lene", "The remake keeps its own line, and this is it."]]],
   tt7000002: [[["Ines", "The tide does not ask permission to come home."]], [["Tobias", "You keep saying sorry like it is a place we can live in."], ["Ines", "Then let&#39;s at least visit."]],
     [["Old Marit", "People think patience is waiting. It is choosing, again and again, not to leave."]]],
 };
