@@ -39,6 +39,18 @@ check("Wikiquote's own pages: each line under a character's heading, not the ope
 check("a stage direction in brackets is left off the line", wq[1] && wq[1].text.startsWith("I don't care much"), wq);
 check("a season heading is not a speaker", wq[2] && wq[2].by === "", wq);
 
+// ---- the real reviews page (live run 2): words between two quotations, a reviewer's sentence, two wordings
+const real = 'The Chinese title "Zao Chun" means early spring as it is missing from their relationship, and it could also be for "Qing Lang", bright and clear in the romantic sense, and maybe that is why it was translated as "Early Spring" here.\n'
+  + 'The opening "weather is chilly, and overcast. It is unpredictable and mirrors the six years of intense misunderstandings." sets the tone.\n'
+  + 'Favourite line: "You don\'t have to be perfect to be worthy love." and later Luan Nian: You don\'t have to be perfect to be worthy of love. He repeats it: "You don\'t have to be perfect to be worthy of love."\n'
+  + 'He asks, "Can you control your feelings of love?" Then: "In the height of summer, there are no ice sculptures."';
+const rl = extractLines(real, { names });
+const rt = rl.map((l) => l.text);
+check("never the words between two quotations", !rt.some((t) => /missing from their relationship|translated as/.test(t)), rt);
+check("never a quoted piece that starts in the middle of a sentence", !rt.some((t) => /^weather/.test(t)), rt);
+check("of two wordings of one line, the one the page has more often", rt.includes("You don't have to be perfect to be worthy of love.") && !rt.includes("You don't have to be perfect to be worthy love."), rt);
+check("real quoted lines stay, and 'He' is no speaker", rt.includes("In the height of summer, there are no ice sculptures.") && (rl.find((l) => l.text.startsWith("Can you control")) || {}).by === "", rl);
+
 // ---- which page is about the work
 const work = { title: "The early spring", real: "The Early Spring", original: "早春晴朗", year: 2026, country: "Chinese", type: "series",
   cast: ["Jing Boran", "Sun Qian"], characters: ["Luan Nian", "Shang Zhitao"], aka: ["Zao Chun Qing Lang", "Bright Early Spring"], network: "Youku" };
@@ -67,6 +79,9 @@ const list = readMdlSearch(mdl);
 check("MyDramaList's search: each work's address, title and year", list.length === 2 && list[0].path === "/761231-zao-chun-qing-lang" && list[0].year === 2026 && list[1].year === 1956, list);
 check("the entry with her title and its year is chosen", mdlPick(kit, work, list)?.path === "/761231-zao-chun-qing-lang");
 check("an entry of another year is not", mdlPick(kit, { ...work, year: 2019 }, list) === null);
+const mdl2 = readMdlSearch(`<a href="/735043-life" class="block"><img class="img-responsive cover lazy" data-src="x.jpg" alt="When Life Gives You Tangerines"/></a> #5 <h6 class="title"><a href="/735043-life">When Life Gives You Tangerines</a></h6><span class="text-muted">Korean Drama - 2025, 16 episodes</span>`);
+check("MyDramaList's search: the title from the cover's alt text when the address says little", mdl2.length === 1 && mdl2[0].title === "When Life Gives You Tangerines" && mdl2[0].year === 2025, mdl2);
+check("a Korean original title with a space is kept whole", factsIn(kit, "When Life Gives You Tangerines (Korean: 폭싹 속았수다; RR: Pokssak sogatsuda) is a 2025 South Korean television series.").original === "폭싹 속았수다");
 check("an entry found by its romanised title in the address", mdlPick(kit, { ...work, real: "Bright and Clear" }, [{ path: "/761231-zao-chun-qing-lang", slug: "zao-chun-qing-lang", title: "早春晴朗", year: 2026 }])?.slug === "zao-chun-qing-lang");
 
 // ---- Bing's RSS, and the queries

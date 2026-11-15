@@ -120,6 +120,11 @@ export async function handle(req, res, url, tools) {
   if (p.startsWith("/__anthropic/")) {
     const raw = await tools.readBody(req);
     const body = JSON.parse(raw.toString() || "{}");
+    // CLAUDE_PICKS=none: Claude picks nothing from any page; =offpage: only a line that is on no page.
+    if (process.env.CLAUDE_PICKS && String(body.system || "").startsWith("You pick real")) {
+      log.push({ to: "claude", path: "", query: {}, agent: "", content: "" });
+      return send(200, { content: [{ type: "text", text: process.env.CLAUDE_PICKS === "none" ? "[]" : JSON.stringify([{ page: 1, text: "A line that is on no page anywhere, made up whole.", by: "Nobody" }]) }] });
+    }
     if (!String(body.system || "").startsWith("You pick real, quotable lines from pages found on the web")) {
       const orig = req.on.bind(req);
       req.on = (ev, fn) => { if (ev === "data") queueMicrotask(() => fn(raw)); else if (ev === "end") queueMicrotask(() => queueMicrotask(fn)); else orig(ev, fn); return req; };

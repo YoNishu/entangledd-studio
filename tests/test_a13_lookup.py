@@ -75,4 +75,16 @@ check("with Nishiii, only lines that are on the page are kept, the made-up one n
       and "The Quiet Orchard (2026) Reviews" not in texts
       and not any("on no page at all" in t for t in texts), texts)
 
+# ---- 5. Claude answers, but picks nothing, or only a line that is on no page: the app's own reader takes over
+for picks in ("none", "offpage"):
+    serve(f"CLAUDE_PICKS={picks}")
+    T = login()
+    w = add_screen(T, "The Quiet Orchard", "series", checked=False)
+    olog()
+    s, got = ask(T, [w], 3)
+    asked = [e for e in olog() if e["to"] == "claude"]
+    texts = [l["text"] for l in kept(w)]
+    check(f"Claude asked first ({picks}), then the lines come from the page itself", s == 200 and asked and "I kept every letter, even the ones I never sent." in texts
+          and not any("made up whole" in t for t in texts), (s, len(asked), texts))
+
 finish()

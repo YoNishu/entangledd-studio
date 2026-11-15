@@ -173,9 +173,9 @@ async function duckduckgo(env, kit, state, q) {
   return readDuckDuckGo(got.text);
 }
 // Bing: its plain RSS answer first (titles, links and descriptions, and no page furniture to read past); its web
-// page only when that gives nothing. The words go as %20, not "+": Bing read "+" as the end of the query (it
-// answered "The Early Spring" with pages about the word "the").
-const bingQuery = (q) => "q=" + encodeURIComponent(q);
+// page only when that gives nothing. The words go as %20, not "+", and without quotation marks: asked either way
+// from a server, Bing answered with pages about the first word alone ("the", "when"; live run, 15 Nov 2026).
+const bingQuery = (q) => "q=" + encodeURIComponent(q.replace(/"/g, ""));
 async function bing(env, kit, state, q) {
   const site = env.BING_SITE || "https://www.bing.com";
   const rss = await fetchCapped(env, state, `${site}/search?format=rss&${bingQuery(q)}&setlang=en&cc=US`, { accept: "application/rss+xml,text/xml", ms: RESULTS_MS });
@@ -294,13 +294,15 @@ export async function readPages(env, kit, state, list, max = MAX_PAGES) {
 // MyDramaList's own search page: each work is a link "/761231-zao-chun-qing-lang" with its title as the link's
 // text, and its kind and year just after ("Chinese Drama - 2026, 24 episodes"). [{ path, slug, title, year, about }]
 export function readMdlSearch(html) {
-  const out = [], seen = new Set(), h = String(html);
-  for (const m of h.matchAll(/href="(?:https:\/\/mydramalist\.com)?\/(\d+-([a-z0-9-]+))"[^>]*>\s*([^<]{1,150}?)\s*</g)) {
-    const path = "/" + m[1];
-    if (seen.has(path)) continue;
-    const after = F.plain(h.slice(m.index + m[0].length, m.index + m[0].length + 700)).replace(/\s+/g, " ");
-    seen.add(path);
-    out.push({ path, slug: m[2], title: F.plain(m[3]).trim(), year: Number((/\b((?:19|20)\d\d)\b/.exec(after) || [])[1]) || 0, about: after.slice(0, 120) });
+  const out = [], at = new Map(), h = String(html);
+  // A work's address comes twice: on its cover picture (the title in the picture's alt text), then on its title.
+  for (const m of h.matchAll(/href="(?:https:\/\/mydramalist\.com)?\/(\d+-([a-z0-9-]+))"[^>]*>\s*(<img[^>]*?alt="([^"]{1,150})"[^>]*>|[^<]{1,150}?)\s*</g)) {
+    const path = "/" + m[1], title = F.plain(m[4] || (m[3].startsWith("<") ? "" : m[3])).trim();
+    const known = at.get(path);
+    if (known) { if (!known.title && title) known.title = title; continue; }
+    const after = F.plain(h.slice(m.index + m[0].length, m.index + m[0].length + 900).replace(/<[^>]*>/g, " ")).replace(/\s+/g, " ");
+    const e = { path, slug: m[2], title, year: Number((/\b(?:Drama|Movie|Special|TV Show)\b[^0-9]{0,6}((?:19|20)\d\d)\b/.exec(after) || /\b((?:19|20)\d\d)\b/.exec(after) || [])[1]) || 0, about: after.slice(0, 120) };
+    at.set(path, e); out.push(e);
   }
   return out;
 }
@@ -329,12 +331,41 @@ export const onPage = (pageWords, line) => {
 };
 
 // Labels on review and recap pages that look like "Name: words" but are not someone speaking.
-const NOT_SPEAKERS = /^(notes?|episodes?|ep|eps|rating|ratings|score|overall|story|acting|cast|music|rewatch value|source|sources|review|reviews|posted|posted by|by|from|via|credit|credits|photo|image|genre|genres|tags?|labels?|updated?|date|time|title|native title|also known as|screenwriter|director|directors|country|network|aired|airs|duration|content rating|ranked|popularity|watchers|status|q|a|warning|spoilers?|edit|summary|plot|synopsis|verdict|pros|cons|read more|translation|subtitles?|written by|category|filed under|link|comments?|reply|share|chinese|english|pinyin|season|part|chapter|related|watch|where to watch|final thoughts|conclusion|significant quotes|quotes|quote|favourite quote|favorite quote|note to self)$/i;
+const NOT_SPEAKERS = /^(he|she|they|we|you|i|it|his|her|their|this|that|notes?|episodes?|ep|eps|rating|ratings|score|overall|story|acting|cast|music|rewatch value|source|sources|review|reviews|posted|posted by|by|from|via|credit|credits|photo|image|genre|genres|tags?|labels?|updated?|date|time|title|native title|also known as|screenwriter|director|directors|country|network|aired|airs|duration|content rating|ranked|popularity|watchers|status|q|a|warning|spoilers?|edit|summary|plot|synopsis|verdict|pros|cons|read more|translation|subtitles?|written by|category|filed under|link|comments?|reply|share|chinese|english|pinyin|season|part|chapter|related|watch|where to watch|final thoughts|conclusion|significant quotes|quotes|quote|favourite quote|favorite quote|note to self)$/i;
 const NAME = "[A-Z][\\p{L}'’.-]+(?: [A-Z][\\p{L}'’.-]+){0,2}";
 const SPOKEN = new RegExp(`^\\s*(?:[-*•]\\s*)?(${NAME})\\s*(?:\\([^)]{0,30}\\))?\\s*[:：]\\s*(.+)$`, "u");
 const BEFORE = new RegExp(`(${NAME})\\s*(?:\\([^)]{0,30}\\))?\\s*(?:[:：]|,?\\s+(?:said|says|told|tells|asks|asked|replies|replied|to [A-Z][\\p{L}]+)\\b[^“"«「]{0,20}[,:]?)\\s*$`, "u");
 const AFTER = new RegExp(`^\\s*[,.]?\\s*(?:[-–—]\\s*|,?\\s*(?:said|says)\\s+)(${NAME})`, "u");
-const QUOTED = /“([^“”\n]{20,400})”|"([^"\n]{20,300})"|«\s?([^«»\n]{20,300}?)\s?»|「([^「」\n]{20,300})」|『([^『』\n]{20,300})』/g;
+// Marks that say which way they face: “ ” « » 「 」 『 』. Straight marks are paired in order, on each line.
+const FACING = /“([^“”\n]{20,400})”|«\s?([^«»\n]{20,300}?)\s?»|「([^「」\n]{20,300})」|『([^『』\n]{20,300})』/g;
+// Every quoted span on the text, in order: { index, end, inner }. A straight mark opens and the next one on the
+// line closes, so the words BETWEEN two quotations ('"Early Spring" as it is missing ... for "Bright"') are
+// never taken for one.
+function quotedSpans(all) {
+  const out = [];
+  for (const m of all.matchAll(FACING)) out.push({ index: m.index, end: m.index + m[0].length, inner: m[1] || m[2] || m[3] || m[4] });
+  let at = 0;
+  for (const line of all.split("\n")) {
+    const marks = [];
+    for (let i = line.indexOf('"'); i >= 0; i = line.indexOf('"', i + 1)) marks.push(i);
+    for (let k = 0; k + 1 < marks.length; k += 2) {
+      const inner = line.slice(marks[k] + 1, marks[k + 1]);
+      if (inner.length >= 20 && inner.length <= 300) out.push({ index: at + marks[k], end: at + marks[k + 1] + 1, inner });
+    }
+    at += line.length + 1;
+  }
+  return out.sort((a, b) => a.index - b.index);
+}
+// Does a quoted span read as a line someone says, not a piece of a reviewer's sentence? It starts with a capital
+// (or a digit, or "..."), not with a joining word, and ends a sentence: with its own punctuation, or with
+// punctuation right after the closing mark.
+// (Joining words in lower case: "In the height of summer" is a line, "in the romantic sense" is not.)
+const JOINING = /^(and|but|or|nor|as|in|of|to|for|which|that|because|so|then|with|while|when|where|if|than|like|from|by|at|on|whereas|Which|Whereas)\b/;
+function spanOk(inner, next) {
+  const t = String(inner).trim();
+  if (!/^(\.\.\.|…)?\s*[\p{Lu}\p{N}]/u.test(t) || JOINING.test(t)) return false;
+  return /[.!?…,;—–-]["'’”]?$/.test(t) || /^[.!?,;:—–-]/.test(next || "");
+}
 
 // A piece of text worth offering as a line: four to sixty words, real words, not an address, a heading or a title.
 export function lineLike(t) {
@@ -346,6 +377,17 @@ export function lineLike(t) {
 }
 // Names compared without their spaces: pages write "Shang Zhitao" and "Shang Zhi Tao".
 const squash = (t) => sameWords(t).replace(/[^\p{L}\p{N}]+/gu, "");
+// Two wordings of one line: the same words but for one or two, in a line of six words or more.
+function nearly(a, b) {
+  const x = a.replace(/[^\p{L}\p{N} ]/gu, "").split(" ").filter(Boolean), y = b.replace(/[^\p{L}\p{N} ]/gu, "").split(" ").filter(Boolean);
+  if (Math.min(x.length, y.length) < 6 || Math.abs(x.length - y.length) > 2) return false;
+  const row = Array.from({ length: y.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= x.length; i++) {
+    let prev = row[0]; row[0] = i;
+    for (let j = 1; j <= y.length; j++) { const keep = row[j]; row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (x[i - 1] === y[j - 1] ? 0 : 1)); prev = keep; }
+  }
+  return row[y.length] <= 2 && row[y.length] < Math.min(x.length, y.length) / 3;
+}
 const MAX_CANDIDATES = 80;                // lines taken from one page at most (a dozen are kept): little computing
 const knownName = (names, who) => names.find((n) => n && who && squash(n) === squash(who)) || "";
 
@@ -366,11 +408,12 @@ export function extractLines(text, { names = [], list = false } = {}) {
     out.push({ text: t, by, other, fromPage: true });
   };
   const all = String(text).slice(0, 150000);                    // enough for any page of quotes; keeps the computing small
-  for (const m of all.matchAll(QUOTED)) {
+  for (const m of quotedSpans(all)) {
     if (out.length >= MAX_CANDIDATES) break;
-    const inner = m[1] || m[2] || m[3] || m[4] || m[5];
+    const inner = m.inner;
     const before = all.slice(Math.max(0, m.index - 70), m.index).split("\n").pop();
-    const after = all.slice(m.index + m[0].length, m.index + m[0].length + 50).split("\n")[0];
+    const after = all.slice(m.end, m.end + 50).split("\n")[0];
+    if (!spanOk(inner, after)) continue;
     const known = names.filter((n) => n && n.length >= 3 && before.includes(n)).pop() || "";
     // (Each pattern only where its marks are there at all: most quotes have no speaker around them.)
     const b = /[:：]\s*$|\b(said|says|told|tells|asks|asked|replies|replied|to [A-Z])/.test(before) ? BEFORE.exec(before) : null;
@@ -409,9 +452,14 @@ export function extractLines(text, { names = [], list = false } = {}) {
     }
     if (list && !/[“"«「]/.test(line) && !/^(quoting|describing|referring|speaking|said|after|while|when he|when she|on |about )/i.test(line.trim())) add(line, /^(season|series|episode|part|chapter|dialogue|act|book|volume)\b/i.test(heading) || /\d/.test(heading) ? "" : heading);
   }
-  // A piece of dialogue inside a longer quote is not a line of its own.
+  // A piece of dialogue inside a longer quote is not a line of its own; of two wordings of one line ("worthy
+  // love" and "worthy of love"), the one the page has more often stays, else the longer.
   const words = out.map((q) => sameWords(q.text));
-  return out.filter((q, i) => !words.some((w, j) => j !== i && w.length > words[i].length && w.includes(words[i])));
+  const flat = out.length > 1 ? sameWords(all) : "";
+  const seenOn = (w) => (flat ? flat.split(w).length - 1 : 1);
+  const counts = words.map(seenOn);
+  return out.filter((q, i) => !words.some((w, j) => j !== i && ((w.length > words[i].length && w.includes(words[i]))
+    || (nearly(w, words[i]) && (counts[j] > counts[i] || (counts[j] === counts[i] && (w.length > words[i].length || (w.length === words[i].length && j < i))))))));
 }
 
 // ---------------------------------------------------------------- lines from what was read
@@ -508,9 +556,9 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
   } catch (e) { say(env, "claude", { why: kit.oneLine(e && e.message, 120) }); }
   for (const q of Array.isArray(answer) ? answer : []) { if (lines.length >= want) break; take(q, Number(q && q.page) - 1); }
   // Claude could not answer, or none of its picks passed: the lines on the pages themselves, found without it.
-  // (An empty answer, or picks already kept, is Claude's judgement: that stands.)
+  // (Picks that were all already kept are Claude's judgement that the page has nothing new: that stands.)
   const missed = Array.isArray(answer) && answer.length && answer.every((q) => { const i = Number(q && q.page) - 1; return !words[i] || !onPage(words[i], kit.flatten(q && q.text)); });
-  if (!lines.length && work && (!Array.isArray(answer) || missed)) {
+  if (!lines.length && work && (!Array.isArray(answer) || !answer.length || missed)) {
     how = "extractor";
     pages.forEach((pg, i) => {
       const got = about_[i] ? extractLines(pg.text, { names }) : [];

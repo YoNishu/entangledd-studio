@@ -481,9 +481,9 @@ async function pickFrom(env, kit, work, pg, about, taste, have, state) {
     }
   };
   pick(answer, O.sameWords(flat));
-  // Claude could not answer, or none of what it picked is on the page: the page's own lines, found without it.
-  // (An empty answer, or picks already kept, is Claude's judgement that the page has no more: that stands.)
-  if (!lines.length && (!Array.isArray(answer) || (answer.length && answer.every((q) => !O.onPage(O.sameWords(flat), kit.flatten(q && q.text)))))) {
+  // Claude could not answer, picked nothing, or none of what it picked is on the page: the page's own lines,
+  // found without it. (Picks that were all already kept are Claude's judgement that the page has no more.)
+  if (!lines.length && (!Array.isArray(answer) || !answer.length || answer.every((q) => !O.onPage(O.sameWords(flat), kit.flatten(q && q.text))))) {
     const got = O.extractLines(pg.text, { names: [...(work.cast || []), ...(work.characters || [])], list: pg.site === "wikiquote.org" });
     O.say(env, "candidates", { site: pg.site, url: pg.url, n: got.length, how: "without Claude" });
     pick(got.filter((q) => !q.other), O.sameWords(pg.text));

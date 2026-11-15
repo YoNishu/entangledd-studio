@@ -309,7 +309,7 @@ const NAME_RE = "[A-Z][\\p{L}'’-]+(?: [A-Z][\\p{L}'’-]+){0,2}";
 // its lead actors, and (with "all", from the whole page) the characters they play and where it was shown.
 export function factsIn(kit, text, all = false) {
   const t = String(text || ""), head = t.slice(0, 1500), out = {};
-  const original = (/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0e00-\u0e7f]{2,24}/.exec(head) || [])[0];
+  const original = (/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0e00-\u0e7f]+(?: [\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0e00-\u0e7f]+){0,4}/.exec(head) || [])[0];
   if (original) out.original = original;
   const aka = [];
   const rom = /\b(?:pinyin|RR|romani[sz]ed|Revised Romanization|Hepburn|romaji|rōmaji)\s*:\s*([^;)\n]{3,60})/i.exec(head)
@@ -322,7 +322,7 @@ export function factsIn(kit, text, all = false) {
   if (star) out.cast = star.slice(1).filter(Boolean).slice(0, 3);
   if (all) {
     const playing = [...t.matchAll(new RegExp(`(?:^|\\n)\\s*(${NAME_RE})\\s+as\\s+(${NAME_RE})`, "gu"))];
-    const chars = [...new Set(playing.map((m) => m[2]).filter((n) => !/^(a|an|the|young|child)\b/i.test(n)))].slice(0, 8);
+    const chars = [...new Set(playing.map((m) => m[2]).filter((n) => n.length >= 3 && !/^(a|an|the|young|child|dr|mr|mrs|ms|professor|prof|himself|herself)\b/i.test(n)))].slice(0, 8);
     if (chars.length) out.characters = chars;
     const cast = [...new Set([...(out.cast || []), ...playing.map((m) => m[1])])].slice(0, 6);
     if (cast.length) out.cast = cast;
