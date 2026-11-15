@@ -30,16 +30,19 @@ has_filters() {
   for f in $NEED_FILTERS; do grep -qx "$f" <<< "$names" || return 1; done
 }
 
-# True when ffmpeg can make the kind of file the renderer makes, has every filter the renderer uses, ffprobe
+# True when ffmpeg can make the kind of file the renderer makes, has every filter the renderer uses and the
+# trace_headers the self-check looks inside reels with, ffprobe
 # can read the file back, and Pillow loads.
 works() {
   local tmp ok=1
   tmp="$(mktemp -d)"
   if ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc2=s=320x568:r=30:d=0.4" \
-        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100" -t 0.4 -vf "scale=180:320,format=yuv420p" \
-        -c:v libx264 -preset medium -crf 20 -c:a aac -b:a 160k -y "$tmp/t.mp4" >/dev/null 2>&1 \
+        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" -t 0.4 -vf "scale=180:320,format=yuv420p" \
+        -c:v libx264 -preset slow -crf 15 -profile:v high -level:v 4.2 -flags +cgop -c:a aac -b:a 192k -ar 48000 \
+        -movflags +faststart+negative_cts_offsets -use_editlist 0 -y "$tmp/t.mp4" >/dev/null 2>&1 \
      && [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$tmp/t.mp4" 2>/dev/null)" = "h264" ] \
      && has_filters \
+     && ffmpeg -hide_banner -bsfs 2>/dev/null | grep -qx trace_headers \
      && PYTHONPATH="$PY${PYTHONPATH:+:$PYTHONPATH}" python3 -c "from PIL import Image, ImageDraw, ImageFilter, ImageFont" >/dev/null 2>&1; then
     ok=0
   fi

@@ -16,21 +16,36 @@ expect_fail() {  # expect_fail NAME WORDS-IT-MUST-SAY COMMAND...
 }
 [ -s "$GOOD/photo_music.mp4" ] || { echo "FAIL: make $GOOD first"; exit 1; }
 g="$GOOD/video_keep_music.mp4"
-V=(-c:v libx264 -preset ultrafast -crf 20 -pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709 -r 30)
-A=(-c:a aac -b:a 160k -ar 44100 -ac 2)
+# Re-encodes that match the reel's settings in everything but the one thing each test spoils.
+GOP=(-g 60 -keyint_min 60 -sc_threshold 0 -flags +cgop -profile:v high -level:v 4.2 -use_editlist 0)
+# (setpts: the copy's pictures keep the reel's own even timing, so keyframes stay exactly 2 s apart.)
+V=(-vf "setpts=N/(30*TB)" -c:v libx264 -preset fast -bf 0 -crf 15 "${GOP[@]}" -pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709 -r 30)
+A=(-c:a aac -b:a 192k -ar 48000 -ac 2)
 
 # ---- one reel at a time
 out="$(bash "$SC" --check "$g" 5 2>&1)"; check "a good reel passes" "$?" "$out"
-q -i "$g" "${V[@]}" -r 25 "${A[@]}" -movflags +faststart "$T/fps25.mp4";            expect_fail "25 pictures a second is caught" "video is" bash "$SC" --check "$T/fps25.mp4" 5
-q -i "$g" "${V[@]}" -vf scale=720:1280 "${A[@]}" -movflags +faststart "$T/small.mp4"; expect_fail "a smaller picture is caught" "720,1280" bash "$SC" --check "$T/small.mp4" 5
-q -i "$g" "${V[@]}" -pix_fmt yuv444p "${A[@]}" -movflags +faststart "$T/444.mp4";     expect_fail "another pixel layout is caught" "video is" bash "$SC" --check "$T/444.mp4" 5
-q -i "$g" -c:v libx264 -preset ultrafast -crf 20 -pix_fmt yuv420p -r 30 -bsf:v h264_metadata=colour_primaries=2:transfer_characteristics=2:matrix_coefficients=2 "${A[@]}" -movflags +faststart "$T/untagged.mp4"
+q -i "$g" "${V[@]}" -r 25 "${A[@]}" -movflags +faststart+negative_cts_offsets "$T/fps25.mp4";            expect_fail "25 pictures a second is caught" "video is" bash "$SC" --check "$T/fps25.mp4" 5
+q -i "$g" "${V[@]}" -vf scale=720:1280 "${A[@]}" -movflags +faststart+negative_cts_offsets "$T/small.mp4"; expect_fail "a smaller picture is caught" "720,1280" bash "$SC" --check "$T/small.mp4" 5
+q -i "$g" "${V[@]}" -pix_fmt yuv444p -profile:v high444 "${A[@]}" -movflags +faststart+negative_cts_offsets "$T/444.mp4";     expect_fail "another pixel layout is caught" "video is" bash "$SC" --check "$T/444.mp4" 5
+q -i "$g" -c:v libx264 -preset fast -bf 0 -crf 15 "${GOP[@]}" -pix_fmt yuv420p -r 30 -bsf:v h264_metadata=colour_primaries=2:transfer_characteristics=2:matrix_coefficients=2 "${A[@]}" -movflags +faststart "$T/untagged.mp4"
 expect_fail "missing colour tags are caught" "video is" bash "$SC" --check "$T/untagged.mp4" 5
-q -i "$g" "${V[@]}" -c:a aac -b:a 160k -ar 48000 -ac 2 -movflags +faststart "$T/48k.mp4"; expect_fail "another sound rate is caught" "sound is" bash "$SC" --check "$T/48k.mp4" 5
-q -i "$g" "${V[@]}" -c:a aac -b:a 160k -ar 44100 -ac 1 -movflags +faststart "$T/mono.mp4"; expect_fail "one-sided sound is caught" "sound is" bash "$SC" --check "$T/mono.mp4" 5
-q -i "$g" "${V[@]}" -an -movflags +faststart "$T/silent.mp4";                         expect_fail "no sound track at all is caught" "sound is" bash "$SC" --check "$T/silent.mp4" 5
+q -i "$g" "${V[@]}" -c:a aac -b:a 160k -ar 44100 -ac 2 -movflags +faststart+negative_cts_offsets "$T/44k.mp4"; expect_fail "the old sound rate (44.1 kHz) is caught" "sound is" bash "$SC" --check "$T/44k.mp4" 5
+q -i "$g" "${V[@]}" -c:a aac -b:a 192k -ar 48000 -ac 1 -movflags +faststart+negative_cts_offsets "$T/mono.mp4"; expect_fail "one-sided sound is caught" "sound is" bash "$SC" --check "$T/mono.mp4" 5
+out="$(bash "$SC" --check "$T/mono.mp4" 5 2>&1)"; check "a re-encode with the reel's settings is otherwise right (only its sound is wrong)" "$([ "$(grep -c '^FAIL [a-z0-9]*\.mp4' <<< "$out")" = 1 ] && echo 0 || echo 1)" "$(grep '^FAIL ' <<< "$out" | tr '\n' ' ' | cut -c1-300)"
+# Instagram's reel specification: edit list, groups of pictures, profile and level, bitrate.
+q -i "$g" -c:v libx264 -preset medium -crf 15 -g 60 -keyint_min 60 -sc_threshold 0 -profile:v high -level:v 4.2 -pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709 -r 30 "${A[@]}" -movflags +faststart "$T/editlist.mp4"
+expect_fail "an edit list is caught" "has an edit list" bash "$SC" --check "$T/editlist.mp4" 5
+q -i "$g" -c:v libx264 -preset fast -bf 0 -crf 15 -g 250 -keyint_min 25 -profile:v high -level:v 4.2 -use_editlist 0 -pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709 -r 30 "${A[@]}" -movflags +faststart "$T/onekey.mp4"
+expect_fail "keyframes not every 2 s are caught" "keyframes are not every 2 s" bash "$SC" --check "$T/onekey.mp4" 5
+q -i "$g" -c:v libx264 -preset fast -crf 15 -g 60 -keyint_min 60 -sc_threshold 0 -x264-params open-gop=1 -profile:v high -level:v 4.2 -use_editlist 0 -pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709 -r 30 "${A[@]}" -movflags +faststart+negative_cts_offsets "$T/opengop.mp4"
+expect_fail "open groups of pictures are caught" "not closed" bash "$SC" --check "$T/opengop.mp4" 5
+q -i "$g" "${V[@]}" -profile:v main "${A[@]}" -movflags +faststart+negative_cts_offsets "$T/main.mp4";   expect_fail "another profile is caught" "not H.264 High 4.2" bash "$SC" --check "$T/main.mp4" 5
+q -i "$g" "${V[@]}" -level:v 5.1 "${A[@]}" -movflags +faststart+negative_cts_offsets "$T/level51.mp4";   expect_fail "another level is caught" "not H.264 High 4.2" bash "$SC" --check "$T/level51.mp4" 5
+q -i "$g" "${V[@]}" -crf 30 "${A[@]}" -movflags +faststart+negative_cts_offsets "$T/soft.mp4";            expect_fail "a soft moving reel is caught" "under 2500 kbps" bash "$SC" --check "$T/soft.mp4" 5 2500
+q -i "$g" "${V[@]}" -vf "setpts=N/(30*TB),noise=alls=30:allf=t" -crf 5 "${A[@]}" -movflags +faststart+negative_cts_offsets "$T/huge.mp4"; expect_fail "a picture bitrate over 25 Mbps is caught" "over 25 Mbps" bash "$SC" --check "$T/huge.mp4" 5
+q -i "$g" "${V[@]}" -an -movflags +faststart+negative_cts_offsets "$T/silent.mp4";                         expect_fail "no sound track at all is caught" "sound is" bash "$SC" --check "$T/silent.mp4" 5
 q -i "$g" -c copy "$T/slowstart.mp4";                                                 expect_fail "a reel that can't start playing early is caught" "start playing early" bash "$SC" --check "$T/slowstart.mp4" 5
-q -i "$g" -t 4 "${V[@]}" "${A[@]}" -movflags +faststart "$T/short.mp4";               expect_fail "a shorter reel is caught" "lasts" bash "$SC" --check "$T/short.mp4" 5
+q -i "$g" -t 4 "${V[@]}" "${A[@]}" -movflags +faststart+negative_cts_offsets "$T/short.mp4";               expect_fail "a shorter reel is caught" "lasts" bash "$SC" --check "$T/short.mp4" 5
 expect_fail "a missing reel is caught" "missing" bash "$SC" --check "$T/nothing.mp4" 5
 
 # ---- two sets side by side

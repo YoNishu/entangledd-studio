@@ -3,15 +3,17 @@
 #
 #   bash render/selfcheck.sh OUTDIR
 #       makes test media, renders four sample reels with the real render.py into OUTDIR and checks that each
-#       one is exactly what the app expects: size, codecs, colours, frame rate, sound, length, and that the
-#       words come out at full strength. Also notes which ffmpeg made them (OUTDIR/tools.txt, tools.files).
+#       one is exactly what the app expects: size, codecs, colours, frame rate, sound, length, that the
+#       words come out at full strength, and that the file sits at the top of Instagram's reel specification
+#       (H.264 High 4.2, closed groups of pictures every 2 s, no edit list, index first, 48 kHz sound,
+#       a picture bitrate under 25 Mbps and, for moving backgrounds, well above what a soft reel gets). Also notes which ffmpeg made them (OUTDIR/tools.txt, tools.files).
 #
 #   bash render/selfcheck.sh --compare LONG QUICK [QUICK...]
 #       checks that the reels in each QUICK folder (tools set up the quick way) match the ones in LONG (tools
 #       installed the long way): same settings, same pictures, same sound. Also says whether the quick way was
 #       really taken.
 #
-#   bash render/selfcheck.sh --check REEL.mp4 [SECONDS]
+#   bash render/selfcheck.sh --check REEL.mp4 [SECONDS [LOWEST-PICTURE-KBPS]]
 #       checks one finished reel (any reel) against the same settings.
 #
 # Nothing binary lives in the repo: the test media is made here with ffmpeg and Pillow.
@@ -29,14 +31,17 @@ probe() {  # probe FILE STREAM ENTRIES -> the values on one line
 VIDEO_WANT="h264,High,1080,1920,yuv420p,bt709,bt709,bt709,30/1"
 VIDEO_WANT_RUNNER="h264,High,1080,1920,yuv420p,bt709,unknown,unknown,30/1"
 VIDEO_ASK="stream=codec_name,profile,width,height,pix_fmt,color_space,color_transfer,color_primaries,r_frame_rate"
-AUDIO_WANT="aac,LC,44100,2"
+AUDIO_WANT="aac,LC,48000,2"
+# Moving backgrounds: the sample clips get well over this with the reel's settings; the old, softer settings
+# gave them about half. Photos and gradients compress to far less, as they should.
+MOVING_KBPS="${MOVING_KBPS:-2500}"
 AUDIO_ASK="stream=codec_name,profile,sample_rate,channels"
 q() { ffmpeg -hide_banner -loglevel error -y "$@"; }
 m="$(mktemp -d)"; trap 'rm -rf "$m"' EXIT   # scratch folder
 get() { sed -n "s/^$2=//p" "$1/tools.txt" 2>/dev/null | first_line || true; }   # get FOLDER NAME -> a value from tools.txt
 
-check_reel() {  # check_reel FILE SECONDS
-  local f="$1" want="$2" n v a d frames expect words before="$fails"
+check_reel() {  # check_reel FILE SECONDS [LOWEST-PICTURE-KBPS]
+  local f="$1" want="$2" floor="${3:-0}" n v a d frames expect words shape before="$fails"
   n="$(basename "$f")"
   [ -s "$f" ] || { bad "$n is missing"; return 0; }
   v="$(probe "$f" v:0 "$VIDEO_ASK")"
@@ -55,8 +60,66 @@ import sys
 data = open(sys.argv[1], "rb").read(1 << 16)
 sys.exit(0 if 0 <= data.find(b"moov") < data.find(b"mdat") or data.find(b"mdat") < 0 else 1)
 PY
+  # Instagram's reel specification: no edit list, H.264 High at level 4.2, a closed group of pictures (one
+  # that starts with a fresh IDR picture and needs nothing before it) every 2 seconds starting at the very
+  # first picture, picture bitrate under 25 Mbps, and over the given floor for a moving background.
+  shape="$(python3 - "$f" "$want" "$floor" <<'PY' || true
+import re, subprocess, sys
+f, secs, floor = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+problems = []
+
+def boxes(fh, start, end):          # (kind, body start, box end) for each box between start and end
+    at = start
+    while at + 8 <= end:
+        fh.seek(at); head = fh.read(16)
+        size, kind, skip = int.from_bytes(head[:4], "big"), head[4:8], 8
+        if size == 1: size, skip = int.from_bytes(head[8:16], "big"), 16
+        elif size == 0: size = end - at
+        if size < skip: break
+        yield kind, at + skip, at + size
+        at += size
+
+with open(f, "rb") as fh:
+    fh.seek(0, 2); top = list(boxes(fh, 0, fh.tell()))
+    edts = 0
+    for kind, s, e in top:
+        if kind != b"moov": continue
+        for k, ts, te in boxes(fh, s, e):
+            if k == b"trak": edts += sum(1 for k2, _, _ in boxes(fh, ts, te) if k2 == b"edts")
+    if edts: problems.append("has an edit list")
+
+def ask(*what):
+    return subprocess.run(["ffprobe", "-v", "error", *what, "-of", "csv=p=0", f], capture_output=True, text=True).stdout.split()
+
+prof = ask("-select_streams", "v:0", "-show_entries", "stream=profile,level")
+if prof[:1] != ["High,42"]: problems.append("is not H.264 High 4.2 (%s)" % ",".join(prof))
+rate = ask("-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate")
+num, _, den = (rate[0] if rate else "0/1").partition("/")
+fps = float(num) / float(den) if float(den or 0) else 30.0
+packets = [line.split(",") for line in ask("-select_streams", "v:0", "-show_entries", "packet=pts_time,flags")]
+keys = sorted(float(p[0]) for p in packets if len(p) > 1 and "K" in p[1] and p[0] != "N/A")
+first = min((float(p[0]) for p in packets if p[0] != "N/A"), default=-1)
+wanted = [2.0 * k for k in range(int((secs - 1e-6) // 2) + 1)]
+if not keys or abs(first) > 1e-3 or abs(keys[0]) > 1e-3:
+    problems.append("does not start with a keyframe at 0 s")
+elif len(keys) != len(wanted) or any(abs(a - b) > 0.6 / fps for a, b in zip(keys, wanted)):
+    problems.append("keyframes are not every 2 s (%s)" % " ".join("%.2f" % k for k in keys[:8]))
+trace = subprocess.run(["ffmpeg", "-hide_banner", "-i", f, "-map", "0:v:0", "-c", "copy", "-bsf:v", "trace_headers",
+                        "-f", "null", "-"], capture_output=True, text=True).stderr
+idr = len(re.findall(r"nal_unit_type\s+[01]+ = 5\b", trace))
+intra = len(re.findall(r"slice_type\s+[01]+ = [27]\b", trace))
+if "nal_unit_type" not in trace: problems.append("could not be looked inside (this ffmpeg has no trace_headers)")
+elif not (idr == intra == len(keys)): problems.append("groups of pictures are not closed (IDR %d, I %d, keyframes %d)" % (idr, intra, len(keys)))
+size = ask("-select_streams", "v:0", "-show_entries", "packet=size")
+kbps = sum(int(x) for x in size if x.isdigit()) * 8 / 1000 / max(secs, 0.1)
+if kbps > 25000: problems.append("picture bitrate %.0f kbps is over 25 Mbps" % kbps)
+if kbps < floor: problems.append("picture bitrate %.0f kbps is under %.0f kbps for a moving background" % (kbps, floor))
+print("; ".join(problems) if problems else "ok %.0f kbps, keyframes every 2 s, closed, no edit list" % kbps)
+PY
+)"
+  case "$shape" in ok*) ;; *) bad "$n ${shape:-could not be looked inside}" ;; esac
   if ! [ -s "$m/overlay.png" ]; then
-    if [ "$fails" = "$before" ]; then echo "ok   $n: $v, $frames pictures | $a | ${d}s"; fi
+    if [ "$fails" = "$before" ]; then echo "ok   $n: $v, $frames pictures | $a | ${d}s | ${shape#ok }"; fi
     return 0
   fi
   # The words: well inside every letter the picture must be the text layer's own white, at full strength.
@@ -81,10 +144,10 @@ PY
          || bad "$n: the words are not at full strength (pixels inside letters, average, darkest: $words)"
        words="words at full strength (inside the letters: average and darkest ${words#* }, of 255)" ;;
   esac
-  if [ "$fails" = "$before" ]; then echo "ok   $n: $v, $frames pictures | $a | ${d}s | $words"; fi
+  if [ "$fails" = "$before" ]; then echo "ok   $n: $v, $frames pictures | $a | ${d}s | ${shape#ok } | $words"; fi
 }
 if [ "${1:-}" = "--check" ]; then
-  check_reel "${2:?give a reel file}" "${3:-5}"
+  check_reel "${2:?give a reel file}" "${3:-5}" "${4:-0}"
   if [ "$fails" = 0 ]; then echo "PASS"; else echo "FAIL ($fails)"; exit 1; fi
   exit 0
 fi
@@ -207,6 +270,8 @@ render video_keep_music --bg "$m/clip.mp4" --keep-audio --music "$m/music.m4a" -
 render hdr_video --bg "$m/hdr.mp4"
 render photo_silent --bg "$m/photo.jpg"
 
-for s in $SAMPLES; do check_reel "$out/$s.mp4" 5; done
+for s in $SAMPLES; do
+  case "$s" in *video*) check_reel "$out/$s.mp4" 5 "$MOVING_KBPS" ;; *) check_reel "$out/$s.mp4" 5 ;; esac
+done
 echo "whole check took $(( $(date +%s) - t0 )) s"
 if [ "$fails" = 0 ]; then echo "PASS: all sample reels are right"; else echo "FAIL ($fails)"; exit 1; fi
