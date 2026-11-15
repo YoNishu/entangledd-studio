@@ -8,9 +8,9 @@ cp -r "$ROOT/render/." "$T/render/"
 python3 - "$T/render/render.py" <<'PY'
 import sys
 p = sys.argv[1]; s = open(p).read()
-old = 'video = f"{bg};[1:v]format=rgba{fade}[txt];'
+old = 'f"{bg};[1:v]format=rgba{fade}[txt];'
 assert old in s
-open(p, "w").write(s.replace(old, 'video = f"{bg};[1:v]format=rgba,colorchannelmixer=aa=0.6{fade}[txt];'))
+open(p, "w").write(s.replace(old, 'f"{bg};[1:v]format=rgba,colorchannelmixer=aa=0.6{fade}[txt];'))
 PY
 out="$(bash "$T/render/selfcheck.sh" "$T/out" 2>&1)"; rc=$?
 n="$(grep -c "the words are not at full strength" <<< "$out")"
