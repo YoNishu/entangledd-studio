@@ -346,10 +346,9 @@ export function lineLike(t) {
 }
 // Names compared without their spaces: pages write "Shang Zhitao" and "Shang Zhi Tao".
 const squash = (t) => sameWords(t).replace(/[^\p{L}\p{N}]+/gu, "");
+const MAX_CANDIDATES = 80;                // lines taken from one page at most (a dozen are kept): little computing
 const knownName = (names, who) => names.find((n) => n && who && squash(n) === squash(who)) || "";
-const escape = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-// A known name as a pattern that allows a space, or none, between its letters' groups.
-const namePattern = (n) => squash(n).length >= 4 ? String(n).trim().split(/\s+/).map((w) => w.split("").map(escape).join("\\s?")).join("\\s?") : "";
+
 // Lines on a page, found without Claude: text inside quotation marks (straight, curly, « », 「」), and
 // "Speaker: line" where the speaker is a name known for the work or a capitalised name of one to three words.
 // "names" are the work's cast and characters (a known name before a quote is its speaker). "list" reads each
@@ -358,33 +357,48 @@ const namePattern = (n) => squash(n).length >= 4 ? String(n).trim().split(/\s+/)
 export function extractLines(text, { names = [], list = false } = {}) {
   const out = [], seen = new Set();
   const add = (raw, by = "", other = "") => {
+    if (out.length >= MAX_CANDIDATES || seen.has(raw)) return;
+    seen.add(raw);
     const t = String(raw).replace(/\s+/g, " ").replace(/^\s*\[[^\]]{0,80}\]\s*/, "").replace(/^[\s"'“”‘’]+|[\s"'“”]+$/g, "").trim();
     const n = sameWords(t);
     if (!lineLike(t) || seen.has(n)) return;
     seen.add(n);
     out.push({ text: t, by, other, fromPage: true });
   };
-  const all = String(text);
+  const all = String(text).slice(0, 150000);                    // enough for any page of quotes; keeps the computing small
   for (const m of all.matchAll(QUOTED)) {
+    if (out.length >= MAX_CANDIDATES) break;
     const inner = m[1] || m[2] || m[3] || m[4] || m[5];
     const before = all.slice(Math.max(0, m.index - 70), m.index).split("\n").pop();
     const after = all.slice(m.index + m[0].length, m.index + m[0].length + 50).split("\n")[0];
     const known = names.filter((n) => n && n.length >= 3 && before.includes(n)).pop() || "";
-    const b = BEFORE.exec(before), a = AFTER.exec(after);
+    // (Each pattern only where its marks are there at all: most quotes have no speaker around them.)
+    const b = /[:：]\s*$|\b(said|says|told|tells|asks|asked|replies|replied|to [A-Z])/.test(before) ? BEFORE.exec(before) : null;
+    const a = /^\s*[,.]?\s*(?:[-–—]|,?\s*says?\b|,?\s*said\b)/.test(after) ? AFTER.exec(after) : null;
     const said = known || (b && !NOT_SPEAKERS.test(b[1]) ? b[1] : "") || (a && !NOT_SPEAKERS.test(a[1]) ? a[1] : "");
     const mine = knownName(names, said);
     // A name after a dash that is none of the work's: the line is credited to someone else.
     add(inner, mine || (said && !(a && said === a[1]) ? said : ""), a && !mine && said === a[1] ? a[1] : "");
   }
   // "Luan Nian: You don’t have to be perfect to be worthy of love." in the middle of a review: after a known name,
-  // the sentence up to its end.
-  for (const n of names) {
-    const p = namePattern(n);
-    if (!p) continue;
-    for (const m of all.matchAll(new RegExp(`(?:^|[^\\p{L}])(${p})\\s*[:：]\\s*[“"]?([^\\n:：“”"]{20,300}?[.!?…])(?=["”]?(?:\\s|$))`, "giu"))) add(m[2], n);
+  // the sentence up to its end. One pass over the colons, each checked against the names (little computing).
+  const squashed = names.map((n) => [n, squash(n)]).filter(([, q]) => q.length >= 4);
+  if (squashed.length) {
+    const ends = squashed.map(([, q]) => q.slice(-3));
+    for (const m of all.matchAll(/[:：]/g)) {
+      if (out.length >= MAX_CANDIDATES) break;
+      const raw = all.slice(Math.max(0, m.index - 40), m.index).toLowerCase().replace(/\s+/g, "");
+      if (!ends.some((e) => raw.endsWith(e))) continue;            // most colons follow no name: cheap to rule out
+      const before = squash(raw);
+      const who = squashed.find(([, q]) => before.endsWith(q));
+      if (!who) continue;
+      const said = /^\s*[“"]?([^\n:：“”"]{20,300}?[.!?…])(?=["”]?(?:\s|$))/.exec(all.slice(m.index + 1, m.index + 330));
+      if (said) add(said[1], who[0]);
+    }
   }
   let heading = "", started = !list;
   for (const line of all.split("\n")) {
+    if (out.length >= MAX_CANDIDATES) break;
     const h = /^={2,6}\s*(.*?)\s*={2,6}\s*$/.exec(line);
     if (h) { heading = h[1]; started = true; continue; }
     if (!started) continue;                                      // a page's opening words say what the work is
