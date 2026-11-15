@@ -21,7 +21,7 @@ let log = [], listLog = [];
 
 export function env(PORT) {
   const at = `http://localhost:${PORT}`;
-  return { ...(process.env.LOOKUP_SECONDS ? { LOOKUP_SECONDS: process.env.LOOKUP_SECONDS } : {}), WIKIQUOTE_API: at + "/__wikiquote", GOODREADS_SITE: at + "/__goodreads", IMDB_SUGGEST: at + "/__imdbsug", IMDB_SITE: at + "/__imdb",
+  return { ...(process.env.LOOKUP_SECONDS ? { LOOKUP_SECONDS: process.env.LOOKUP_SECONDS } : {}), ...(process.env.GEMINI_MODEL ? { GEMINI_MODEL: process.env.GEMINI_MODEL } : {}), WIKIQUOTE_API: at + "/__wikiquote", GOODREADS_SITE: at + "/__goodreads", IMDB_SUGGEST: at + "/__imdbsug", IMDB_SITE: at + "/__imdb",
     GEMINI_API: at + "/__gemini", OPENAI_API: at + "/__openai",
     ...(mode.gemini !== "off" ? { GEMINI_API_KEY: GEMINI_KEY } : {}), ...(mode.openai !== "off" ? { OPENAI_API_KEY: OPENAI_KEY } : {}) };
 }

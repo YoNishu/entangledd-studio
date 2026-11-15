@@ -314,7 +314,7 @@
   function note(msg) { $("library-note").textContent = msg; $("library-note").hidden = !msg; if (msg) $("library-note").scrollIntoView({ block: "nearest" }); }
 
   function renderLibrary(lib) {
-    const row = (kind, item, main, sub, ...extra) => {
+    const rowOf = (kind, item, main, sub, ...extra) => {
       const remove = el("button", { textContent: "Remove" });
       remove.setAttribute("aria-label", `Remove ${main.slice(0, 40)}`);
       remove.addEventListener("click", async () => {
@@ -353,8 +353,34 @@
       return [el("div", { className: "acts", id: "title-offer-" + x.id }, fix, keep)];
     };
     const year = (x) => (x.known && x.known.year ? ` · ${x.known.year}` : "");
+    // After a look that found nothing: where Nishiii looked, in one sentence, and "Look again".
+    const lookRow = (kind, x) => {
+      const f = x.found;
+      if (!f || !f.at || (f.lines && f.lines.length)) return [];
+      const again = el("button", { type: "button", className: "btn quiet", id: "look-again-" + x.id, textContent: "Look again" });
+      again.addEventListener("click", async () => {
+        again.disabled = true; again.textContent = "Looking…";
+        try { renderLibrary(await send(`library/${kind}/${x.id}/look`, "POST", {})); }
+        catch (e) { note(friendly(e)); again.disabled = false; again.textContent = "Look again"; }
+      });
+      return [el("p", { className: "sub", id: "look-" + x.id, textContent: (f.trail && f.trail.said) || "Nishiii looked: nothing yet." }), again];
+    };
+    // Two entries for one work ("The early spring" and "The early spring cdrama"): offered to fold into one, never done alone.
+    const core = (t) => String(t || "").toLowerCase().replace(/\s*\((\d{4}|tv series|series|film|novel|book|drama)\)\s*$/, "").replace(/[^a-z0-9]+/g, " ").trim()
+      .replace(/^(the|a|an) /, "").replace(/\s+(c|k|j|thai|chinese|korean|japanese|taiwanese)?\s?(drama|dramas|tv series|tv show|series|show|web series|film|movie|novel|book)$/, "").replace(/\s+(19|20)\d\d$/, "").trim();
+    const mergeRow = (kind, x, list) => {
+      const twin = list.find((y) => y !== x && (kind === "books" || y.kind === x.kind) && core(y.title) && core(y.title) === core(x.title));
+      if (!twin || list.indexOf(twin) > list.indexOf(x)) return [];          // offered on the later of the two
+      const join = el("button", { type: "button", className: "btn soft", id: "merge-" + x.id, textContent: `Same as “${twin.title}”? Keep one` });
+      join.addEventListener("click", async () => {
+        try { renderLibrary(await send(`library/${kind}/${x.id}/merge`, "POST", { into: twin.id })); } catch (e) { note(friendly(e)); }
+      });
+      return [join];
+    };
     const bookRow = (b) => {
       const found = foundRow("books", b), offer = titleRow("books", b), by = (b.author || (b.known && b.known.by) || "") + year(b);
+      const more = [...lookRow("books", b), ...mergeRow("books", b, lib.books)];
+      const row = (kind, item, main, sub, ...extra) => rowOf(kind, item, main, sub, ...extra, ...more);
       if (offer.length) return row("books", b, b.title, by, ...offer);
       if (found && !b.textUrl) return row("books", b, b.title, by, ...found);
       if (b.textUrl) {
@@ -371,9 +397,11 @@
       return row("books", b, b.title, by, find);
     };
     const fill = (id, rows, empty) => $(id).replaceChildren(...(rows.length ? rows : [el("li", {}, el("p", { className: "empty", textContent: empty }))]));
+    const row = rowOf;
     fill("list-quotes", lib.quotes.slice().reverse().map((q) => row("quotes", q, q.text, [q.author, q.from].filter(Boolean).join(", "))), "No quotes saved yet.");
     fill("list-books", lib.books.map(bookRow), "No books yet.");
-    fill("list-screen", (lib.screen || []).map((x) => row("screen", x, x.title, (x.kind === "series" ? "Series" : "Film") + year(x), ...titleRow("screen", x), ...(foundRow("screen", x) || []))), "No films or series yet.");
+    fill("list-screen", (lib.screen || []).map((x) => row("screen", x, x.title, (x.kind === "series" ? "Series" : "Film") + year(x), ...titleRow("screen", x), ...(foundRow("screen", x) || []),
+      ...lookRow("screen", x), ...mergeRow("screen", x, lib.screen || []))), "No films or series yet.");
     checkTitles(lib);
   }
 
