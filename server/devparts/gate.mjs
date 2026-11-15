@@ -88,13 +88,17 @@ export async function handle(req, res, url, tools) {
   }
   if (req.headers["x-api-key"] !== tools.env.ANTHROPIC_API_KEY) return send(401, {});
   const content = String((body.messages && body.messages[0] && body.messages[0].content) || "");
+  const { work, lines, out } = answerJudge(content);
+  log.push({ to: "judge", work, lines, all: content });
+  if (mode.judge === "down") return send(500, { error: { message: "pretend outage" } });
+  return send(200, { content: [{ type: "text", text: JSON.stringify(out) }] });
+}
+// The stand-in judge's answer to one question (also used by tests/test_a21_judge.mjs).
+export function answerJudge(content) {
   const work = content.split("\n")[0];
   // Each line, with the words before and after it on its page on the two lines under it (when the question has them).
   const lines = [...content.matchAll(/^(\d+)\. "(.*)" \((.*)\)$((?:\n   (?:before|after): ".*")*)/gm)].map((m) => ({ n: Number(m[1]), text: m[2], note: m[3],
     before: (/\n   before: "(.*)"/.exec(m[4] || "") || [])[1] || "", after: (/\n   after: "(.*)"/.exec(m[4] || "") || [])[1] || "" }));
-  log.push({ to: "judge", work, lines, all: content });
-  if (mode.judge === "down") return send(500, { error: { message: "pretend outage" } });
   const book = /^Work: the .*\bbook\b/.test(work);
-  const out = lines.map((l) => ({ n: l.n, is: standInVerdict({ ...l, book }) }));
-  return send(200, { content: [{ type: "text", text: JSON.stringify(out) }] });
+  return { work, lines, out: lines.map((l) => ({ n: l.n, is: standInVerdict({ ...l, book }) })) };
 }

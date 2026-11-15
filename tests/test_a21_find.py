@@ -92,18 +92,40 @@ check("asked again after that: the same sentence, and nothing more is read", "ev
 sent = json.dumps(xlog(reset=False)) + json.dumps(http("GET", "/__open_log")[1])
 check("nothing personal goes to Tavily", "letmein" not in sent and "Dhruuu" not in sent and "theentangledd" not in sent)
 
-# ---- 5. the daily cap holds; the trail and the health record name Extract
+# ---- 5. Extract's allowance used up (432): she is told which service, plainly, and nothing loops
+def another(title):
+    wid = add_screen(T, title, "series")
+    lib = doc("library"); x = next(i for i in lib["screen"] if i["id"] == wid)
+    x["known"] = next(i for i in lib["screen"] if i["id"] == w)["known"] | {"title": title}; putdoc("library", lib)
+    return wid
+http("GET", "/__extract_set?mode=used")
+w2 = another("The Willow Station cdrama")
+xlog()
+c, s5, _, k5 = find(T, w2, 10)
+calls5 = [e for e in xlog() if "urls" in e]
+print("  with the allowance used up:", len(c), "lines,", len(k5), "rounds, said:", s5[-1])
+check("with Tavily's allowance used up, she is told so, naming it", "Tavily" in s5[-1] and "used up" in s5[-1] and "tomorrow" in s5[-1], s5)
+check("and never the 'every line' sentence then", "every line" not in s5[-1], s5)
+check("nothing loops: Extract was asked once, and the rounds stopped", len(calls5) == 1 and calls5[0]["status"] == 432 and len(k5) <= 2, ([e["status"] for e in calls5], len(k5)))
+c, s6, _, _ = find(T, w2, 10)
+check("asked again: Extract is not asked again today", not [e for e in xlog() if "urls" in e] and "used up" in s6[-1], s6)
+items, _ = part_now(T, "services")
+line = items["lookups"]["line"]
+check("the health record says Tavily's page reader rests until tomorrow", "Tavily's page reader:" in line and "resting until" in line, line[:500])
+
+# ---- 6. the daily cap holds
+http("GET", "/__extract_set?mode=ok")
 rec = doc("lookups") or {}
 day = (rec.get("open") or {})
 print("  pages read through Extract today:", day.get("extract"))
 check("the day's count of pages read through Extract is kept, and within its cap", 0 < day.get("extract", 0) <= 150, day)
-day["extract"] = 150; rec["open"] = day; putdoc("lookups", rec)
-w2 = add_screen(T, "The Willow Station cdrama", "series")
-lib = doc("library"); x = next(i for i in lib["screen"] if i["id"] == w2); x["known"] = next(i for i in lib["screen"] if i["id"] == w)["known"] | {"title": "The Willow Station cdrama"}; putdoc("library", lib)
+day["extract"] = 150; rec["open"] = day; rec["sites"].pop("extract", None); putdoc("lookups", rec)
+w3 = another("The Willow Station (2026)")
 xlog()
-fresh, said, left, _, _ = ask_round(T, w2, 5)
+c, s7, _, _ = find(T, w3, 10)
 check("at the day's cap, Extract is not asked", not [e for e in xlog() if "urls" in e])
+check("and she is told the day's pages are read", "as many pages as I may today" in s7[-1], s7)
 items, _ = part_now(T, "services")
 line = items["lookups"]["line"]
-check("the health record names Tavily's page reader and today's count", "Tavily's page reader: 150 of 150 pages read today" in line, line[:400])
+check("the health record names Tavily's page reader and today's count", "Tavily's page reader: 150 of 150 pages read today" in line, line[:500])
 finish()

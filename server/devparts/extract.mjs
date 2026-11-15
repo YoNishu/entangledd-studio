@@ -110,10 +110,10 @@ const BLOG = "https://willowstationfans.example.org/lines";
 
 // ---------------------------------------------------------------- the made-up book on Goodreads
 const BOOK = { title: "Lanterns for the Tide", author: "Mara Ellison", id: "55501" };
-const BOOK_LINES = Array.from({ length: 24 }, (_, i) => [
-  "The tide comes back for everything it borrows", "A lantern is a promise you can hold in one hand", "We were salt and we were patient",
-  "No harbour is safe from a heart that wants to sail", "She folded the map until it fit inside her coat", "The sea does not apologise and neither did she",
-][i % 6] + ` (${["first", "second", "third", "fourth"][Math.floor(i / 6)]} light).`);
+const OPEN = ["The tide comes back for everything it borrows", "A lantern is a promise held in one hand", "We were salt and we were patient once",
+  "No harbour keeps a heart that wants to sail", "She folded the old map into her winter coat", "The sea never apologised and neither did she"];
+const END = ["and the morning forgave us anyway.", "so we learned to wait without counting.", "but nobody in the village believed it.", "until the lighthouse keeper finally slept."];
+const BOOK_LINES = Array.from({ length: 24 }, (_, i) => `${OPEN[i % 6]}, ${END[Math.floor(i / 6)]}`);
 const grPage = (n) => `<!doctype html><html><head><title>Lanterns for the Tide Quotes by Mara Ellison</title></head><body><h1>Lanterns for the Tide Quotes</h1>`
   + BOOK_LINES.slice((n - 1) * 6, n * 6).map((t) => `<div class="quote"><div class="quoteText">“${t}” <br>  ―  <span class="authorOrTitle">Mara Ellison,</span> <a class="authorOrTitle" href="/work/quotes/${BOOK.id}">Lanterns for the Tide</a></div></div>`).join("")
   + `<div class="pagination">${[1, 2, 3, 4].map((k) => `<a href="/work/quotes/${BOOK.id}?page=${k}">${k}</a>`).join(" ")}</div></body></html>`;
