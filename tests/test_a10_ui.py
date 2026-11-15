@@ -93,7 +93,7 @@ with sync_playwright() as p:
     pg.click(f"#verify-{vid}")
     pg.wait_for_selector(f"#verified-{vid}", timeout=15000)
     check("tapped: the answer sits in the card", pg.locator(f"#verified-{vid} .chip").count() == 1 and pg.locator(f"#verify-{vid}").count() == 0, pg.inner_text(f"#verified-{vid}"))
-    card.scroll_into_view_if_needed(); pg.screenshot(path=SHOTS + "a10_06_card_checked.png")
+    pg.locator(f"#verified-{vid}").scroll_into_view_if_needed(); pg.screenshot(path=SHOTS + "a10_06_card_checked.png")
     check("no script errors", not errs, errs)
     br.close()
 finish()
