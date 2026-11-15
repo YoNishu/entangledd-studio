@@ -124,7 +124,7 @@ function withKnown(kit, work) {
   const list = (v, n) => (Array.isArray(v) ? v : []).map((x) => kit.oneLine(x, 80)).filter(Boolean).slice(0, n);
   return { ...work, author: work.author || (work.type === "book" ? k.by || "" : ""), year: Number(k.year) || 0,
     real: kit.oneLine(k.real || k.title, 120), original: kit.oneLine(k.original, 80), country: kit.oneLine(k.country, 40),
-    cast: list(k.cast, 3), aka: list(k.aka, 4) };
+    cast: list(k.cast, 6), aka: list(k.aka, 4), characters: list(k.characters, 8), network: kit.oneLine(k.network, 40) };
 }
 // Every name the work goes by: her title, its proper title, its original title and other titles.
 const namesOf = (work) => [work.title, work.real, work.original, ...(work.aka || [])].filter(Boolean);
@@ -336,6 +336,24 @@ async function wikiquotePage(env, kit, work, state) {
   return { name: pg.title, url: "https://en.wikiquote.org/wiki/" + encodeURIComponent(pg.title.replace(/ /g, "_")), site: "wikiquote.org", text };
 }
 
+// ---------------------------------------------------------------- 1b. MyDramaList (dramas and films from East Asia)
+
+// Where Asian dramas are reviewed, often with the lines people loved ("Luan Nian: You don’t have to be perfect
+// ..."). Its own search finds the work's page (title and year); its reviews are read. Two calls.
+const mdlFits = (work) => (work.type === "series" || work.type === "film") && (EAST.test(work.country || "") || (!work.country && work.type === "series"));
+async function mdlPage(env, kit, work, state) {
+  const site = env.MDL_SITE || "https://mydramalist.com";
+  const found = await O.fetchCapped(env, state, `${site}/search?q=${encodeURIComponent(work.real || work.title)}`);
+  if (found.status !== 200) throw Object.assign(new Error("answered " + found.status), { blocked: "answered " + found.status });
+  const list = O.readMdlSearch(found.text), hit = O.mdlPick(kit, work, list);
+  O.say(env, "mydramalist search", { n: list.length, first: list.slice(0, 5).map((r) => `${r.path} ${r.title} ${r.year}`), hit: hit && hit.path });
+  if (!hit) return null;
+  const pg = await O.fetchCapped(env, state, `${site}${hit.path}/reviews`);
+  if (pg.status !== 200) return null;
+  const text = O.pageText(pg.text).slice(0, 300000);
+  return text.length < 200 ? null : { name: hit.title, url: `https://mydramalist.com${hit.path}/reviews`, site: "mydramalist.com", text, web: true };
+}
+
 // ---------------------------------------------------------------- 2. Goodreads (books) and IMDb (films and series)
 
 // What a site sends instead of its page when it wants proof of a person.
@@ -451,17 +469,21 @@ async function pickFrom(env, kit, work, pg, about, taste, have, state) {
     for (const q of Array.isArray(list) ? list : []) {
       const text = kit.flatten(q && q.text).replace(/^"+|"+$/g, "");
       // Kept only if the words are really on the page that was read.
+      if (have.has(kit.norm(text))) O.agrees(have, kit.norm(text), pg);
       if (text.length < 20 || text.length > 400 || !O.onPage(words, text) || have.has(kit.norm(text)) || HEADING.test(text)) { O.say(env, "rejected", { site: pg.site, why: "not on the page, too short or already kept", text: text.slice(0, 120) }); continue; }
       const by = kit.oneLine(q.by, 80);
-      const named = by && lower.includes(by.toLowerCase()) ? by : "";
-      lines.push({ text, by: work.type === "book" ? pg.by || named : named, url: pg.url, site: pg.site, verify: false,
+      const named = by && (q.fromPage || lower.includes(by.toLowerCase())) ? by : "";
+      lines.push({ text, by: work.type === "book" ? pg.by || named : named, url: pg.url, site: pg.site, verify: !!pg.web,
         theme: kit.oneLine(q.theme, 30), tone: kit.oneLine(q.tone, 20) });
       have.add(kit.norm(text));
+      if (have.kept) have.kept.set(kit.norm(text), lines[lines.length - 1]);
       if (lines.length >= PICK) break;
     }
   };
   pick(answer, O.sameWords(flat));
-  if (!lines.length) {
+  // Claude could not answer, or none of what it picked is on the page: the page's own lines, found without it.
+  // (An empty answer, or picks already kept, is Claude's judgement that the page has no more: that stands.)
+  if (!lines.length && (!Array.isArray(answer) || (answer.length && answer.every((q) => !O.onPage(O.sameWords(flat), kit.flatten(q && q.text)))))) {
     const got = O.extractLines(pg.text, { names: [...(work.cast || []), ...(work.characters || [])], list: pg.site === "wikiquote.org" });
     O.say(env, "candidates", { site: pg.site, url: pg.url, n: got.length, how: "without Claude" });
     pick(got.filter((q) => !q.other), O.sameWords(pg.text));
@@ -793,7 +815,14 @@ async function fromHelper(env, kit, who, work, want, have, state, shape = "quote
 
 // Should the title be checked before this look? When the app does not know the work yet: never checked, or
 // checked more than a day ago without a result (and no "Did you mean ...?" waiting for her answer).
-const needsKnowing = (work) => !work.known && !work.maybe && (!work.titleChecked || Date.now() - work.titleChecked > DAY);
+// Also when what is known is thin (no year, no cast, no characters) and the last look found nothing, a few hours on.
+// A "Did you mean ...?" waiting for her answer does not stop it: her own title may still be a real work.
+const thin = (k) => !k || (!Number(k.year) && !(k.cast || []).length && !(k.characters || []).length);
+const needsKnowing = (work) => {
+  const since = Date.now() - (work.titleChecked || 0);
+  if (!work.known) return !work.titleChecked || since > DAY || (!kept(work).length && since > 2 * HOUR && !!work.found);
+  return thin(work.known) && !kept(work).length && !!work.found && since > 2 * HOUR;
+};
 
 // Looks one work up, place after place until there are enough lines, and returns what to keep on it.
 // A look that runs out of time or of calls stops there, and the next one carries on at the place it stopped.
@@ -802,11 +831,17 @@ async function lookUp(env, kit, item, need, about, taste, state) {
   state.trail = [];
   state.feature = "lookup";
   if (needsKnowing(item) && state.spent + 4 <= (state.budget || BUDGET)) {
-    try { Object.assign(item, await V.checkTitle(env, kit, item, item.type, state)); }
+    try {
+      const got = await V.checkTitle(env, kit, item, item.type, state);
+      // What was learnt before stays when this check learns less; a new close title is offered only with nothing known.
+      if (got.known) Object.assign(item, got);
+      else Object.assign(item, { titleChecked: got.titleChecked }, item.known ? {} : { maybe: got.maybe || item.maybe || null });
+    }
     catch (e) { if (e instanceof kit.UserError && e.status !== 502) throw e; step(state, "title", "no answer", { why: tidy(e && e.message, env, 80) }); }
   }
   const work = withKnown(kit, item);
   const have = new Set(kept(work).map((l) => kit.norm(l.text)));
+  have.kept = new Map();                           // the lines of this look, so a second site that agrees makes one sure
   const prior = work.found || {};
   let lines = [], where = "";
   // Reading a page: finds it, has Nishiii pick from it, and copes quietly when the site is unreachable.
@@ -842,6 +877,7 @@ async function lookUp(env, kit, item, need, about, taste, state) {
   const asks = shapes.flatMap((shape) => helpers.map((who) => helper(who, shape))).slice(0, QUESTIONS);
   const places = [
     { cost: 6, name: "wikiquote", look: () => read("wikiquote", wikiquotePage) },
+    { cost: 6, name: "mydramalist", off: !mdlFits(work), look: () => read("mydramalist", mdlPage) },
     // Goodreads and IMDb ask that robots don't read their pages; this step can be switched off with QUOTE_SITES=off.
     { cost: 6, name: work.type === "book" ? "goodreads" : "imdb", off: env.QUOTE_SITES === "off", look: () => read(work.type === "book" ? "goodreads" : "imdb", work.type === "book" ? goodreadsPage : imdbPage) },
     // The web with no paid allowance (opensearch.js): Tavily or Serper when their keys are set, else a public

@@ -171,7 +171,7 @@ lines_set(slow=700)
 calls()
 s, got = ask(T, [a], 3)
 log = [x["to"] for x in calls()]
-check("out of time after the free places: the request is answered with what there is", s == 200 and log == ["wikiquote", "goodreads"] and work(a)["found"].get("resume") == 3, (s, log, work(a)["found"]))     # 2 is now the web with no key (off here)
+check("out of time after the free places: the request is answered with what there is", s == 200 and log == ["wikiquote", "goodreads"] and work(a)["found"].get("resume") == 4, (s, log, work(a)["found"]))     # 2 is MyDramaList (off for a book), 3 the web with no key (off here)
 lines_set(slow=0)
 s, got = ask(T, [a], 3)
 log = [x["to"] for x in calls()]

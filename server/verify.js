@@ -251,21 +251,87 @@ async function openLibrary(env, kit, state, item, until) {
     year: Number(d.first_publish_year) || 0, kind: "book", site: "openlibrary.org",
     page: /^(\/works\/)?OL\d+W$/.test(d.key || "") ? `https://openlibrary.org${d.key.startsWith("/") ? d.key : "/works/" + d.key}` : "" }));
 }
-// Wikipedia's search, with each page's short description (from Wikidata), such as "2010 film by Christopher Nolan".
-async function wikipedia(env, kit, state, item, kind, until) {
-  const word = { book: "novel", film: "film", series: "TV series" }[kind];
+// Wikipedia's search, with each page's short description (from Wikidata), such as "2010 film by Christopher Nolan",
+// and the opening of each page ("The Early Spring (Chinese: 早春晴朗) is a 2026 Chinese television series ..."),
+// which also says what kind of work it is when the page has no short description yet (a new page often has none).
+// The title is searched as she typed it, without words such as "drama" or "movie" that only say what it is, with
+// the kind of work after it; a second search, with the kind in brackets as Wikipedia names such pages, only when
+// the first finds no page with her title or one close to it.
+const WIKI_WORD = { book: "novel", film: "film", series: "TV series" };
+export function wikiQueries(item, kind) {
+  const core = String(item.title || "").replace(/\s*\((\d{4}|tv series|series|film|novel|book|drama)\)\s*$/i, "")
+    .replace(/\s+(c|k|j|thai|chinese|korean|japanese|taiwanese)?\s?(drama|dramas|cdrama|kdrama|jdrama|tv series|tv show|series|show|web series|film|movie|novel|book)$/i, "").trim() || item.title;
+  const cased = core.replace(/\b([a-z])([a-z']*)/g, (m, a, b, at) => (at > 0 && /^(a|an|the|of|in|on|and|or|to|for|at|by)$/.test(m) ? m : a.toUpperCase() + b));
+  return [`${core}${kind === "book" && item.author ? " " + item.author : ""} ${WIKI_WORD[kind]}`, `${cased} (${WIKI_WORD[kind]})`];
+}
+async function wikipediaSearch(env, kit, state, q, kind, until) {
   const res = await F.page(state, `${env.WIKIPEDIA_API || "https://en.wikipedia.org"}/w/api.php?${new URLSearchParams({ action: "query", generator: "search",
-    gsrsearch: `${item.title}${kind === "book" && item.author ? " " + item.author : ""} ${word}`, gsrnamespace: "0", gsrlimit: "6", gsrenablerewrites: "1",
-    prop: "description", redirects: "1", format: "json", formatversion: "2" })}`, "application/json", left(until));
+    gsrsearch: q, gsrnamespace: "0", gsrlimit: "8", gsrenablerewrites: "1", prop: "description|extracts", exintro: "1", explaintext: "1", exlimit: "max",
+    redirects: "1", format: "json", formatversion: "2" })}`, "application/json", left(until));
   if (!res.ok) throw refused(res);
   const pages = (((await res.json()) || {}).query || {}).pages;
   const allowed = kind === "book" ? ["book"] : [kind, kind === "film" ? "series" : "film"];
-  return (Array.isArray(pages) ? pages : []).sort((a, b) => (a.index || 0) - (b.index || 0)).map((p) => {
-    const desc = String(p.description || ""), k = kindOf(desc, allowed);
-    if (!k || /disambiguation/i.test(desc)) return null;
-    return { title: kit.oneLine(String(p.title || "").replace(/\s*\([^)]*\)\s*$/, ""), 120), by: kit.oneLine((/\bby ([^,;()]+?)\s*$/.exec(desc) || [])[1], 80),
-      year: yearIn(desc), kind: k, country: countryIn(desc), about: kit.oneLine(desc, 120), site: "wikipedia.org", page: "https://en.wikipedia.org/wiki/" + encodeURIComponent(String(p.title).replace(/ /g, "_")) };
+  const out = (Array.isArray(pages) ? pages : []).sort((a, b) => (a.index || 0) - (b.index || 0)).map((p) => {
+    const desc = String(p.description || ""), intro = String(p.extract || "").slice(0, 1500);
+    const first = firstSentence(intro);
+    const k = kindOf(desc, allowed) || kindOf(first, allowed);
+    if (!k || /disambiguation/i.test(desc) || /may refer to/i.test(first)) return null;
+    return { title: kit.oneLine(String(p.title || "").replace(/\s*\([^)]*\)\s*$/, ""), 120), wiki: String(p.title || ""),
+      by: kit.oneLine((/\bby ([^,;()]+?)\s*$/.exec(desc) || [])[1] || byIn(first), 80),
+      year: yearIn(desc) || yearIn(first) || shownIn(intro), kind: k, country: countryIn(desc) || countryIn(first), about: kit.oneLine(desc || first, 120),
+      ...factsIn(kit, intro), site: "wikipedia.org", page: "https://en.wikipedia.org/wiki/" + encodeURIComponent(String(p.title).replace(/ /g, "_")) };
   }).filter(Boolean);
+  O.say(env, "title candidates", { q, list: out.map((c) => `${c.wiki} | ${c.about} | ${c.year} ${c.country} ${c.kind}`) });
+  return out;
+}
+async function wikipedia(env, kit, state, item, kind, until) {
+  const qs = wikiQueries(item, kind);
+  let list = await wikipediaSearch(env, kit, state, qs[0], kind, until);
+  if (!list.some((c) => closeness(kit, item.title, c.title)) && until - Date.now() > 1500) list = list.concat(await wikipediaSearch(env, kit, state, qs[1], kind, until));
+  return list;
+}
+// The rest of the chosen page, for a film or series: its cast and their characters ("Jing Boran as Luan Nian"),
+// and where it was shown. One more call, only when there is time.
+async function wikipediaMore(env, kit, state, c, until) {
+  if (!c.wiki || until - Date.now() < 1200) return {};
+  const res = await F.page(state, `${env.WIKIPEDIA_API || "https://en.wikipedia.org"}/w/api.php?${new URLSearchParams({ action: "query", prop: "extracts",
+    explaintext: "1", exsectionformat: "wiki", redirects: "1", titles: c.wiki, format: "json", formatversion: "2" })}`, "application/json", left(until));
+  if (!res.ok) return {};
+  const pg = ((((await res.json()) || {}).query || {}).pages || [])[0];
+  return pg && pg.extract ? factsIn(kit, String(pg.extract).slice(0, 60000), true) : {};
+}
+const firstSentence = (t) => (/^[\s\S]{0,600}?\.(\s|$)/.exec(String(t || "").replace(/\([^()]*(\([^()]*\)[^()]*)*\)/g, (m) => m.replace(/\./g, ""))) || [String(t || "").slice(0, 300)])[0];
+const byIn = (t) => (/\b(?:directed|written|created) by ((?:[A-Z][\p{L}'.-]+ ?){2,3})/u.exec(t) || /\bnovel by ((?:[A-Z][\p{L}'.-]+ ?){2,3})/u.exec(t) || [])[1]?.trim() || "";
+const shownIn = (t) => Number((/\b(?:premiered|aired|airs|released|broadcast|began airing|first aired|debuted|published)\b[^.\n]{0,120}?\b((?:19|20)\d\d)\b/.exec(String(t || "")) || [])[1]) || 0;
+const plainLatin = (t) => String(t).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+const NAME_RE = "[A-Z][\\p{L}'’-]+(?: [A-Z][\\p{L}'’-]+){0,2}";
+// Public facts in a page's text: its original title (words in another script), its romanised and other titles,
+// its lead actors, and (with "all", from the whole page) the characters they play and where it was shown.
+export function factsIn(kit, text, all = false) {
+  const t = String(text || ""), head = t.slice(0, 1500), out = {};
+  const original = (/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0e00-\u0e7f]{2,24}/.exec(head) || [])[0];
+  if (original) out.original = original;
+  const aka = [];
+  const rom = /\b(?:pinyin|RR|romani[sz]ed|Revised Romanization|Hepburn|romaji|rōmaji)\s*:\s*([^;)\n]{3,60})/i.exec(head)
+    || /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]\s*[;,]\s*([A-Za-z\u00c0-\u024f' -]{3,60})[;)]/.exec(head);
+  if (rom) aka.push(plainLatin(rom[1]));
+  const also = /\balso (?:known|titled|released) as ([^.;()\n]{3,120})/i.exec(head);
+  if (also) for (const a of also[1].split(/,\s*(?:or\s+)?|\s+or\s+|\s+and\s+/)) if (/^[A-Z0-9]/.test(a.trim()) && a.trim().length <= 60 && !/\bis\b/.test(a)) aka.push(a.trim().replace(/\s+(is|was)\b.*$/, ""));
+  if (aka.length) out.aka = [...new Set(aka)].slice(0, 4);
+  const star = new RegExp(`\\bstarr(?:ing|ed|s)\\s+(${NAME_RE})(?:,\\s*(${NAME_RE}))?(?:,?\\s+and\\s+(${NAME_RE}))?`, "u").exec(head);
+  if (star) out.cast = star.slice(1).filter(Boolean).slice(0, 3);
+  if (all) {
+    const playing = [...t.matchAll(new RegExp(`(?:^|\\n)\\s*(${NAME_RE})\\s+as\\s+(${NAME_RE})`, "gu"))];
+    const chars = [...new Set(playing.map((m) => m[2]).filter((n) => !/^(a|an|the|young|child)\b/i.test(n)))].slice(0, 8);
+    if (chars.length) out.characters = chars;
+    const cast = [...new Set([...(out.cast || []), ...playing.map((m) => m[1])])].slice(0, 6);
+    if (cast.length) out.cast = cast;
+    const shown = /\b(?:premiered|aired|airs|released|broadcast|began airing|first aired|debuted)\b[^.\n]{0,120}?\b((?:19|20)\d\d)\b/.exec(t);
+    if (shown) out.year = Number(shown[1]);
+    const net = /\b(?:aired|airs|premiered|broadcast|streamed|released|streaming|distributed(?: internationally)?) (?:on|via|by|exclusively on) ((?:[A-Z][\w+]*)(?: (?:TV|Video|Prime|Plus|\+))?)/.exec(t);
+    if (net && !/^(January|February|March|April|May|June|July|August|September|October|November|December)$/.test(net[1])) out.network = net[1];
+  }
+  return out;
 }
 // The web with no paid allowance (opensearch.js): the results for the title, read as candidates. A result's own
 // title gives the work's title and year ("The Early Spring (2026) - MyDramaList"); its title and snippet say what
@@ -333,26 +399,40 @@ export async function checkTitle(env, kit, item, kind, outer = null) {
   const until = outer ? Math.min(outer.began + outer.limit, Date.now() + TITLE_SECONDS * 1000) : state.began + state.limit;
   await F.openRecord(env, kit, state);
   const fits = (c) => !(kind === "book" && item.author && c.by && !words(kit, c.by).includes(surname(kit, item.author)));
+  let several = 0;
   const pick = (list) => {
     const ok = list.filter(fits).map((c) => ({ c, how: closeness(kit, item.title, c.title) })).filter((x) => x.how);
-    // Her own title, of the kind she chose, comes first; then her title of the other kind; then a close one.
-    return ok.find((x) => x.how === "same" && x.c.kind === kind) || ok.find((x) => x.how === "same") || ok[0] || null;
+    // Her own title, of the kind she chose, comes first (for a film or series, the most recent of those, as a new
+    // work is what is usually meant); then her title of the other kind; then a close one.
+    const mine = ok.filter((x) => x.how === "same" && x.c.kind === kind);
+    if (kind !== "book") mine.sort((a, b) => (b.c.year || 0) - (a.c.year || 0));
+    several = new Set(mine.map((x) => `${x.c.title}|${x.c.year}`)).size;
+    return mine[0] || ok.find((x) => x.how === "same") || ok[0] || null;
   };
   let hit = null;
   if (kind === "book") hit = pick(await guarded(state, "openlibrary", () => openLibrary(env, kit, state, item, until)));
   if (!hit || hit.how !== "same") hit = pick(await guarded(state, "wikipedia", () => wikipedia(env, kit, state, item, kind, until))) || hit;
+  if (hit && hit.how !== "same") hit = pick(await openTitle(env, kit, state, item, kind, until).catch(() => [])) || hit;
   if (!hit) hit = pick(await openTitle(env, kit, state, item, kind, until).catch(() => []));
   if (!hit) hit = pick(await helperTitle(env, kit, state, item, kind, until));
   state.feature = feature;
   const out = { titleChecked: Date.now(), known: null, maybe: null };
   if (!hit) { F.step(state, "title", "unknown", { why: `no work called "${kit.oneLine(item.title, 80)}" was found` }); await closeTitle(env, kit, state, item, outer); return out; }
   const c = hit.c;
+  if (c.wiki && c.kind !== "book") {
+    const more = await wikipediaMore(env, kit, state, c, until).catch(() => ({}));
+    if (c.year) delete more.year;                      // the year in the short description or opening comes first
+    if (c.original) delete more.original;
+    Object.assign(c, more);
+  }
   const found = { title: c.title, by: c.by, year: c.year, kind: c.kind, page: c.page, site: c.site,
-    ...Object.fromEntries(["original", "aka", "country", "cast", "about"].filter((k) => c[k] && c[k].length).map((k) => [k, c[k]])) };
+    ...Object.fromEntries(["original", "aka", "country", "cast", "characters", "network", "about"].filter((k) => c[k] && c[k].length).map((k) => [k, c[k]])) };
   // Her title, of her kind: kept as known (with the proper title as "real"). A spelling or a kind that differs from hers: offered.
   if (hit.how === "same" && found.kind === kind) out.known = { ...found, title: item.title, real: c.title };
   else out.maybe = found;
-  F.step(state, "title", out.known ? "known" : "close title", { why: [c.title, c.original, c.year, c.country, c.kind, (c.cast || []).join(", "), c.site && `from ${c.site}`].filter(Boolean).join(", ") });
+  F.step(state, "title", out.known ? "known" : "close title", { why: [c.title, c.original, c.year, c.country, c.kind, (c.cast || []).join(", "), c.site && `from ${c.site}`,
+    several > 1 && `the most recent of ${several} works with this name`].filter(Boolean).join(", ") });
+  O.say(env, "title check", { known: out.known, maybe: out.maybe });
   await closeTitle(env, kit, state, item, outer);
   return out;
 }

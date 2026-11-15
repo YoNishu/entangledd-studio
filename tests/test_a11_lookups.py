@@ -44,7 +44,7 @@ arrive = by.get("Some people arrive like spring: late, and all at once.")
 check("a line two sites agree on needs no checking", arrive and arrive["verify"] is False, arrive)
 check("the line about the season, credited to no work, is left out", not any("forgives the winter" in l["text"] for l in kept(w)), kept(w))
 st = steps(w)
-check("the trail names each step truthfully, in order", where_what(st) == [("gemini", "models"), ("title", "known"), ("wikiquote", "no page"), ("imdb", "no page"), ("gemini", "found")], where_what(st))
+check("the trail names each step truthfully, in order", where_what(st) == [("gemini", "models"), ("title", "known"), ("wikiquote", "no page"), ("mydramalist", "no page"), ("imdb", "no page"), ("gemini", "found")], where_what(st))
 g = next((x for x in st if x["where"] == "gemini" and x["what"] == "found"), {})
 check("with the model, the count, the sites read and why a line was left out", g.get("model") == "gemini-3.5-flash-lite" and g.get("n") == 3
       and "instagram.com" in g.get("read", []) and "1 not said to be from this work" in g.get("why", ""), g)

@@ -23,7 +23,7 @@ check("and her title is left as she typed it", x["title"] == "Glas Rivers" and n
 log = verify_log()
 check("Open Library was asked first, then Wikipedia", [l["to"] for l in log] == ["openlibrary", "wikipedia"] and log[0]["query"]["title"] == "Glas Rivers", log)
 check("nothing but the title went out", all(set(l["query"]) <= {"title", "fields", "limit", "author", "action", "generator", "gsrsearch", "gsrnamespace", "gsrlimit",
-      "gsrenablerewrites", "prop", "redirects", "format", "formatversion"} for l in log) and "Glas Rivers" in log[1]["query"]["gsrsearch"], log)
+      "gsrenablerewrites", "prop", "exintro", "explaintext", "exlimit", "redirects", "format", "formatversion"} for l in log) and "Glas Rivers" in log[1]["query"]["gsrsearch"], log)
 s, lib = title(T, "books", glas, {"accept": True})
 x = item(lib, "books", glas)
 check("one tap takes the proper title, with its author and year", s == 200 and x["title"] == "Glass Rivers" and x["author"] == "Ana Vale" and x["known"]["year"] == 2014 and not x.get("maybe"), x)

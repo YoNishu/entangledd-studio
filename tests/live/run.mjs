@@ -60,28 +60,40 @@ function log(what, d) {
   else console.log(`  ${what}: ${cut(JSON.stringify(d), 260)}`);
 }
 
-// ---- a few known pages, fetched as they are (what the planner's search found), to see their shapes
+// ---- a few known pages and results pages, fetched as they are, to see their shapes (nothing is kept from here)
+const Q = "The Early Spring 2026 Chinese drama quotes";
+const BROWSER = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36";
 const PROBES = [
-  ["https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=The%20early%20spring%20TV%20series&srlimit=6&format=json&formatversion=2", ["Early Spring"]],
-  ["https://en.wikipedia.org/api/rest_v1/page/summary/The_Early_Spring", ["早春晴朗", "Jing Boran"]],
-  ["https://en.wikipedia.org/wiki/The_Early_Spring", ["Luan Nian", "Shang Zhitao", "Youku"]],
-  ["https://mydramalist.com/761231-zao-chun-qing-lang", ["Luan Nian", "worthy of love"]],
-  ["https://mydramalist.com/761231-zao-chun-qing-lang/reviews", ["worthy of love", "struggling with reality", "bitter winter"]],
-  ["https://cyn-lynn.blogspot.com/2026/08/the-early-spring.html", ["Luan Nian"]],
+  ["https://en.wikipedia.org/wiki/The_Early_Spring", ["Luan Nian", "Youku"]],
+  ["https://mydramalist.com/search?q=The%20Early%20Spring", ["761231", "Chinese Drama"], { around: "761231" }],
+  ["https://mydramalist.com/search?q=When%20Life%20Gives%20You%20Tangerines", ["Tangerines"], { around: "Tangerines" }],
+  [`https://www.bing.com/search?format=rss&q=${encodeURIComponent(Q)}&setlang=en&cc=US`, ["<item>", "mydramalist"], { results: "rss" }],
+  [`https://www.bing.com/search?q=${encodeURIComponent(Q)}&setlang=en&cc=US&form=QBLH`, ["b_algo", "mydramalist"], { results: "html" }],
+  [`https://www.bing.com/search?q=${encodeURIComponent(Q)}&setlang=en&cc=US&form=QBLH`, ["b_algo", "mydramalist"], { results: "html", ua: BROWSER }],
+  [`https://www.mojeek.com/search?q=${encodeURIComponent(Q)}`, ["mydramalist", "class=\"title\""], { around: "<li" }],
+  [`https://search.brave.com/search?q=${encodeURIComponent(Q)}&source=web`, ["mydramalist"], { around: "mydramalist" }],
+  [`https://html.duckduckgo.com/html/?q=${encodeURIComponent(Q)}`, ["result__a"]],
 ];
 async function probes() {
-  console.log("\n=== known pages, fetched directly (a look at their shapes; nothing is kept from here)");
-  for (const [url, words] of PROBES) {
+  const O = await import("../../server/opensearch.js");
+  console.log("\n=== known pages and results pages, fetched directly (a look at their shapes; nothing is kept from here)");
+  for (const [url, words, opt = {}] of PROBES) {
     try {
-      const res = await realFetch(url, { headers: { "User-Agent": "DsStudio/1.0 (personal quotes app; a few pages per search)", Accept: "text/html,application/json" }, signal: AbortSignal.timeout(10000) });
+      const res = await realFetch(url, { headers: { "User-Agent": opt.ua || "DsStudio/1.0 (personal quotes app; a few pages per search)", Accept: "text/html,application/rss+xml,application/json", "Accept-Language": "en" }, signal: AbortSignal.timeout(10000) });
       const text = await res.text();
       const plain = text.replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&#39;|&rsquo;/g, "'").replace(/\s+/g, " ");
-      console.log(`${res.status} ${text.length}B ${cut(url, 120)} title="${cut((/<title[^>]*>([^<]*)/i.exec(text) || [])[1], 80)}"`);
+      console.log(`${res.status} ${text.length}B ${cut(url, 140)}${opt.ua ? " (browser UA)" : ""} title="${cut((/<title[^>]*>([^<]*)/i.exec(text) || [])[1], 80)}"`);
       for (const w of words) {
-        const at = plain.indexOf(w);
-        console.log(`   ${at >= 0 ? "has" : "no "} "${w}"${at >= 0 ? ": …" + cut(plain.slice(Math.max(0, at - 120), at + 200), 320) + "…" : ""}`);
+        const at = plain.indexOf(w), raw = text.indexOf(w);
+        console.log(`   ${at >= 0 || raw >= 0 ? "has" : "no "} "${w}"${at >= 0 ? ": …" + cut(plain.slice(Math.max(0, at - 100), at + 160), 260) + "…" : ""}`);
       }
-      if (/json/.test(res.headers.get("content-type") || "")) console.log("   json: " + cut(text, 900));
+      if (opt.around && text.indexOf(opt.around) >= 0) { const at = text.indexOf(opt.around); console.log("   raw: " + cut(text.slice(Math.max(0, at - 300), at + 900), 1200)); }
+      if (opt.results) {
+        const got = opt.results === "rss" ? O.readBingRss(text) : O.readBing(text);
+        console.log(`   read as results: ${got.length}`);
+        got.slice(0, 5).forEach((r, i) => console.log(`    ${i + 1}. ${cut(r.url, 100)} | ${cut(r.title, 70)}`));
+      }
+      if (/mydramalist\.com\/search/.test(url)) console.log("   read as MyDramaList search: " + cut(JSON.stringify(O.readMdlSearch(text).slice(0, 4)), 500));
     } catch (e) { console.log(`failed ${cut(url, 120)}: ${cut(e && e.message, 100)}`); }
   }
 }
