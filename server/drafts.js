@@ -177,23 +177,21 @@ export async function keptJobs(env, kit) {
   return new Set(made.filter((m) => !m.posted && keptUntil(m) > now).map((m) => m.jobId));
 }
 
-// The cleaner's part (upkeep.js clean): drops entries and the current draft once they have outlived their keeping,
-// and lists the files under drafts/ that nothing names any more. Returns the jobs to keep and the files to remove.
-export async function tidy(env, kit, now) {
+// The cleaner's part, a timed job of its own (listed in upkeep.js, every six hours): drops entries and the current
+// draft once they have outlived their keeping, and removes the files under drafts/ that nothing names any more
+// (after a day, so a file still on its way to a draft is left alone). About ten storage calls, the timer's included.
+export async function tidy(env, kit) {
+  const now = Date.now();
   const [draft, madeAll, posts, list] = await Promise.all([kit.loadDoc(env, "draft", null), kit.loadDoc(env, "made", []),
     kit.loadDoc(env, "posts", []), env.MEDIA.list({ prefix: "drafts/", limit: 1000 })]);
   const s = settle(madeAll, posts, now);
   if (s.changed) await kit.saveDoc(env, "made", s.made);
   const live = draftAlive(draft, now);
-  if (draft && !live) await env.MEDIA.delete("data/draft.json");
   const named = new Set([...(live ? filesOf(draft.snap) : []), ...s.made.flatMap((m) => filesOf(m.snap))].map(fileKey));
-  const doomed = [];
-  let bytes = 0, files = 0;
-  for (const o of list.objects || []) {
-    if (!named.has(o.key) && now - new Date(o.uploaded).getTime() > FILE_GRACE_MS) doomed.push(o.key);
-    else { bytes += o.size || 0; files += 1; }
-  }
-  return { jobs: new Set(s.made.filter((m) => !m.posted).map((m) => m.jobId)), doomed, bytes, files, more: !!list.truncated };
+  const doomed = (list.objects || []).filter((o) => !named.has(o.key) && now - new Date(o.uploaded).getTime() > FILE_GRACE_MS).map((o) => o.key);
+  if (draft && !live) doomed.push("data/draft.json");
+  if (doomed.length) await env.MEDIA.delete(doomed.slice(0, 1000));
+  return { removed: Math.min(1000, doomed.length), entries: s.made.length, draft: live };
 }
 
 // ---------------------------------------------------------------- routes
