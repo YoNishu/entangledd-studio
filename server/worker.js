@@ -36,6 +36,9 @@ SECTIONS.push(findlines);                        // GET /api/lookups: the trail 
 // lines of its own at the top of scheduled(), near the end of this file.
 import * as reminders from "./reminders.js";
 SECTIONS.push(reminders);
+// Drafts and the reels made from the app, kept so she can come back and change them (routes under /api/drafts).
+import * as drafts from "./drafts.js";
+SECTIONS.push(drafts);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PART_SIZE = 8 * 1024 * 1024;        // R2 needs equal parts of at least 5 MB
@@ -149,7 +152,8 @@ async function purgeOld(env) {
   const cutoff = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
   // "auth/" holds used unlock challenges and wrong-passcode counts; both are long dead after a week.
   const lists = await Promise.all(["jobs/", "slides/", "data/stockcache/", "data/musiccache/", "auth/"].map((prefix) => env.MEDIA.list({ prefix, limit: 500 })));
-  const old = lists.flatMap((l) => l.objects).filter((o) => new Date(o.uploaded).getTime() < cutoff).map((o) => o.key);
+  const kept = await drafts.keptJobs(env, kit);      // reels still waiting to be posted are kept 30 days (server/drafts.js)
+  const old = lists.flatMap((l) => l.objects).filter((o) => new Date(o.uploaded).getTime() < cutoff && !kept.has(o.key.split("/")[1])).map((o) => o.key);
   if (old.length) await env.MEDIA.delete(old);
 }
 
@@ -168,6 +172,15 @@ async function createJob(request, env, ctx) {
     id: crypto.randomUUID(), created: Date.now(), state: "uploading", error: null,
     length, keepAudio: !!b.keepAudio, fade: !!b.fade, bgExt: ext.toLowerCase(),
   };
+  // A background already kept with her draft (server/drafts.js) is used as it is, instead of being sent again.
+  if (UUID.test(b.bgFile || "")) {
+    const kept = await env.MEDIA.head(drafts.fileKey(b.bgFile));
+    if (kept && kept.size === bgSize) {
+      job.bgKey = drafts.fileKey(b.bgFile);
+      await writeJob(env, job);
+      return json({ id: job.id, reused: true, partSize: PART_SIZE });
+    }
+  }
   const [upload] = await Promise.all([env.MEDIA.createMultipartUpload(jobKey(job.id, "bg")), writeJob(env, job)]);
   return json({ id: job.id, uploadId: upload.uploadId, partSize: PART_SIZE });
 }
@@ -200,20 +213,24 @@ const MAX_MUSIC_BYTES = 40 * 1024 * 1024;
 async function putMusic(request, env, id, job) {
   const url = new URL(request.url);
   const size = Number(request.headers.get("Content-Length") || 0);
-  if (!(size > 0 && size <= MAX_MUSIC_BYTES)) return fail(413, "The music file must be under 40 MB. Try a shorter or smaller one.");
+  // Music already kept with her draft (server/drafts.js) is named instead of sent again.
+  const keptFile = UUID.test(url.searchParams.get("file") || "") ? drafts.fileKey(url.searchParams.get("file")) : "";
+  if (keptFile && !(await env.MEDIA.head(keptFile))) return fail(409, "That music is no longer kept. Send it again.");
+  if (!keptFile && !(size > 0 && size <= MAX_MUSIC_BYTES)) return fail(413, "The music file must be under 40 MB. Try a shorter or smaller one.");
   const ext = (url.searchParams.get("ext") || "").toLowerCase();
   if (!/^(mp3|m4a|aac|wav|ogg|oga|flac|mp4|mov|m4v|webm)$/.test(ext)) return fail(400, "That music file type isn't supported. Use an MP3, M4A or WAV file, or a video that has sound.");
   const num = (name, lo, hi, d) => { const v = Number(url.searchParams.get(name)); return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d; };
-  await env.MEDIA.put(jobKey(id, "music"), await request.arrayBuffer());
+  if (!keptFile) await env.MEDIA.put(jobKey(id, "music"), await request.arrayBuffer());
   // Where it came from and, for tracks whose licence asks for it, the credit that must go with the post.
   job.music = { ext, start: num("start", 0, 3600, 0), volume: num("volume", 0.05, 1, 0.8), from: url.searchParams.get("from") === "library" ? "library" : "own",
     title: oneLine(url.searchParams.get("title"), 120), credit: oneLine(url.searchParams.get("credit"), 240) };
+  if (keptFile) job.music.key = keptFile;
   await writeJob(env, job);
   return json({ ok: true });
 }
 
 async function startJob(request, env, id, job) {
-  const [bg, overlay] = await Promise.all([env.MEDIA.head(jobKey(id, "bg")), env.MEDIA.head(jobKey(id, "overlay.png"))]);
+  const [bg, overlay] = await Promise.all([env.MEDIA.head(job.bgKey || jobKey(id, "bg")), env.MEDIA.head(jobKey(id, "overlay.png"))]);
   if (!bg || !overlay) return fail(409, "The background or text layer hasn't finished uploading.");
   const api = env.GITHUB_API || "https://api.github.com";
   const res = await fetch(`${api}/repos/${env.GITHUB_REPO}/actions/workflows/render-job.yml/dispatches`, {
@@ -267,7 +284,7 @@ async function appRoutes(request, env, parts, ctx) {
 
   if (rest === "" && method === "GET") return json(publicState(job));
   if (rest === "" && method === "DELETE") {
-    await env.MEDIA.delete(["job.json", "bg", "overlay.png", "music", "reel.mp4"].map((n) => jobKey(id, n)));
+    await env.MEDIA.delete(["job.json", "bg", "overlay.png", "music", "reel.mp4", "keep.json", "thumb.jpg"].map((n) => jobKey(id, n)));
     return json({ ok: true });
   }
   if (rest === "reel" && method === "GET") {
@@ -2679,7 +2696,7 @@ async function renderRoutes(request, env, parts) {
 
   if (what === "job" && method === "GET") return json(job);
   if (what === "bg" && method === "GET") {
-    const obj = await env.MEDIA.get(jobKey(id, "bg"));
+    const obj = await env.MEDIA.get(job.bgKey || jobKey(id, "bg"));
     return obj ? stream(obj, "application/octet-stream") : fail(404, "No background.");
   }
   if (what === "overlay" && method === "GET") {
@@ -2687,7 +2704,7 @@ async function renderRoutes(request, env, parts) {
     return obj ? stream(obj, "image/png") : fail(404, "No text layer.");
   }
   if (what === "music" && method === "GET") {
-    const obj = await env.MEDIA.get(jobKey(id, "music"));
+    const obj = await env.MEDIA.get((job.music && job.music.key) || jobKey(id, "music"));
     return obj ? stream(obj, "application/octet-stream") : fail(404, "No music.");
   }
   if (what === "reel" && method === "PUT") {
@@ -2697,6 +2714,7 @@ async function renderRoutes(request, env, parts) {
     job.state = "done"; job.error = null; job.finished = Date.now();
     await writeJob(env, job);
     await health.saw(env, kit, "reel-done");
+    await drafts.reelDone(env, kit, id).catch((e) => console.error("keeping the reel failed", e));   // into Made, not posted
     return json({ ok: true });
   }
   if (what === "status" && method === "POST") {
