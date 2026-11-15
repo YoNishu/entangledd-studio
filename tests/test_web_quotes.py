@@ -48,6 +48,13 @@ T, series, book = setup()
 s, b, _ = ask(T, [series])
 check("search off: still answered (from memory)", s == 200 and len(b["items"]) >= 1 and "found on the web" not in b["items"][0]["text"], (s, b))
 
+# 4b. the paid search is not switched on (the default for the real app): never searched, answered from memory
+serve("WEBSEARCH=unset")
+T, series, book = setup()
+s, b, _ = ask(T, [series, book])
+check("search not switched on: answered from memory", s == 200 and len(b["items"]) >= 1 and all("found on the web" not in i["text"] for i in b["items"]), (s, b))
+check("and no search was asked for", http("GET", "/__websearch_log")[1] == [])
+
 # 5. a long search that pauses: the app hands it back and gets the answer
 serve("WEBSEARCH=pause")
 T, series, book = setup()
