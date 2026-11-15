@@ -128,7 +128,7 @@ async function openEvidence(env, kit, state, quote, author, until) {
   for (const pg of pages) {
     const at = locate(kit, pg.text, quote);
     if (!at) continue;
-    out.push({ site: pg.site, url: kit.foundAt(pg.url) || "", title: kit.oneLine(pg.title, 160), first: /quoteinvestigator|wikiquote/.test(pg.site),
+    out.push({ site: pg.site, url: kit.foundAt(pg.url) || (env.OPEN_DEV_HOSTS ? pg.url : ""), title: kit.oneLine(pg.title, 160), first: /quoteinvestigator|wikiquote/.test(pg.site),
       text: `A page on ${pg.site}${pg.title ? `, "${kit.oneLine(pg.title, 120)}"` : ""}, found with a web search:\n${at.context}` });
   }
   F.step(state, "web", out.length ? "found" : "no line passed", { n: out.length, read: pages.map((p) => p.site).slice(0, 3), ...(out.length ? {} : { why: "the line is on none of the pages read" }) });

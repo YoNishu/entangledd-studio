@@ -55,7 +55,7 @@ function resultsFor(q) {
     { url: "https://www.pinterest.com/pin/8801/", title: "Pinterest", snippet: "The Late Thaw (春迟) cdrama quote: “Some people arrive like spring: late, and all at once.”" },
     { url: at + "/__web/thaw-huge", title: "The Late Thaw recap, every episode", snippet: "The Late Thaw (春迟) 2026 Chinese drama, every episode." },
   ];
-  if (s.includes("hope") || s.includes("keeps the light on")) return [
+  if (s.includes("quotes about") || s.includes("hope") || s.includes("keeps the light on") || s.includes("only on our way")) return [
     { url: "https://www.facebook.com/hopequotes", title: "Facebook", snippet: "Quotes about hope." },
     { url: at + "/__web/hope-quotes", title: "Quotes about hope from books, films and series", snippet: "Hope is the thing that keeps the light on in the window." }];
   return [];
@@ -108,7 +108,7 @@ export async function handle(req, res, url, tools) {
       return false;
     }
     if (req.headers["x-api-key"] !== tools.env.ANTHROPIC_API_KEY) return send(401, {});
-    log.push({ to: "claude", content: body.messages[0].content });
+    log.push({ to: "claude", path: "", query: {}, agent: "", content: body.messages[0].content });
     return send(200, { content: [{ type: "text", text: JSON.stringify(pick(body.messages[0].content)) }] });
   }
   const to = (/^\/__(ddg|bing|tavily|serper|web)\//.exec(p) || [])[1];
