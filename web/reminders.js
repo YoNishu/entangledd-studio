@@ -109,7 +109,7 @@
     if (document.activeElement !== $("remind-time")) $("remind-time").value = state.time;
     $("remind-test").hidden = !on;
     $("remind-test").disabled = state.busy;
-    $("remind-note").textContent = state.message || no || (!on ? "One nudge a day. None on days you've already posted."
+    $("remind-note").textContent = state.message || no || (!on ? "One nudge a day, none once you've posted."
       : state.missed ? "The last reminder didn't get through. Tap Send a test to check."
         : `Every day at ${niceTime(state.time)}${inIndia() ? "" : " India time"}, unless you've already posted.`);
   }
