@@ -350,8 +350,8 @@
     $("ask-sheet").hidden = true;
     if (askedData) renderAsked(askedData); else loadAsked();
   }
-  // Finds the chosen number, a round at a time; each round's quotes go on top as they come. Stops early, saying
-  // why, when nothing new is left.
+  // Finds the chosen number, a round at a time; each round's quotes go on top as they come. Carries on while a
+  // round still brings something; stops early, saying why, when nothing new is left.
   async function findQuotes() {
     if (asking.busy) return;
     const sources = [...asking.picked], about = $("ask-about").value, want = asking.count;
@@ -368,7 +368,7 @@
         if (fresh.length) choosing(false);
         $("ask-results").prepend(...fresh.map((i) => card(i, "asked")));
         got += fresh.length;
-        if (data.said) { said = data.said; break; }
+        if (data.said) said = data.said;        // a work with nothing new left; the others may still have more
         if (!fresh.length) break;
         if (got < want) $("ask-progress").textContent = `Found ${got} of ${want}…`;
       }

@@ -155,11 +155,11 @@ export function describe(work) {
 // ---------------------------------------------------------------- 0. what the Library already holds
 
 // Lines for one work that have not been suggested yet: her own lines saved "from" that title, and the lines
-// found for it earlier. "seen" may also answer like(line) (server/shown.js): then a line near one she has
-// already been shown (a word or two different) counts as seen too.
+// found for it earlier. "seen" may also answer like(line, work id) (worker.js suggestFrom): then a line near one
+// she has already been shown for this work (a word or two different) counts as seen too.
 function unused(kit, lib, work, seen) {
   const title = kit.norm(work.title);
-  const isNew = (t) => { const n = kit.norm(t); return !seen.has(n) && !(seen.like && seen.like(n)); };
+  const isNew = (t) => { const n = kit.norm(t); return !seen.has(n) && !(seen.like && seen.like(n, work.id)); };
   const own = (lib.quotes || []).filter((q) => q.from && kit.norm(q.from) === title && isNew(q.text))
     .map((q) => ({ text: q.text, author: q.author || "", source: { type: "own", title: q.from }, theme: "", tone: "", verify: false }));
   const found = kept(work).filter((l) => isNew(l.text)).map((l) => asQuote(work, l));

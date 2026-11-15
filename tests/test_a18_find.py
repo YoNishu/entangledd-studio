@@ -104,6 +104,25 @@ kinds = {i["source"]["type"] for i in mix}
 check("a mix of a book and a film: lines from both", s == 200 and {"book", "film"} <= kinds, (s, [(i["source"]["type"], i["text"][:30]) for i in mix], said))
 check("each marked with its own work", {i.get("workId") for i in mix} == {book, film}, [i.get("workId") for i in mix])
 
+# ---- 4b. a book and a film with nothing kept and nothing on the pretend Wikiquote (as in the walk-through r4),
+# asked as the phone asks: rounds of five while a round still brings something
+med, film2 = add_book(T, "Meditations", ""), add_screen(T, "Interstellar", "film")
+rounds, every = [], []
+for _ in range(8):
+    s, fresh, said, _ = find(T, [med, film2], 5, "time")
+    rounds.append((s, {i.get("workId") for i in fresh}, len(fresh), said))
+    every += fresh
+    if s != 200 or not fresh: break
+check("the film had no line kept or looked up", kept(film2) == [], len(kept(film2)))
+check("still, lines from both the book and the film (the film's from Nishiii's search, as before)", {med, film2} <= {i.get("workId") for i in every}, rounds)
+check("the rounds went on until a round brought nothing", rounds[-1][0] == 200 and rounds[-1][2] == 0, rounds)
+check("at the end, both works are named as having nothing new", rounds[-1][3] == "That's every line I could find from Meditations and Interstellar for now. I'll keep looking.", rounds[-1][3])
+names = {med: "Meditations", film2: "Interstellar"}
+looked = {w for w in names if (work(w).get("found") or {}).get("at")}
+check("only works that were looked up are ever named", looked == {med, film2} and all(not said or said.startswith("That's every line I could find from ") for *_, said in rounds), (looked, rounds))
+check("no line twice, and no two near the same within a work", len(texts(every)) == len(set(texts(every)))
+      and not [(x["text"], y["text"]) for n, x in enumerate(every) for y in every[n + 1:] if x.get("workId") == y.get("workId") and near(x["text"], y["text"])])
+
 # ---- 5. the kept list is tidied: older than 30 days, or used more than a week ago
 old = doc("asked")
 now = int(time.time() * 1000)
