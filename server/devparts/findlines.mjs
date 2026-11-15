@@ -4,7 +4,7 @@
 //
 //   GEMINI=on|429|refused|gone|memory|badkey|nosearch|nolist   a Gemini key is set, and Gemini answers that way (no
 //                                        setting: no key; badkey: the key is not one Google knows, answered with 400 as
-//                                        Google does; nosearch: the first model refuses the search tool, the next works;
+//                                        Google does; nosearch: the first model (gemini-3.5-flash-lite) refuses the search tool, the next works;
 //                                        nolist: the list of models can't be read, so the built-in names are tried)
 //   GEMINI=limit0|lite|busy|busy2        a 429 with "limit: 0" for every model (lite: but gemini-2.5-flash-lite, listed, answers);
 //                                        busy: the first question gets a per-minute 429 (retry in 1s); busy2: every question does
@@ -333,7 +333,7 @@ function gemini(body, model) {
   if (mode.gemini === "429") return fail(429, "RESOURCE_EXHAUSTED", "You exceeded your current quota, please check your plan and billing details.");
   if (mode.gemini === "refused") return fail(403, "PERMISSION_DENIED", "Grounding with Google Search is not available on the free tier for this project.");
   if (mode.gemini === "gone" && model === "gemini-3.8-flash") return fail(404, "NOT_FOUND", "This model models/gemini-3.8-flash is no longer available to new users. Please update your code to use a newer model.");
-  if (mode.gemini === "nosearch" && model === "gemini-3.8-flash") return fail(400, "INVALID_ARGUMENT", "Search Grounding is not supported for this model.");
+  if (mode.gemini === "nosearch" && model === "gemini-3.5-flash-lite") return fail(400, "INVALID_ARGUMENT", "Search Grounding is not supported for this model.");     // the first in the app's order
   const asked = verifyAnswer(body.contents[0].parts[0].text);
   const thaw = !asked && lateThaw(body.contents[0].parts[0].text);
   if (thaw) return { status: 200, body: thaw };

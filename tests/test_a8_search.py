@@ -38,7 +38,7 @@ check("a line whose page was never read is left out", not any("never read" in l[
 check("each carries the page and its site", all(i["source"]["url"].startswith("https://www.") and i["source"]["site"] in ("goodreads.com", "imdb.com") for i in got), [i["source"] for i in got])
 body = g[0]["body"]
 sent = json.dumps(body)
-check("the question goes to a model with free Google Search, with the search tool", g[0]["model"] == "gemini-3.8-flash" and body["tools"] == [{"google_search": {}}], g[0]["model"])
+check("the question goes to a model the key may use, flash-lite first, with the search tool", g[0]["model"] == "gemini-3.5-flash-lite" and body["tools"] == [{"google_search": {}}], g[0]["model"])
 check("it names the work: title, kind and author", '\\"Twisted Love\\"' in sent and "by Ana Huang" in sent and " book " in sent, sent[:300])
 check("and nothing personal: no notes, taste, own lines, subject or name", not any(x in sent for x in ("PRIVATE", "Dhruuu", "longing", "hustle", "taste")), sent)
 check("only the question, the tool and one setting are sent", sorted(body) == ["contents", "generationConfig", "tools"] and len(body["contents"]) == 1, sorted(body))
@@ -65,7 +65,7 @@ ask(T, [c], 3)
 check("the next day the count starts again", len(to(calls(), "gemini")) == 1 and used()["gemini"]["calls"] == 1 and used()["day"] == india_day(), used())
 
 # ---- "not today": the free allowance is used up (429), or the key may not search (403, on every model it may use)
-for how, why, asked in (("429", "used up", 1), ("refused", "may not search", 2)):
+for how, why, asked in (("429", "used up", 2), ("refused", "may not search", 2)):     # a 429 without details: used up on that model, so the next is tried (Agent 12)
     serve("WEBSEARCH=unset", "GEMINI=" + how)
     T = login()
     a = add_book(T, "A Brand New Novel", "")
@@ -78,7 +78,7 @@ for how, why, asked in (("429", "used up", 1), ("refused", "may not search", 2))
     check("so it is not asked again that day", to(calls(), "gemini") == [])
 
 # ---- a model that is no longer offered: the next one is tried
-serve("WEBSEARCH=unset", "GEMINI=gone")
+serve("WEBSEARCH=unset", "GEMINI=gone", "GEMINI_MODEL=gemini-3.8-flash,gemini-3.5-flash-lite")     # in that order, so the gone one is asked first
 T = login()
 a = add_book(T, "A Brand New Novel", "")
 calls()
@@ -125,7 +125,7 @@ s, got = ask(T, [b], 2)
 check("past 20 a day OpenAI is not asked", to(calls(), "openai") == [] and s == 200 and used()["openai"]["calls"] == 20, (s, used()))
 
 # (a key that is refused already shows in the list of models it may use, so no question is spent on it)
-for how, why, asked in (("429", "used up", 1), ("refused", "refused", 0)):
+for how, why, asked in (("429", "no credit", 1), ("refused", "refused", 0)):          # insufficient_quota: no credit (Agent 12)
     serve("WEBSEARCH=unset", "OPENAI=" + how)
     T = login()
     a = add_screen(T, "A Brand New Show", "series")
@@ -171,7 +171,7 @@ lines_set(slow=700)
 calls()
 s, got = ask(T, [a], 3)
 log = [x["to"] for x in calls()]
-check("out of time after the free places: the request is answered with what there is", s == 200 and log == ["wikiquote", "goodreads"] and work(a)["found"].get("resume") == 2, (s, log, work(a)["found"]))
+check("out of time after the free places: the request is answered with what there is", s == 200 and log == ["wikiquote", "goodreads"] and work(a)["found"].get("resume") == 3, (s, log, work(a)["found"]))     # 2 is now the web with no key (off here)
 lines_set(slow=0)
 s, got = ask(T, [a], 3)
 log = [x["to"] for x in calls()]

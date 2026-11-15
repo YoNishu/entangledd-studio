@@ -46,11 +46,11 @@ check("the line about the season, credited to no work, is left out", not any("fo
 st = steps(w)
 check("the trail names each step truthfully, in order", where_what(st) == [("gemini", "models"), ("title", "known"), ("wikiquote", "no page"), ("imdb", "no page"), ("gemini", "found")], where_what(st))
 g = next((x for x in st if x["where"] == "gemini" and x["what"] == "found"), {})
-check("with the model, the count, the sites read and why a line was left out", g.get("model") == "gemini-3.8-flash" and g.get("n") == 3
+check("with the model, the count, the sites read and why a line was left out", g.get("model") == "gemini-3.5-flash-lite" and g.get("n") == 3
       and "instagram.com" in g.get("read", []) and "1 not said to be from this work" in g.get("why", ""), g)
 rec = doc("lookups")
 check("the last trails are in data/lookups.json too", rec["trails"][-1]["title"] == "the late thaw" and rec["uses"]["lookup"]["what"] == "found", rec.get("uses"))
-check("the models were chosen by asking Google, once", [x["to"] for x in lists()] == ["gemini"] and rec["models"]["gemini"]["list"] == ["gemini-3.8-flash", "gemini-3.5-flash-lite"], rec.get("models"))
+check("the models were chosen by asking Google, once", [x["to"] for x in lists()] == ["gemini"] and rec["models"]["gemini"]["list"] == ["gemini-3.5-flash-lite", "gemini-3.8-flash"], rec.get("models"))
 
 # ---- 2. a near-duplicate entry: the same work, offered to fold into one, never folded alone
 d = add_screen(T, "The late thaw cdrama", "series", checked=False)
@@ -109,15 +109,15 @@ a = add_book(T, "A Brand New Novel", "")
 calls(); lists()
 s, got = ask(T, [a], 3)
 asked = [x["model"] for x in questions(calls())]
-check("the first model is refused the search tool, the next works", asked == ["gemini-3.8-flash", "gemini-3.5-flash-lite"] and len(kept(a)) == 3, (asked, kept(a)))
+check("the first model is refused the search tool, the next works", asked == ["gemini-3.5-flash-lite", "gemini-3.8-flash"] and len(kept(a)) == 3, (asked, kept(a)))
 st = steps(a)
 ref = next((x for x in st if x["what"] == "may not search"), {})
 check("the refusal is on the trail with the status and Google's own words", ref.get("status") == 400 and ref.get("said") == "Search Grounding is not supported for this model.", st)
-check("which model worked is remembered", doc("lookups")["models"]["gemini"].get("worked") == "gemini-3.5-flash-lite", doc("lookups")["models"])
+check("which model worked is remembered", doc("lookups")["models"]["gemini"].get("worked") == "gemini-3.8-flash", doc("lookups")["models"])
 b2 = add_book(T, "Another Brand New Novel", "")
 calls(); lists()
 ask(T, [b2], 3)
-check("next time it is asked first, and the list is not read again", [x["model"] for x in questions(calls())] == ["gemini-3.5-flash-lite"] and lists() == [])
+check("next time it is asked first, and the list is not read again", [x["model"] for x in questions(calls())] == ["gemini-3.8-flash"] and lists() == [])
 rec = doc("lookups"); rec["models"]["gemini"]["at"] -= 8 * DAY; putdoc("lookups", rec)
 ask(T, [add_book(T, "A Third Brand New Novel", "")], 3)
 check("after a week the list is read again", [x["to"] for x in lists()] == ["gemini"])

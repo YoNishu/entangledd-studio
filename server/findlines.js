@@ -212,7 +212,8 @@ export function noteSite(state, site, why, blocked = false) {
 export const resting = (state, site) => { const s = state.rec.sites[site]; return !!(s && s.blocked && Date.now() < (s.until || (s.failed || 0) + DAY)); };
 export function noteBlocked(state, site, why, days = 1) {
   noteSite(state, site, days > 1 ? `${why}; not asked again for ${days} days` : why, true);
-  Object.assign(state.rec.sites[site], { blocked: true, until: Date.now() + days * DAY });
+  Object.assign(state.rec.sites[site], { blocked: true });
+  if (days > 1) state.rec.sites[site].until = Date.now() + days * DAY; else delete state.rec.sites[site].until;
 }
 // IMDb's quotes page answers 202 with a challenge for robots: it is not asked again for a week.
 const IMDB_REST_DAYS = 7;
