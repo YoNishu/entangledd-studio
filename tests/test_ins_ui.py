@@ -44,5 +44,8 @@ with sync_playwright() as p:
     path=dl.value.path(); text=open(path, encoding="utf-8-sig").read().splitlines()
     print("csv:", dl.value.suggested_filename, "| rows:", len(text)-1, "|", text[0][:120]); print("   ", text[1][:170])
     # posts card links here
-    pg.click("#nav-posts"); pg.wait_for_timeout(2500); pg.locator("#week-card button", has_text="Insights").click(); pg.wait_for_timeout(600); print("from Posts ->", pg.evaluate("!document.getElementById('view-insights').hidden"))
+    # the week at a glance lives in Insights now (7 days), not on top of Posts
+    pg.click("#nav-posts"); pg.wait_for_timeout(2500); print("week card in Posts:", pg.locator("#view-posts .week").count(), "| posts fresh line:", pg.inner_text("#posts-fresh"))
+    pg.click("#nav-insights"); pg.wait_for_timeout(1500); pg.locator("#ins-range button[data-range='7']").click(); pg.wait_for_timeout(2000)
+    print("week card in Insights (7 days):", pg.inner_text("#ins-week").replace("\n"," | ")[:300], "| fresh:", pg.inner_text("#ins-fresh"))
     print("errors:", errs); b.close()

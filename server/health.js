@@ -731,7 +731,11 @@ export const open = {
     const looks = env.MEDIA ? await kit.loadDoc(env, "lookups", null).catch(() => null) : null;
     const c = looks && looks.coarse;
     const lastLookup = c && c.at ? { at: c.at, identified: !!c.identified, kind: c.kind || "", year: c.year || 0, kept: c.kept || 0, said: coarseText(c).slice(0, 2400) } : null;
-    return new Response(JSON.stringify({ ...openView(record), lastLookup }), {
+    // How Instagram serves the last three reels (numbers only): "app 6120 kbps 15-nov", newest last.
+    const served = env.MEDIA ? await kit.loadDoc(env, "served", []).catch(() => []) : [];
+    const servedLine = (Array.isArray(served) ? served : []).filter((x) => x && Number.isFinite(x.kbps) && Number.isFinite(x.at)).slice(-3)
+      .map((x) => { const d = ist(x.at); return `${x.via === "instagram" ? "instagram" : "app"} ${Math.round(x.kbps)} kbps ${d.getUTCDate()}-${MONTHS[d.getUTCMonth()].toLowerCase()}`; }).join("; ");
+    return new Response(JSON.stringify({ ...openView(record), lastLookup, served: servedLine }), {
       headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
     });
   },

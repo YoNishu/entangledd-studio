@@ -469,6 +469,11 @@ progress::-moz-progress-bar { background: var(--glass); }
 
 /* ---------- Posts ---------- */
 .week p { margin: 0; }
+/* "Updated ... ago" and Refresh, above Posts and Insights */
+.fresh { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 44px; }
+.fresh .note { margin: 0; flex: 1; }
+.fresh .btn.quiet { flex: none; min-height: 44px; width: auto; padding: 0 12px; }
+.fresh .btn[aria-busy="true"] { opacity: .6; }
 .week h2 { margin: 0; font-size: 18px; }
 .week .q { font-size: 15px; line-height: 1.45; }
 /* the two rows that close the card are quiet and sit on the text's left edge: more about the week, and the way to Insights */

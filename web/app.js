@@ -115,6 +115,7 @@
     if (!sw || !sh) return;
     const scale = Math.max(W / sw, H / sh);
     const dw = sw * scale, dh = sh * scale;
+    c.imageSmoothingEnabled = true; c.imageSmoothingQuality = "high";   // a big photo shrunk smoothly, not jagged
     c.drawImage(el, (W - dw) / 2, (H - dh) / 2, dw, dh);
   }
 
@@ -923,9 +924,10 @@
       let bg, bgName;
       if (state.bg && state.bg.kind === "video") { bg = state.bg.file; bgName = /\.[a-z0-9]{2,5}$/i.test(bg.name) ? bg.name : "clip.mp4"; }
       else {
-        const c = document.createElement("canvas"); c.width = W; c.height = H;
-        drawBackground(c.getContext("2d"));
-        bg = await toBlob(c, "image/jpeg", 0.93); bgName = "background.jpg";
+        // Drawn at twice the reel's size, so the slow zoom has the photo's own detail to work with.
+        const c = document.createElement("canvas"); c.width = W * 2; c.height = H * 2;
+        const ctx = c.getContext("2d"); ctx.scale(2, 2); drawBackground(ctx);
+        bg = await toBlob(c, "image/jpeg", 0.95); bgName = "background.jpg";
       }
       await fontsFor();
       const overlay = await toBlob(compose(true), "image/png");
