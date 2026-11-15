@@ -439,7 +439,7 @@ Reply with a JSON array only: [{"text": "...", "by": "...", "theme": "one or two
 - The passages come from one page (Wikiquote, Goodreads or IMDb) about one book, film or series. A line "== like this ==" is a heading: a character, an episode, a season or a chapter.
 - Copy each line exactly as it appears in the passages: same words, same punctuation. One to three sentences, complete on its own, under 45 words. Leave out the speaker's name before a colon and any stage direction in [brackets].
 - "by" is who says the line: for a film or series the character (the heading above it, or the name before the colon); for a book the author, or "" when the passages do not say.
-- Only lines from the work itself. Skip the opening description of the work, cast lists, what critics and others said about it, headings and links.
+- Only lines from the work itself: what a character says, or the book's own sentences. Skip the opening description of the work, cast lists, what critics and others said about it, headings and links.
 - Choose lines that stand alone without the story around them.
 - If "about" is given, prefer lines on that subject. If "taste" is given, follow it.`;
 

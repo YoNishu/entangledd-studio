@@ -624,6 +624,7 @@ const SEARCH_RULES = `
 Web search:
 - You can search the web. For every work in the "only" list whose exact lines you do not know well, search for them: quote pages (Goodreads, Wikiquote, fan wikis), transcripts, subtitles, reviews and articles that quote the work. Always search for a work you do not recognise; it may be new.
 - Keep a line only when a page you read gives its wording and says it is from that work. Copy the wording exactly as that page has it. Never fill gaps from memory or guess.
+- A line is something a character says in the work, or the work's own words (a sentence of the book, a voice-over). Never words about the work: an article or reference title, a headline, a review, a rating, a plot summary, a tagline, an episode or chapter title.
 - Add "found": the address of the page you took it from.
 - Set "verify" to false only when two separate pages give the same wording for the same work; otherwise true.
 - If nothing real can be found for a work, leave that work out. If nothing can be found at all, reply with [].

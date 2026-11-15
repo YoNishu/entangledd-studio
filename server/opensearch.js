@@ -502,7 +502,8 @@ Reply with a JSON array only: [{"page": the number of the page, "text": "...", "
 - Keep a line only when the page itself presents it as a quote and says who says or wrote it, or which work it is from.
 - "by": the character or person the page credits it to. "from": the book, film or series the page says it is from, or "".
 - Never add a line that is not on the pages, never complete or correct one, never guess who said it.
-- If a work is named in the request, keep only lines the page credits to that work: not lines about the words of its title, and not lines from other works.`;
+- If a work is named in the request, keep only lines the page credits to that work: not lines about the words of its title, and not lines from other works.
+- A line is what a character says in the work, or the work's own words (a sentence of the book, a voice-over). Never words about the work: an article or reference title, a headline, a review or rating, a plot summary, a tagline, an episode or chapter title. If a page has no such line, pick nothing from it.`;
 
 // The pages as passages for Claude: a short page whole; from a long one, the parts around where the work (or
 // "near" words) are named, and its start.
