@@ -19,7 +19,14 @@ putdoc("library", lib)
 xlog()
 
 # ---- 1. added: its first pages are read at once
+def ops(reset=False):
+    o = http("GET", "/__health_ops" + ("?reset=1" if reset else ""))[1]
+    return o["storage"] + calls(reset)["n"]
+ops(reset=True)
 s, b, _ = http("POST", f"/api/library/screen/{w}/look", {}, T)
+cost = ops()
+print("  outside calls of that look (storage included):", cost)
+check("that look stays under 50 outside calls", cost < 50, cost)
 read = [u for e in xlog() if "urls" in e for u in e["urls"]]
 n0 = len(kept(w))
 print("  lines ready after adding it:", n0, "; pages read through Extract:", len(read))
