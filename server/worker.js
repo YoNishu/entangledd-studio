@@ -729,19 +729,31 @@ async function suggestFrom(env, b, already, out = {}) {
 
   const label = [...books.map((x) => x.title), ...screen.map((x) => x.title), ...pages.map((x) => (x.handle ? "@" + x.handle : "a reel you saved")),
     wantOwn ? "your own lines" : "", about ? `about ${about}` : ""].filter(Boolean).join(", ").slice(0, 160);
-  // Seen: everything she has had (word for word), and near-duplicates of what she was shown for these works.
+  // Each quote knows which of the chosen works it came from (for "Quotes you found", and for what was shown).
+  const chosen = [...books.map((x) => ({ ...x, type: "book" })), ...screen.map((x) => ({ ...x, type: x.kind }))];
+  const workOf = (f) => (f.source && f.source.type === "own" ? (wantOwn ? "own" : "")
+    : (chosen.find((w) => w.type === (f.source && f.source.type) && norm(w.title) === norm(f.source && f.source.title)) || {}).id
+      || (chosen.length === 1 && !pages.length ? chosen[0].id : "")) || "";
+  // Seen: everything she has had, word for word, whatever its work. Near-duplicates (a word or two different) are
+  // judged within one work only: what she was shown for it, and what is already in her list from it. Two works
+  // may well have lines that differ by a name.
   const shownDoc = out.shown || shown.emptyShown();
-  const workIds = [...books, ...screen, ...pages].map((x) => x.id).concat(wantOwn ? ["own"] : []);
-  const before = shown.nearSet([...shown.shownFor(shownDoc, workIds), ...already.map((x) => norm(x.text))]);
-  const seen = shown.nearSet(before);
-  for (const x of [...history, ...day]) seen.exact(norm(x.text));
-  for (const w of Object.values(shownDoc.works || {})) for (const n of w.t || []) seen.exact(n);
+  const nearSets = new Map();
+  const nearOf = (id) => {
+    const key = id || "other";
+    if (!nearSets.has(key)) nearSets.set(key, shown.nearSet([...shown.shownFor(shownDoc, [key]), ...already.filter((x) => (x.workId || "other") === key).map((x) => norm(x.text))]));
+    return nearSets.get(key);
+  };
+  const seen = new Set([...history, ...day, ...already].map((x) => norm(x.text)));
+  for (const w of Object.values(shownDoc.works || {})) for (const n of w.t || []) seen.add(n);
+  seen.like = (n, id) => !!id && nearOf(id).like(n);          // for findlines.unused(): near one she was shown for that work
+  seen.seenOrLike = (n, id) => seen.has(n) || seen.like(n, id);
   const fresh = [];
   const fromWorks = books.length + screen.length + pages.length > 0 || !!about;
   let searchedFor = null;      // set when particular works were asked for: their titles, and whether the paid search ran
 
   if (wantOwn) {
-    const mine = shuffle((lib.quotes || []).filter((q) => !seen.seenOrLike(norm(q.text)))).slice(0, fromWorks ? 2 : count);
+    const mine = shuffle((lib.quotes || []).filter((q) => !seen.seenOrLike(norm(q.text), "own"))).slice(0, fromWorks ? 2 : count);
     for (const q of mine) { fresh.push({ text: q.text, author: q.author || "", source: { type: "own", title: q.from || "" }, theme: "", tone: "", verify: false }); seen.add(norm(q.text)); }
     if (!mine.length && !fromWorks) throw new UserError(409, "There are no unused lines of your own left. Add some in the Library.");
   }
@@ -800,21 +812,24 @@ async function suggestFrom(env, b, already, out = {}) {
     let n = 0;
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
-      if (!text || seen.seenOrLike(norm(text))) continue;
+      if (!text || seen.has(norm(text))) continue;
       pool.push(findlines.stamp(kit, lib, cleanSuggestion(s, text)));
       seen.add(norm(text));
       if (++n >= ask) break;
     }
     fresh.push(...ranker.choose(pool, want, fresh));
   }
-  // Last, whatever the source: nothing she was shown for these works, and no two near the same.
-  const kept = fresh.filter((f) => { const n = norm(f.text); if (before.seenOrLike(n)) return false; before.add(n); return true; });
+  // Last, whatever the source: within each work, nothing near a line she was shown, and no two near the same.
+  const kept = fresh.filter((f) => { const set = nearOf(workOf(f)), n = norm(f.text); if (set.seenOrLike(n)) return false; set.add(n); return true; });
   fresh.length = 0; fresh.push(...kept);
-  // Fewer than asked because a work she has had lines from has no new ones left: said plainly.
-  const spent = dry.filter((w) => shown.shownFor(shownDoc, [w.id]).length);
+  // Fewer than asked because works that were looked up (now or a moment ago) have nothing new left: said plainly,
+  // naming every one of them, and only those (a work not tried this time is never named).
+  const spent = dry;
   if (fresh.length < count && spent.length) {
     out.said = `That's every line I could find from ${andTitles(spent.map((w) => w.title))} for now. I'll keep looking.`;
-    if (!fresh.length) return [];
+    out.dry = spent.map((w) => w.id);
+    // Nothing at all, from works she has had lines from: the plain sentence, not an error.
+    if (!fresh.length && spent.some((w) => shown.shownFor(shownDoc, [w.id]).length)) return [];
   }
   if (!fresh.length) {
     if (searchedFor) {
@@ -825,11 +840,6 @@ async function suggestFrom(env, b, already, out = {}) {
     throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
   }
   const now = Date.now();
-  // Each quote knows which of the chosen works it came from (for "Quotes you found", and for what was shown).
-  const chosen = [...books.map((x) => ({ ...x, type: "book" })), ...screen.map((x) => ({ ...x, type: x.kind }))];
-  const workOf = (f) => (f.source && f.source.type === "own" ? (wantOwn ? "own" : "")
-    : (chosen.find((w) => w.type === (f.source && f.source.type) && norm(w.title) === norm(f.source && f.source.title)) || {}).id
-      || (chosen.length === 1 && !pages.length ? chosen[0].id : "")) || "";
   return eng.explain(fresh).map((f) => ({ id: crypto.randomUUID(), state: "new", askedFor: label, askedAt: now, workId: workOf(f), ...f }));
 }
 const andTitles = (a) => (a.length < 2 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}`);
