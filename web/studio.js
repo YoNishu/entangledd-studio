@@ -226,6 +226,8 @@
     $("today-note").textContent = !n ? "That's all five for today. Want more? Ask in the Nishiii section."
       : n === 1 ? "One for today." : `${word} for today, best first.`;
   }
+  // What Today shows now, in its order and with its numbers: the scorer's line in the Nishiii section lists the same.
+  window.StudioKit.today = () => (todayData ? todayData.items.filter((i) => i.rank) : []);
 
   async function loadToday(force) {
     if (!S.server.ai) {
