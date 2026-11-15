@@ -341,10 +341,10 @@ function gemini(body, model) {
     groundingMetadata: { webSearchQueries: ["who said it"], groundingChunks: asked.sites.map((site, i) => ({ web: { uri: `https://vertexaisearch.cloud.google.com/grounding-api-redirect/V${i}`, title: site } })), groundingSupports: [] } }] } };
   const title = titleIn(body.contents[0].parts[0].text);
   const lines = unknown(title) ? [] : [
-    { text: `Google found this first line from ${title}, word for word.`, by: "Someone in it", from: title, page: "https://www.goodreads.com/work/quotes/1", also: "" },
-    { text: `Google found this second line from ${title}, on one page only.`, by: "Someone in it", from: title, page: "https://www.goodreads.com/work/quotes/1", also: "" },
+    { text: `Google found this first line from it, word for word.`, by: "Someone in it", from: title, page: "https://www.goodreads.com/work/quotes/1", also: "" },
+    { text: `Google found this second line from it, on one page only.`, by: "Someone in it", from: title, page: "https://www.goodreads.com/work/quotes/1", also: "" },
     { text: `This third line about ${title} names a page that was never read.`, by: "", from: title, page: "https://made-up.example.org/quotes", also: "" },
-    { text: `Google found this fourth line from ${title}, named on a site it read.`, by: "", from: title, page: "https://www.imdb.com/title/tt1/quotes/", also: "" }];
+    { text: `Google found this fourth line from it, named on a site it read.`, by: "", from: title, page: "https://www.imdb.com/title/tt1/quotes/", also: "" }];
   const text = "```json\n" + JSON.stringify(lines) + "\n```";
   const answer = { candidates: [{ content: { role: "model", parts: [{ text }] }, finishReason: "STOP", index: 0 }], usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 200, totalTokenCount: 320 }, modelVersion: model };
   if (mode.gemini !== "memory") {
@@ -369,8 +369,8 @@ function openai(body) {
     { type: "message", id: "msg_2", status: "completed", role: "assistant", content: [{ type: "output_text", text: asked.text, annotations: [] }] }] } };
   const title = titleIn(body.input);
   const lines = unknown(title) ? [] : [
-    { text: `OpenAI found this first line from ${title}, on two sites.`, by: "Someone in it", from: title, page: "https://www.goodreads.com/work/quotes/2", also: "https://www.imdb.com/title/tt2/quotes/" },
-    { text: `OpenAI found this second line from ${title}, on one site.`, by: "", from: title, page: "https://www.goodreads.com/work/quotes/2", also: "" },
+    { text: `OpenAI found this first line from it, on two sites.`, by: "Someone in it", from: title, page: "https://www.goodreads.com/work/quotes/2", also: "https://www.imdb.com/title/tt2/quotes/" },
+    { text: `OpenAI found this second line from it, on one site.`, by: "", from: title, page: "https://www.goodreads.com/work/quotes/2", also: "" },
     { text: `This third line about ${title} names a page that was never opened.`, by: "", from: title, page: "https://made-up.example.org/quotes", also: "" }];
   const text = JSON.stringify(lines);
   return { status: 200, body: { id: "resp_1", object: "response", status: "completed", model: body.model, output: [

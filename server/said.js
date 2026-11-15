@@ -130,16 +130,18 @@ export function isSaid(line, work = null, ctx = {}) {
   if (TITLED.test(before) || /^(episode|chapter|part)\s+\d+\b/i.test(text)) return no("an episode title");
   if (TAGGED.test(before)) return no("a tagline");
   if (SUMMED.test(before)) return no("a synopsis");
-  // What it says.
+  // What it says. On a quotes page's own list the page's structure already says it is a line, and that counts
+  // for more than its words: only the judge may still say otherwise.
   if (RATING.test(text)) return no("a review");
-  if (SYNOPSIS.test(text) || described(text, work)) return no("a synopsis");
-  if (ABOUT.test(text) || ABOUT_NAMED.test(text)) return no("about the work");
-  const named = namesItself(text, work);
+  const listed = ctx.place === "quotes";
+  if (!listed && (SYNOPSIS.test(text) || described(text, work))) return no("a synopsis");
+  if (!listed && (ABOUT.test(text) || ABOUT_NAMED.test(text))) return no("about the work");
+  const named = listed ? "" : namesItself(text, work);
   if (named) return no(named);
-  if (titleCase(text)) return no("a heading");
+  if (!listed && titleCase(text)) return no("a heading");
   // A headline: no sentence of its own, nobody speaking to anyone, and the page goes on after it with a
   // full stop outside the quotation marks and a new capital (a publisher, a site's name).
-  if (!endsSentence(text) && !PRONOUN.test(text) && text.split(" ").length <= 16 && /^\s*[.]\s+[A-Z]/.test(after)
+  if (!listed && !endsSentence(text) && !PRONOUN.test(text) && text.split(" ").length <= 16 && /^\s*[.]\s+[A-Z]/.test(after)
     && !/^\s*[.]\s+(he|she|they|it|then|and|but)\b/i.test(after)) return no("a headline");
   const proof = ctx.place === "quotes" || isCharacter(work, by) || (ctx.place === "mdl" && (!!ctx.quoted || !!by)) || (!work && !!by);
   return { ok: true, why: "", proof };

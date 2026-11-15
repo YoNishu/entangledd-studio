@@ -94,7 +94,8 @@ kept("the title's words in a line, as words (The Early Spring)", "Their love sur
 kept("a line that says 'season' as a season", "In the height of summer, there are no ice sculptures.", es, { place: "mdl", quoted: true });
 kept("a line that says 'drama' as a word", "Spare me the drama, I only came to say goodbye.", tb, { place: "page", quoted: true });
 kept("a line that says 'seasons'", "The seasons change, but I stay right here with you.", es, { place: "page", quoted: true });
-kept("a one-word title at the start of a sentence is a word", "Home is wherever you are standing when it rains.", { title: "Home", type: "film" }, { place: "quotes" });
+kept("a one-word title at the start of a sentence is a word", "Home is wherever you are standing when it rains.", { title: "Home", type: "film" }, { place: "page", quoted: true });
+refused("a one-word title inside a sentence names the work", "I watched Home three times and cried each time.", { title: "Home", type: "film" }, { place: "page", quoted: true }, "about the work");
 
 // No real line lost from what the earlier tests keep (test_a13_unit's real review shapes).
 const review = "Story 8.0 Acting/Cast 9.0 This review may contain spoilers You don't have to be perfect to be worthy of love.. Oh man, the moral puzzle.. "
