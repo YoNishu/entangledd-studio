@@ -32,7 +32,7 @@ with sync_playwright() as p:
 
     print("Everything fine")
     check("one calm line", wait_text(pg, "#health-summary", "Everything is working."), pg.inner_text("#health-summary"))
-    check("all seventeen checks are tucked away", pg.inner_text("#health-rest-label") == "See all 17 checks", pg.inner_text("#health-rest-label"))
+    check("all eighteen checks are tucked away", pg.inner_text("#health-rest-label") == "See all 18 checks", pg.inner_text("#health-rest-label"))
 
     print("Check now looks at everything, in three small requests")
     # The comments permission as if it had never been given: the record forgets having seen it.

@@ -37,7 +37,7 @@ with sync_playwright() as p:
         open_settings(pg)
         check("one calm line", wait_text(pg, "#health-summary", "Everything is working. Checked today at"), pg.inner_text("#health-summary"))
         check("no list of problems", pg.is_hidden("#health-attention"))
-        check("the seven checks are tucked away, closed", pg.is_visible("#health-rest") and pg.inner_text("#health-rest-label") == "See all 17 checks"
+        check("the seven checks are tucked away, closed", pg.is_visible("#health-rest") and pg.inner_text("#health-rest-label") == "See all 18 checks"
               and not pg.evaluate("document.getElementById('health-rest').open"), pg.inner_text("#health-rest-label"))
         check("a Check now button", pg.inner_text("#health-check") == "Check now" and pg.is_enabled("#health-check"))
         check("it sits between the Instagram part and This device", pg.evaluate("""(() => { const y = (s) => document.querySelector(s).getBoundingClientRect().top;
@@ -45,9 +45,9 @@ with sync_playwright() as p:
         pg.locator("#health-title").scroll_into_view_if_needed(); pg.screenshot(path=f"{S}health_all_well_{width}.png")
         pg.click("#health-rest-label"); pg.wait_for_timeout(200)
         rows = pg.locator("#health-rest-list > li")
-        check("opened: seven lines, each with a title, a sentence and a label", rows.count() == 17 and all(
-            rows.nth(i).locator(".main").inner_text() and rows.nth(i).locator(".sub").inner_text() and rows.nth(i).locator(".chip").inner_text() for i in range(17)))
-        labels = [rows.nth(i).locator(".chip").inner_text() for i in range(17)]
+        check("opened: seven lines, each with a title, a sentence and a label", rows.count() == 18 and all(
+            rows.nth(i).locator(".main").inner_text() and rows.nth(i).locator(".sub").inner_text() and rows.nth(i).locator(".chip").inner_text() for i in range(18)))
+        labels = [rows.nth(i).locator(".chip").inner_text() for i in range(18)]
         check("all labelled Working", labels[:7] == ["Working"] * 7 and set(labels[7:]) <= {"Working", "Not set up", "Not checked yet"} and labels[7:10] == ["Working"] * 3, labels)
         check("nothing runs off the side", fits(pg))
         pg.locator("#health-rest").scroll_into_view_if_needed(); pg.screenshot(path=f"{S}health_all_seven_{width}.png")

@@ -99,7 +99,7 @@ putdoc("health", odd)
 s, b, _ = http("GET", "/api/health"); raw = http("GET", "/api/health", raw=True)[1]
 # (Agent 6: the open address now always lists every line it should have; one the record has nothing usable for is "unknown".)
 known = {i["id"]: i for i in b["items"]}
-check("odd entries: the open address answers, with only the lines it knows", s == 200 and len(b["items"]) == 17 and "evil" not in known
+check("odd entries: the open address answers, with only the lines it knows", s == 200 and len(b["items"]) == 18 and "evil" not in known
       and [k for k, v in known.items() if v["state"] != "unknown"] == ["music"], (s, b))
 check("a state it doesn't know is shown as unknown; odd dates and counts as nothing", known["github"] == {"id": "github", "state": "unknown", "daysLeft": None, "checked": None}, known["github"])
 check("titles come from the app, never from the record", b["message"] == "1 thing needs attention. Free music: needs attention soon." and "Mine" not in raw and "evil" not in raw and not keys_in(raw), b["message"])

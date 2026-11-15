@@ -4,7 +4,7 @@ import json, sys
 from a6lib import *
 
 ALL = ["instagram", "github", "reels", "nishiii", "backgrounds", "music", "timers",
-       "books", "tracks", "photos", "selfcheck", "feed", "numbers", "comments", "backup", "cleaning", "errors"]
+       "books", "tracks", "photos", "selfcheck", "lookups", "feed", "numbers", "comments", "backup", "cleaning", "errors"]
 def states(items): return {k: v["state"] for k, v in items.items()}
 def public(): return http("GET", "/api/health")[1]
 def writes(): return [x for x in glog() if x["method"] != "GET" and x["path"] not in ("/oauth/access_token",)]
@@ -16,7 +16,7 @@ check("before any check has run, the open record says so and lists nothing", pub
 T = login()
 settle()
 pub = public()
-check("after the timers' first turns, all seventeen lines are there, in order", [i["id"] for i in pub["items"]] == ALL, [i["id"] for i in pub["items"]])
+check("after the timers' first turns, all eighteen lines are there, in order", [i["id"] for i in pub["items"]] == ALL, [i["id"] for i in pub["items"]])
 st = {i["id"]: i["state"] for i in pub["items"]}
 check("with Instagram not connected its three probes are 'off', not alarms", st["feed"] == st["numbers"] == st["comments"] == "off" and st["selfcheck"] == "off", st)
 check("the services and the housekeeping are fine", all(st[k] == "ok" for k in ["books", "tracks", "photos", "backup", "cleaning", "errors"]), st)
