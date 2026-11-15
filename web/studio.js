@@ -145,10 +145,10 @@
     return null;
   }
 
-  // base is "suggestions" (Today's five) or "asked" (quotes she asked Nishiii for).
+  // base is "suggestions" (Today's five) or "asked" (quotes she found with "Find quotes" in the Library).
   // date is set for a quote from an earlier day, so the server knows which day's list it belongs to.
   function card(item, base = "suggestions", date = "") {
-    const use = el("button", { className: "btn soft ic ic-create", textContent: "Use this" });
+    const use = el("button", { className: "btn soft ic ic-create", textContent: base === "asked" ? "Create with this" : "Use this" });
     const reword = el("button", { className: "btn ic ic-sparkle", textContent: "Reword" });
     const skip = el("button", { className: "btn quiet", textContent: "Skip" });
     const node = el("article", { className: "card" },
@@ -173,6 +173,7 @@
     };
     use.addEventListener("click", () => {
       mark("used");
+      if (base === "asked") closeAsk();
       onCanvas = { author: item.author, theme: item.theme, tone: item.tone, source: item.source.type, suggestionId: item.id };
       S.setQuote(item.text, item.author);
       show("create");
@@ -181,14 +182,15 @@
       quote: item.text, author: item.author,
       apply: (quote, altered) => {
         mark("used");
+        if (base === "asked") closeAsk();
         onCanvas = { author: altered ? "" : item.author, theme: item.theme, tone: item.tone, source: item.source.type, suggestionId: item.id };
         S.setQuote(quote, altered ? "" : item.author); show("create");
       },
     }));
     skip.addEventListener("click", () => {
       mark("rejected"); node.remove();
-      if (base === "suggestions" && !date && !$("suggestions").children.length) $("today-note").textContent = "That's all five for today. Want more? Ask in the Nishiii section.";
-      if (base === "asked" && !$("asked-list").children.length) askedNote("Nothing here now. Ask for more whenever you like.");
+      if (base === "suggestions" && !date && !$("suggestions").children.length) $("today-note").textContent = "That's all five for today. Want more? Find quotes in the Library.";
+      if (base === "asked" && askedData) renderAsked(askedData);
     });
     return node;
   }
@@ -199,7 +201,7 @@
     $("today-weekday").textContent = d.toLocaleDateString(undefined, { weekday: "long" });
     $("today-date").textContent = d.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
     $("suggestions").replaceChildren(...data.items.map((i) => card(i)));
-    $("today-note").textContent = data.items.length ? "Five quotes Nishiii chose for you today." : "That's all five for today. Want more? Ask in the Nishiii section.";
+    $("today-note").textContent = data.items.length ? "Five quotes Nishiii chose for you today." : "That's all five for today. Want more? Find quotes in the Library.";
   }
 
   async function loadToday(force) {
@@ -238,21 +240,30 @@
     }));
   }
 
-  // ---------- Nishiii: quotes she asks for, kept apart from Today ----------
-  let askedData = null;
-  function askedNote(msg) { $("asked-note").textContent = msg; $("asked-note").hidden = !msg; }
+  // ---------- Library: "Quotes you found", kept apart from Today, newest first ----------
+  let askedData = null, foundAll = false;
+  const FOUND_FIRST = 4;           // the list is folded after these, with "Show all"
+  function foundNote(msg) { $("found-note").textContent = msg; $("found-note").hidden = !msg; }
   function renderAsked(data) {
     askedData = data;
-    $("asked-list").replaceChildren(...data.items.map((i) => card(i, "asked")));
-    askedNote("");
+    const items = data.items;
+    $("found-wrap").hidden = !items.length;
+    $("found-list").replaceChildren(...(foundAll ? items : items.slice(0, FOUND_FIRST)).map((i) => card(i, "asked")));
+    $("found-all").hidden = foundAll || items.length <= FOUND_FIRST;
+    $("found-all").textContent = `Show all ${items.length}`;
+    foundNote("");
   }
   async function loadAsked() {
     if (!S.server.ai) return;
-    try { renderAsked(await getJson("asked")); } catch (e) { askedNote(friendly(e)); }
+    try { renderAsked(await getJson("asked")); } catch (e) { $("found-wrap").hidden = false; foundNote(friendly(e)); }
   }
+  $("found-all").addEventListener("click", () => { foundAll = true; if (askedData) renderAsked(askedData); });
 
-  // ---------- the sheet for choosing what to ask about ----------
-  const asking = { picked: new Set(), lib: null, insp: null };
+  // ---------- the "Find quotes" sheet: choose, find, read, choose one ----------
+  const COUNTS = [5, 10, 15, 20], ROUND = 5;     // found five at a time, so they show as they come and each request stays small
+  const COUNT_KEY = "ds-find-count";
+  const asking = { picked: new Set(), lib: null, insp: null, count: 10, busy: false };
+  try { const n = Number(localStorage.getItem(COUNT_KEY)); if (COUNTS.includes(n)) asking.count = n; } catch (e) { /* private mode: the default */ }
   function pickButton(id, label) {
     const b = el("button", { type: "button", textContent: label });
     b.setAttribute("aria-pressed", String(asking.picked.has(id)));
@@ -261,6 +272,19 @@
       b.setAttribute("aria-pressed", String(asking.picked.has(id)));
     });
     return b;
+  }
+  function renderCount() {
+    $("ask-count").replaceChildren(...COUNTS.map((n) => {
+      const b = el("button", { type: "button", id: "ask-count-" + n, textContent: String(n) });
+      b.setAttribute("aria-pressed", String(n === asking.count));
+      b.addEventListener("click", () => {
+        asking.count = n;
+        try { localStorage.setItem(COUNT_KEY, String(n)); } catch (e) { /* not remembered, still used */ }
+        renderCount();
+      });
+      return b;
+    }));
+    $("ask-go").textContent = `Find ${asking.count} quotes`;
   }
   function renderAsk() {
     const lib = asking.lib, insp = asking.insp;
@@ -276,16 +300,65 @@
     $("ask-groups").replaceChildren(...(groups.length ? groups
       : [el("p", { className: "empty", textContent: "Nothing saved yet. Add a book, film or series below, or just say what the quotes should be about." })]));
   }
-  $("ask-open").addEventListener("click", async () => {
-    $("ask-status").textContent = "";
+  // The choosing part, or (once quotes are coming) "Find more" and "Change what".
+  function choosing(on) {
+    $("ask-choose").hidden = !on; $("ask-go").hidden = !on; $("ask-after").hidden = on;
+  }
+  // Opens the sheet; "only" is a book, film or series to have chosen alone (its own "Find quotes" in the Library).
+  async function openAsk(only) {
+    if (only) asking.picked = new Set([only]);
+    $("ask-status").textContent = ""; $("ask-progress").textContent = "";
+    $("ask-results").replaceChildren();
+    choosing(true); renderCount();
     $("ask-sheet").hidden = false;
+    $("ask-sheet").querySelector(".sheet-body").scrollTo({ top: 0 });
     try {
       [asking.lib, asking.insp] = await Promise.all([getJson("library"), getJson("inspirations").then((d) => d.items)]);
       renderAsk();
     } catch (e) { $("ask-status").textContent = friendly(e); }
-  });
-  $("ask-close").addEventListener("click", () => { $("ask-sheet").hidden = true; });
-  $("ask-sheet").addEventListener("click", (e) => { if (e.target === $("ask-sheet")) $("ask-sheet").hidden = true; });
+  }
+  // Closing loses nothing: every quote found (and not skipped) is already kept, and shown in the Library.
+  function closeAsk() {
+    if ($("ask-sheet").hidden) return;
+    $("ask-sheet").hidden = true;
+    if (askedData) renderAsked(askedData); else loadAsked();
+  }
+  // Finds the chosen number, a round at a time; each round's quotes go on top as they come. Stops early, saying
+  // why, when nothing new is left.
+  async function findQuotes() {
+    if (asking.busy) return;
+    const sources = [...asking.picked], about = $("ask-about").value, want = asking.count;
+    asking.busy = true;
+    $("ask-go").disabled = true; $("ask-more").disabled = true;
+    $("ask-status").textContent = "";
+    $("ask-progress").textContent = `Finding ${want} quotes…`;
+    let got = 0, said = "";
+    try {
+      for (let round = 0; got < want && round < 8; round++) {
+        const data = await send("asked", "POST", { sources, about, count: Math.min(ROUND, want - got) });
+        askedData = data;
+        const fresh = (data.fresh || []).map((id) => data.items.find((i) => i.id === id)).filter(Boolean);
+        if (fresh.length) choosing(false);
+        $("ask-results").prepend(...fresh.map((i) => card(i, "asked")));
+        got += fresh.length;
+        if (data.said) { said = data.said; break; }
+        if (!fresh.length) break;
+        if (got < want) $("ask-progress").textContent = `Found ${got} of ${want}…`;
+      }
+      $("ask-progress").textContent = said ? (got ? `Found ${got}. ${said}` : said)
+        : got >= want ? `Found ${got} quotes. They stay in your Library too.` : `Found ${got} of ${want}. That's all Nishiii could find just now.`;
+    } catch (e) {
+      $("ask-progress").textContent = got ? `Found ${got} of ${want}.` : "";
+      $("ask-status").textContent = friendly(e);
+    } finally {
+      asking.busy = false;
+      $("ask-go").disabled = false; $("ask-more").disabled = false;
+      if ($("ask-sheet").hidden && askedData) renderAsked(askedData);
+    }
+  }
+  $("find-open").addEventListener("click", () => openAsk());
+  $("ask-close").addEventListener("click", closeAsk);
+  $("ask-sheet").addEventListener("click", (e) => { if (e.target === $("ask-sheet")) closeAsk(); });
   $("ask-add").addEventListener("submit", async (e) => {
     e.preventDefault();
     const title = $("ask-new").value.trim(), kind = $("ask-new-kind").value;
@@ -296,19 +369,12 @@
       [...asking.lib.books, ...(asking.lib.screen || [])].filter((x) => !before.has(x.id)).forEach((x) => asking.picked.add(x.id));
       $("ask-new").value = ""; $("ask-status").textContent = "";
       renderAsk();
+      if (!$("view-library").hidden) renderLibrary(asking.lib);
     } catch (err) { $("ask-status").textContent = friendly(err); }
   });
-  $("ask-go").addEventListener("click", async () => {
-    const btn = $("ask-go");
-    btn.disabled = true; btn.textContent = "Finding quotes…";
-    $("ask-status").textContent = "";
-    try {
-      renderAsked(await send("asked", "POST", { sources: [...asking.picked], about: $("ask-about").value, count: 5 }));
-      $("ask-sheet").hidden = true;
-      $("view-nishiii").scrollTo({ top: 0 });
-    } catch (e) { $("ask-status").textContent = friendly(e); }
-    finally { btn.disabled = false; btn.textContent = "Get five quotes"; }
-  });
+  $("ask-go").addEventListener("click", findQuotes);
+  $("ask-more").addEventListener("click", findQuotes);
+  $("ask-change").addEventListener("click", () => { choosing(true); $("ask-sheet").querySelector(".sheet-body").scrollTo({ top: 0, behavior: "smooth" }); });
 
   // ---------- Library: her quotes and books ----------
   function note(msg) { $("library-note").textContent = msg; $("library-note").hidden = !msg; if (msg) $("library-note").scrollIntoView({ block: "nearest" }); }
@@ -320,7 +386,10 @@
       remove.addEventListener("click", async () => {
         try { renderLibrary(await send(`library/${kind}/${item.id}`, "DELETE")); } catch (e) { note(friendly(e)); }
       });
-      return el("li", {}, el("div", {}, el("p", { className: "main", textContent: main }), sub ? el("p", { className: "sub", textContent: sub }) : null, ...extra), remove);
+      const find = (kind === "books" || kind === "screen") && S.server.ai
+        ? el("button", { type: "button", className: "btn small soft ic ic-sparkle find-row", id: "find-" + item.id, textContent: "Find quotes" }) : null;
+      if (find) find.addEventListener("click", () => openAsk(item.id));
+      return el("li", {}, el("div", {}, el("p", { className: "main", textContent: main }), sub ? el("p", { className: "sub", textContent: sub }) : null, ...extra, find), remove);
     };
     // Real lines found for a book, film or series (on Wikiquote, a quote site or the web), kept for next time.
     const foundRow = (kind, x) => {
@@ -434,7 +503,9 @@
   }
 
   async function loadLibrary() {
+    $("find-top").hidden = !S.server.ai;
     if (!S.server.on) { note("Your Library isn't available right now."); return; }
+    loadAsked();
     try { renderLibrary(await getJson("library")); note(""); } catch (e) { note(friendly(e)); }
     try { renderInspirations(await getJson("inspirations")); } catch (e) { inspNote(friendly(e)); }
   }
@@ -1263,8 +1334,6 @@
     }) : [el("li", {}, el("p", { className: "empty", textContent: "No notes yet." }))]));
   }
   async function loadTaste() {
-    $("ask-open").hidden = !S.server.ai;
-    loadAsked();
     if (!S.server.ai) { $("taste-note").textContent = "This isn't switched on yet."; return; }
     try { renderTaste(await getJson("taste")); } catch (e) { $("taste-note").textContent = friendly(e); }
   }
@@ -1485,7 +1554,13 @@
       } else if (a.type === "open" && VIEWS.includes(a.section)) {
         $("chat").hidden = true; show(a.section);
       } else if (a.type === "refresh") {
-        if (a.what === "asked" && current === "nishiii") loadAsked();
+        if (a.what === "asked") {
+          // Quotes Nishiii found in the chat are kept under "Quotes you found" in the Library.
+          if (current === "library") loadAsked();
+          const go = el("button", { className: "btn act ic ic-quote", type: "button", textContent: "See them in the Library" });
+          go.addEventListener("click", () => { $("chat").hidden = true; show("library"); });
+          $("chat-log").append(go);
+        }
         if (a.what === "taste" && current === "nishiii") loadTaste();
         if (a.what === "library" && current === "library") loadLibrary();
       }

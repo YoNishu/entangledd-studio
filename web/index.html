@@ -119,6 +119,17 @@ try {
 <section class="page" id="view-library" aria-label="Library" hidden>
   <p class="note" id="library-note" role="status" hidden></p>
 
+  <div id="find-top">
+    <button class="btn primary ic ic-sparkle" id="find-open" type="button">Find quotes</button>
+    <p class="note">Real lines from your books, films and series. Choose one, or mix a few.</p>
+  </div>
+  <div id="found-wrap" hidden>
+    <h2 class="ic ic-quote">Quotes you found</h2>
+    <p class="note" id="found-note" role="status" hidden></p>
+    <div class="cards" id="found-list"></div>
+    <button class="btn quiet" id="found-all" type="button" hidden>Show all</button>
+  </div>
+
   <h2 class="ic ic-quote">Your own quotes</h2>
   <p class="note">Nishiii uses these in your daily five, word for word.</p>
   <details class="more">
@@ -266,12 +277,7 @@ try {
 </section>
 
 <section class="page" id="view-nishiii" aria-label="Nishiii" hidden>
-  <h2>Ask Nishiii for quotes</h2>
-  <p class="note">Five quotes right now, from any book, film, series or page you choose.</p>
-  <button class="btn primary ic ic-sparkle" id="ask-open">Ask for quotes</button>
   <button class="btn ic ic-chat" id="nishiii-chat" type="button" hidden>Chat with Nishiii</button>
-  <p class="note" id="asked-note" role="status" hidden></p>
-  <div class="cards" id="asked-list"></div>
 
   <div class="headrow">
     <h2>Your taste</h2>
@@ -498,10 +504,11 @@ try {
 <div class="sheet" id="ask-sheet" role="dialog" aria-modal="true" aria-labelledby="ask-title" hidden>
   <div class="sheet-body">
     <header class="sheet-head">
-      <h2 id="ask-title">Get quotes from…</h2>
+      <h2 id="ask-title">Find quotes</h2>
       <button class="iconbtn close ic ic-close" id="ask-close" aria-label="Close">Close</button>
     </header>
-    <p class="note">Tap what you want quotes from, one or several. It all stays in your Library too.</p>
+    <div id="ask-choose">
+    <p class="note">Tap what you want quotes from, one or several. What you find stays in your Library.</p>
     <div id="ask-groups"></div>
     <details class="more">
       <summary class="ic ic-plus">Add something new</summary>
@@ -514,8 +521,16 @@ try {
       </div>
     </details>
     <label class="stack"><span>About (optional)</span><input id="ask-about" type="text" placeholder="Such as letting go, or the sea"></label>
+    <div id="ask-howmany"><h3>How many</h3><div class="picks" id="ask-count" role="group" aria-label="How many"></div></div>
+    </div>
     <p class="status" id="ask-status" role="status"></p>
-    <button class="btn primary ic ic-sparkle" id="ask-go">Get five quotes</button>
+    <button class="btn primary ic ic-sparkle" id="ask-go" type="button">Find 10 quotes</button>
+    <div class="acts" id="ask-after" hidden>
+      <button class="btn primary ic ic-sparkle" id="ask-more" type="button">Find more</button>
+      <button class="btn quiet" id="ask-change" type="button">Change what</button>
+    </div>
+    <p class="note" id="ask-progress" role="status" aria-live="polite"></p>
+    <div class="cards" id="ask-results"></div>
   </div>
 </div>
 
