@@ -65,6 +65,8 @@
     style: "sea",
     author: "",          // the author of the quote on the canvas, if it came with one
     shape: "reel",       // "reel" (9:16) or "post" (4:5, for single pictures and carousels)
+    draftId: "",         // this piece of work, kept as a draft on the server (web/drafts.js)
+    of: "",              // the made reel it is an edit of, if any: making it again replaces that one
   };
   let nextId = 1;
 
@@ -518,7 +520,7 @@
   }
   // "info" says where the file came from: { from: "search", words } for one picked from the photo and video search.
   function loadBackground(file, info) {
-    const origin = { from: (info && info.from) || "own", words: (info && info.words) || "" };
+    const origin = { from: (info && info.from) || "own", words: (info && info.words) || "", credit: (info && info.credit) || "" };
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
       const isVideo = file.type.startsWith("video/") || /\.(mov|mp4|m4v|webm)$/i.test(file.name);
@@ -535,13 +537,14 @@
           if (isFinite(v.duration)) state.length = Math.round(Math.min(30, Math.max(5, v.duration)));
           v.play().catch(() => {});
           syncBackgroundPane();
+          saveDraft();
           resolve();
         }, { once: true });
         v.addEventListener("error", fail, { once: true });
         v.src = url; v.load();
       } else {
         const img = new Image();
-        img.onload = () => { clearBackground(); state.bg = { kind: "image", el: img, url, name: file.name, file, ...origin }; syncBackgroundPane(); resolve(); };
+        img.onload = () => { clearBackground(); state.bg = { kind: "image", el: img, url, name: file.name, file, ...origin }; syncBackgroundPane(); saveDraft(); resolve(); };
         img.onerror = fail;
         img.src = url;
       }
@@ -552,7 +555,7 @@
     $("file").value = "";
     if (file) loadBackground(file).catch((e) => say(e.message));
   });
-  $("clear-bg").addEventListener("click", clearBackground);
+  $("clear-bg").addEventListener("click", () => { clearBackground(); saveDraft(); });
 
   // ---------- music that becomes part of the reel: your own file, or a track from the free library ----------
   const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -606,6 +609,7 @@
         state.music = { file, url, el, ext, duration: el.duration, start: 0, volume: 0.8, from: (info && info.from) || "own",
           title: (info && info.title) || file.name.replace(/\.[a-z0-9]{2,5}$/i, ""), artist: (info && info.artist) || "", licence: (info && info.licence) || "", credit: (info && info.credit) || "" };
         syncMusicPane();
+        saveDraft();
         resolve();
       };
       el.src = url;
@@ -617,9 +621,9 @@
     $("tune-say").textContent = "";
     if (file) loadMusic(file).catch((e) => { $("tune-say").textContent = e.message; });
   });
-  $("tune-clear").addEventListener("click", clearMusic);
-  $("tune-start").addEventListener("input", () => { state.music.start = +$("tune-start").value; stopTune(); syncMusicPane(); });
-  $("tune-vol").addEventListener("input", () => { state.music.volume = +$("tune-vol").value / 100; state.music.el.volume = state.music.volume; syncMusicPane(); });
+  $("tune-clear").addEventListener("click", () => { clearMusic(); saveDraft(); });
+  $("tune-start").addEventListener("input", () => { state.music.start = +$("tune-start").value; stopTune(); syncMusicPane(); saveDraft(); });
+  $("tune-vol").addEventListener("input", () => { state.music.volume = +$("tune-vol").value / 100; state.music.el.volume = state.music.volume; syncMusicPane(); saveDraft(); });
   // Plays the part of the track the reel will use, at the chosen volume, and stops where the reel would end.
   $("tune-play").addEventListener("click", async () => {
     const m = state.music;
@@ -904,10 +908,17 @@
   }
   async function makeReel() {
     const made = madeWith(), music = state.music;
+    const snap = snapshot(), files = draftFiles();      // what this reel is made from, kept so she can come back to it
     stopTune();
     $("done").hidden = true;
     syncReelPane("progress");
     try {
+      // Her background and music are kept with the draft first (web/drafts.js); a video or a song kept there is
+      // then used by the reel as it is, so nothing is sent twice. If keeping fails, the reel is sent as before.
+      const keepFile = (f, words) => (f && window.Studio.storeFile
+        ? window.Studio.storeFile(f, (pct) => progress(words, pct)).catch(() => "") : Promise.resolve(""));
+      const bgFile = await keepFile(files.bg, "Sending the background…");
+      const musicFile = await keepFile(music && music.file, "Sending the music…");
       // The background: her video as it is, or the still picture exactly as shown.
       let bg, bgName;
       if (state.bg && state.bg.kind === "video") { bg = state.bg.file; bgName = /\.[a-z0-9]{2,5}$/i.test(bg.name) ? bg.name : "clip.mp4"; }
@@ -921,8 +932,9 @@
 
       progress("Sending the background…", 0);
       const job = await (await api("jobs", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ length: state.length, keepAudio: !state.mute, fade: state.fade, bgName, bgSize: bg.size }) })).json();
-      const total = Math.max(1, Math.ceil(bg.size / job.partSize)), parts = [];
+        body: JSON.stringify({ length: state.length, keepAudio: !state.mute, fade: state.fade, bgName, bgSize: bg.size,
+          bgFile: state.bg && state.bg.kind === "video" && bg === files.bg ? bgFile : "" }) })).json();
+      const total = job.reused ? 0 : Math.max(1, Math.ceil(bg.size / job.partSize)), parts = [];
       for (let i = 0; i < total; i++) {
         const chunk = bg.slice(i * job.partSize, (i + 1) * job.partSize);
         const part = await (await api(`jobs/${job.id}/bg/${i + 1}?uploadId=${encodeURIComponent(job.uploadId)}`,
@@ -930,14 +942,20 @@
         parts.push(part);
         progress("Sending the background…", Math.round(((i + 1) / total) * 100));
       }
-      await api(`jobs/${job.id}/bg/complete`, { method: "POST", headers: { "Content-Type": "application/json" },
+      if (!job.reused) await api(`jobs/${job.id}/bg/complete`, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ uploadId: job.uploadId, parts }) });
       await api(`jobs/${job.id}/overlay`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: overlay });
       if (music) {
         progress("Sending the music…", null);
         const about = new URLSearchParams({ ext: music.ext, start: String(music.start), volume: String(music.volume), from: music.from, title: music.title, credit: music.credit });
-        await api(`jobs/${job.id}/music?${about}`, { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: music.file });
+        let named = false;
+        if (musicFile) {
+          try { await api(`jobs/${job.id}/music?${about}&file=${musicFile}`, { method: "PUT" }); named = true; }
+          catch (e) { /* no longer kept: send it */ }
+        }
+        if (!named) await api(`jobs/${job.id}/music?${about}`, { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: music.file });
       }
+      if (window.Studio.keepJob) await window.Studio.keepJob(job.id, snap, files, made).catch(() => {});
       await api(`jobs/${job.id}/start`, { method: "POST" });
 
       progress("Creating your reel. This takes about a minute. Keep the app open until it's ready.", null);
@@ -961,7 +979,9 @@
     }
   }
   $("make-reel").addEventListener("click", makeReel);
-  $("again").addEventListener("click", () => { $("result").pause(); syncReelPane("setup"); $("done").hidden = true; });
+  // "Start a new one" begins a new piece of work from what is on the canvas; "Edit this reel" goes on changing this one.
+  $("again").addEventListener("click", () => { $("result").pause(); syncReelPane("setup"); $("done").hidden = true; newDraft(); saveDraft(); });
+  $("edit-reel").addEventListener("click", () => { $("result").pause(); syncReelPane("setup"); $("done").hidden = true; openOn("text"); });
   $("save-reel").addEventListener("click", async () => {
     if (!reel) return;
     const file = new File([reel.blob], "ds-studio-reel.mp4", { type: "video/mp4" });
@@ -974,12 +994,19 @@
   });
 
   // ---------- draft (text and settings only; the background file is not kept) ----------
+  // The text and settings are also kept on the phone, so they are back at once on opening; web/drafts.js keeps the
+  // whole draft (with the background and music) on the server and is told of every change by "studio:changed".
   const KEY = "entangledd.draft.v1";
+  let restoring = false, changedAt = 0;
   function saveDraft() {
+    if (restoring) return;
+    changedAt = Date.now();
     try {
       localStorage.setItem(KEY, JSON.stringify({ blocks: state.blocks, shadow: state.shadow, fade: state.fade,
-        mute: state.mute, length: state.length, style: state.style, author: state.author, shape: state.shape }));
+        mute: state.mute, length: state.length, style: state.style, author: state.author, shape: state.shape,
+        draftId: state.draftId, of: state.of, updated: changedAt, selected: state.blocks.findIndex((b) => b.id === state.selected) }));
     } catch (e) { /* private mode or full storage: the draft just isn't kept */ }
+    document.dispatchEvent(new CustomEvent("studio:changed"));
   }
   function loadDraft() {
     try {
@@ -991,13 +1018,87 @@
       state.style = STYLES[d.style] ? d.style : "sea";
       state.author = typeof d.author === "string" ? d.author : "";
       state.shape = d.shape === "post" ? "post" : "reel";
+      state.draftId = typeof d.draftId === "string" && d.draftId ? d.draftId : newId();
+      state.of = typeof d.of === "string" ? d.of : "";
+      changedAt = +d.updated || 0;
+      const sel = state.blocks[d.selected];
+      if (sel) state.selected = sel.id;
       return true;
     } catch (e) { return false; }
   }
 
+  // ---------- the whole composer as plain data, and back again (for drafts and made reels) ----------
+  const newId = () => (crypto.randomUUID ? crypto.randomUUID()
+    : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
+  function newDraft() { state.draftId = newId(); state.of = ""; }
+  // Every value that decides what is drawn or made, so that the same snapshot always gives the same reel.
+  function snapshot() {
+    const bg = state.bg, m = state.music;
+    return { v: 1, blocks: state.blocks.map(({ id, ...rest }) => ({ ...rest })), selected: state.blocks.findIndex((b) => b.id === state.selected),
+      shadow: state.shadow, fade: state.fade, mute: state.mute, length: state.length, style: state.style, author: state.author, shape: state.shape,
+      bg: bg ? { name: bg.name, type: (bg.file && bg.file.type) || "", kind: bg.kind, from: bg.from || "own", words: bg.words || "", credit: bg.credit || "" } : null,
+      music: m ? { name: (m.file && m.file.name) || "", type: (m.file && m.file.type) || "", ext: m.ext, start: m.start, volume: m.volume,
+        from: m.from, title: m.title, artist: m.artist, licence: m.licence, credit: m.credit } : null };
+  }
+  const draftFiles = () => ({ bg: state.bg ? state.bg.file : null, music: state.music ? state.music.file : null });
+  // Puts a snapshot back exactly. files = { bg, music } as File objects (either may be missing). Answers what
+  // could not be brought back ("background", "music").
+  async function restore(snap, files = {}, ids = {}) {
+    restoring = true;
+    const missing = [];
+    try {
+      stopTune();
+      if (reel) $("result").pause();
+      syncReelPane("setup"); $("done").hidden = true;
+      clearBackground(); clearMusic();
+      state.shape = snap.shape === "post" ? "post" : "reel";
+      setShape(state.shape);
+      if (snap.bg) {
+        if (files.bg) await loadBackground(files.bg, snap.bg).catch(() => missing.push("background"));
+        else missing.push("background");
+      }
+      state.blocks = (snap.blocks || []).map((b) => ({ ...newBlock("", STYLES[snap.style] ? snap.style : "sea", 0), ...b, id: nextId++ }));
+      if (!state.blocks.length) state.blocks = [newBlock("", "sea", 0)];
+      state.shadow = snap.shadow !== false; state.fade = !!snap.fade; state.mute = snap.mute !== false;
+      state.length = Math.min(30, Math.max(5, +snap.length || 8));
+      state.style = STYLES[snap.style] ? snap.style : "sea";
+      state.author = typeof snap.author === "string" ? snap.author : "";
+      if (snap.music) {
+        if (files.music) {
+          await loadMusic(files.music, snap.music).catch(() => missing.push("music"));
+          if (state.music) { state.music.start = +snap.music.start || 0; state.music.volume = +snap.music.volume || 0.8; state.music.el.volume = state.music.volume; }
+        } else missing.push("music");
+      }
+      if (ids.draftId) state.draftId = ids.draftId;
+      state.of = ids.of || "";
+      document.querySelectorAll("#styles button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.style === state.style)));
+      $("mute").checked = state.mute; $("fade").checked = state.fade; $("shadow").checked = state.shadow;
+      select((state.blocks[snap.selected] || state.blocks[0]).id);
+      syncBackgroundPane(); syncMusicPane();
+      redraw();
+    } finally { restoring = false; }
+    saveDraft();
+    return missing;
+  }
+  // Nothing of her own in Create yet: no background, no music, and only the sample words of a style.
+  function isBlank() {
+    const sample = STYLES[state.style].preview.text.replace(/\n\s+/g, "\n");
+    return !state.bg && !state.music && state.blocks.filter((b) => b.role !== "author").map((b) => b.text).join("\n").trim() === sample;
+  }
+  // Opens one editor tab (and leaves it open if it already is).
+  function openOn(name) { if (openTab !== name) showTab(name); }
+  // A small still of the picture for the cards in Posts (the full-size drawing is not touched).
+  async function thumbBlob() {
+    await fontsFor();
+    const full = compose(false), c = document.createElement("canvas");
+    c.width = 216; c.height = Math.round(216 * H / W);
+    c.getContext("2d").drawImage(full, 0, 0, c.width, c.height);
+    return toBlob(c, "image/jpeg", 0.8);
+  }
+
   // What studio.js (Today, Library, rewording, free footage) needs from the composer.
   window.Studio = {
-    api, server, loadBackground, setQuote, showTab, signOut,
+    api, server, loadBackground, showTab, signOut,
     faceId: { on: faceIdOn, supported: () => !!window.PublicKeyCredential, name: faceIdName, enable: faceIdEnable, disable: faceIdDisable },
     selectedText: () => (selectedBlock() ? selectedBlock().text : ""),
     currentReel: () => reel, madeWith, loadMusic,
@@ -1009,6 +1110,13 @@
     author: () => state.author,
     setAuthor, setWords, currentLook, applyLook,
     replaceSelectedText: (t) => edit((b) => { b.text = t; }),
+    // Drafts (web/drafts.js). A quote put on the canvas from outside begins a new piece of work.
+    setQuote: (text, author) => { newDraft(); setQuote(text, author); },
+    snapshot, draftFiles, restore, isBlank, openOn, thumbBlob,
+    draft: () => ({ id: state.draftId, of: state.of, updated: changedAt }),
+    setDraft: (d) => { if (d.id) state.draftId = d.id; if (d.of != null) state.of = d.of; saveDraft(); },
+    newDraft: () => { newDraft(); saveDraft(); },
+    storeFile: null, keepJob: null,          // filled in by web/drafts.js
   };
 
   // ---------- start ----------
@@ -1028,8 +1136,8 @@
     const coreFonts = Promise.all(FONTS.filter((f) => !f.extra).map((f) => document.fonts.load(f.css(40), "Entangledd"))).catch(() => {});
     Promise.race([coreFonts, sleep(4000)]).then(() => { textReady = true; });      // system fonts if they never arrive
     coreFonts.then(() => FONTS.filter((f) => f.extra).forEach((f) => document.fonts.load(f.css(40), "Entangledd").catch(() => {})));   // the canvas redraws itself as each arrives
-    if (!loadDraft()) applyStyle("sea");
-    else select(state.blocks[0].id);
+    if (!loadDraft()) { newDraft(); applyStyle("sea"); }
+    else select(state.selected != null && state.blocks.some((b) => b.id === state.selected) ? state.selected : state.blocks[0].id);
     document.querySelectorAll("#styles button").forEach((b) =>
       b.setAttribute("aria-pressed", String(b.dataset.style === state.style)));
     $("mute").checked = state.mute; $("fade").checked = state.fade; $("shadow").checked = state.shadow;

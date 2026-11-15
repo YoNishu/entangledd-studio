@@ -15,11 +15,13 @@ the end of [When the weekly check sends a notification](#when-the-weekly-check-s
   Above them, one little note from Nishiii each time the app is opened.
 - **Create**: the composer. A photo or video of her own, or a free one from the built-in search;
   the words; a style; music (her own file, a free track, or a song picked in Instagram); then a
-  reel, a picture or a carousel, posted now or kept for later.
+  reel, a picture or a carousel, posted now or kept for later. Everything in Create is saved by
+  itself as a draft and opens again exactly, on this phone or another ("Carry on where you left off").
 - **Library**: what Nishiii draws on: her own quotes (typed, scanned from a page, or imported
   highlights), books, films and series, and pages and reels she loves.
-- **Posts**: the week against the week before, what is waiting to be posted, and everything
-  posted with its numbers and comments.
+- **Posts**: the week against the week before, reels made but not posted (Post, Edit, Share,
+  Delete; kept 30 days, up to 20), what is waiting to be posted, and everything posted with its
+  numbers and comments. Edit opens a reel in Create exactly as it was made.
 - **Insights**: totals, charts and comparisons of what works, for 7, 30 or 90 days or all time.
 - **Nishiii**: quotes on request from any mix of her sources, what Nishiii has learned about her
   taste, and her notes to Nishiii. For a book, film or series she asks about, Nishiii looks real
@@ -61,6 +63,7 @@ finished in Instagram's own editor, and runs at most one of the timed jobs below
 | The engine's pool | every 2 to 6 hours, a little at a time | Tags new lines (theme, tone) in one question to Claude; looks up a book, film or series of hers never looked up (or due again); searches the web for real quotes on her themes, by her authors and from works close to hers; finds the real author behind lines that do well on pages she follows. Within its own share of each day's limits: 8 questions to Claude, 4 to Gemini, 2 to OpenAI, 4 look-ups. |
 | Little notes | hourly, while a sealed delivery is waiting | Opens notes delivered through `server/sealed.js`. |
 | Cleaning | every 6 hours | Removes what has outlived its use: reels and their parts after 7 days (the parts an hour after the reel exists), carousel pictures after 7 days, search results after 2 and 8 days, sign-in markers after 1 day, day lists after 60 days. |
+| Drafts | every 6 hours | Lets go of made reels after 30 days (posted ones after 7), of the draft 30 days after its last change, and of background and music files no draft names any more. |
 | Backups | looked at hourly, copied once a day | Copies every document that cannot be made again to `backup/<day>/`. Unchanged documents are skipped. Two weeks are kept, and a document's newest copy is never removed. |
 | The health record | daily, in three small runs | Checks every key and connection, asks each outside service one cheap read-only question, reads the reel maker's own self-test from GitHub, and looks at the cleaning, the backups and the record of problems. |
 | The reel maker's self-test | twice a week on GitHub (`render-check.yml`) | Makes sample reels with the real renderer and checks them. If GitHub stops running it, the app starts it again. One failed run is tried again by the app; only a repeat is raised. |
@@ -223,7 +226,8 @@ ever sent themes, titles, authors and the words of a public quote.
 ## How to restore a backup
 
 Every document the app cannot make again (her library, posts, Nishiii's picture of her taste and
-her notes, saved looks, reels waiting to be posted, the record of her choices, the scorer's
+her notes, saved looks, reels waiting to be posted, the settings of her draft and of the reels she
+made (not their files), the record of her choices, the scorer's
 record, the little notes, the Instagram sign-in, Face ID devices) is copied once a day. To put one
 back, from any computer (replace the address with the app's own, and type the passcode where
 shown):

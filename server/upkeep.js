@@ -11,6 +11,7 @@
    This file is one of the app's add-on sections (see SECTIONS in worker.js).
    Handlers are called as handler(request, env, parts, kit); jobs as run(env, kit). */
 import { hide, probe } from "./health.js";
+import { tidy as tidyDrafts, keptJobs } from "./drafts.js";
 
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
 const dayOf = (ms) => new Date(ms + 5.5 * HOUR).toISOString().slice(0, 10);     // the India day a moment falls on
@@ -43,7 +44,8 @@ function ageMs(o, now) {
 // (Each listing shows up to 1,000 files; anything beyond that waits for the next pass, six hours later.)
 export async function clean(env, kit) {
   const now = Date.now();
-  const lists = await Promise.all(LIFETIMES.map((l) => env.MEDIA.list({ prefix: l.prefix, limit: 1000 })));
+  // A reel still waiting to be posted (server/drafts.js) keeps its files for 30 days instead of 7.
+  const [lists, keep] = await Promise.all([Promise.all(LIFETIMES.map((l) => env.MEDIA.list({ prefix: l.prefix, limit: 1000 }))), keptJobs(env, kit)]);
   const doomed = [];
   let bytes = 0, files = 0, more = false;
   lists.forEach((list, i) => {
@@ -55,7 +57,7 @@ export async function clean(env, kit) {
       for (const o of objects) if (o.key.endsWith("/reel.mp4")) done.set(o.key.slice(0, -"reel.mp4".length), new Date(o.uploaded).getTime());
     }
     for (const o of objects) {
-      const old = ageMs(o, now) > LIFETIMES[i].days * DAY;
+      const old = ageMs(o, now) > LIFETIMES[i].days * DAY && !(LIFETIMES[i].prefix === "jobs/" && keep.has(o.key.split("/")[1]));
       const spent = INPUTS.test(o.key) && now - (done.get(o.key.replace(/[^/]+$/, "")) || now) > INPUTS_AFTER_MS;
       if (old || spent) doomed.push(o.key);
       else { bytes += o.size || 0; files += 1; }
@@ -74,7 +76,7 @@ export async function clean(env, kit) {
 // what was posted and how it did, and the sign-ins. (Caches, counters and the health record are left out:
 // the app rebuilds those by itself.) Everything under data/scorer/ is included too.
 export const BACKED_UP = ["library", "posts", "taste", "looks", "queue", "history", "rewords", "inspirations",
-  "account", "instagram", "passkeys", "lovenotes", "sealkey", "scorer"];
+  "account", "instagram", "passkeys", "lovenotes", "sealkey", "scorer", "draft", "made"];
 const KEEP_BACKUP_DAYS = 14;
 const COPIES_PER_RUN = 7;                         // each copy is one read and one write; a timed run has about 20 to spend
 const DAY_NAME = /^\d{4}-\d{2}-\d{2}$/;
@@ -226,6 +228,8 @@ export const routes = { backups, oops };
 export const jobs = [
   { name: "upkeep-clean", everyHours: 6, run: (env, kit) => clean(env, kit) },
   { name: "upkeep-backup", everyHours: 1, run: (env, kit) => backup(env, kit) },
+  // Drafts and made reels (server/drafts.js): entries past their keeping, and the files nothing names any more.
+  { name: "upkeep-drafts", everyHours: 6, run: (env, kit) => tidyDrafts(env, kit) },
   // The health record's probes (server/probes.js), in two small runs. They come after the two jobs above
   // so that, after an update, their first report already says how the cleaning and the backup went.
   { name: "health-services", everyHours: 24, run: (env, kit) => probe(env, kit, "services") },

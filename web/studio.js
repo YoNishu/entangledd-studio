@@ -836,7 +836,7 @@
         const blob = await fetchFromLibrary(item);
         if (mine !== pickNo) return;
         const video = item.kind === "video";
-        await S.loadBackground(new File([blob], `stock-${item.id}.${video ? "mp4" : "jpg"}`, { type: video ? "video/mp4" : "image/jpeg" }), { from: "search", words: stock.q });
+        await S.loadBackground(new File([blob], `stock-${item.id}.${video ? "mp4" : "jpg"}`, { type: video ? "video/mp4" : "image/jpeg" }), { from: "search", words: stock.q, credit: item.credit || "" });
         $("stock-sheet").hidden = true;
         status("");
       } catch (e) { if (mine === pickNo) status(friendly(e)); }
@@ -928,6 +928,7 @@
       talk.addEventListener("click", () => openComments(p));
       links.append(talk);
     }
+    if (drafts()) links.append(drafts().versionButton(p.id));
     const remove = el("button", { type: "button", className: "last", textContent: "Remove" });
     remove.addEventListener("click", async () => {
       try { await send("posts/" + p.id, "DELETE"); loadPosts(); } catch (e) { $("posts-note").textContent = friendly(e); }
@@ -982,13 +983,13 @@
     });
     const song = el("button", { className: "btn ic ic-music", type: "button", textContent: "Add a song in Instagram" });
     song.addEventListener("click", () => openHandoff(q));
-    return el("article", { className: "card" }, el("p", { className: "q", textContent: q.quote || "A reel" }), chip("wait", "Made, not posted"),
+    return el("article", { className: "card" }, el("p", { className: "q", textContent: q.quote || "A reel" }), chip("wait", "Waiting for your tap"),
       el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that you'd need to create it again.` }),
       // When the app can see the Instagram page, a reel posted there is found by itself (as Posts opens, and hourly).
       el("p", { className: "src", id: "auto-" + q.id, textContent: igSees ? "Posted it from Instagram yourself? It moves to Posted by itself." : "Instagram isn't answering the app right now, so it can't see what you post there." }),
-      el("div", { className: "acts tall" }, go, song, igSees ? null : postedByHand("queue/" + q.id, "posted-queue-" + q.id), drop));
+      el("div", { className: "acts tall" }, go, song, ...(drafts() ? [drafts().editButton(q.jobId)] : []), igSees ? null : postedByHand("queue/" + q.id, "posted-queue-" + q.id), drop));
   }
-  const showPostedHead = () => { $("posted-head").hidden = $("queue-wrap").hidden && $("handoff-wrap").hidden; };
+  const showPostedHead = () => { $("posted-head").hidden = $("queue-wrap").hidden && $("handoff-wrap").hidden && $("made-wrap").hidden; };
   function renderQueue(queue) {
     $("queue-wrap").hidden = !queue.length;
     $("list-queue").replaceChildren(...queue.map(queueCard));
@@ -1015,7 +1016,8 @@
       try { renderHandoffs((await send("handoffs/" + h.id, "DELETE")).handoffs); } catch (e) { $("posts-note").textContent = friendly(e); }
     });
     return el("article", { className: "card" }, el("p", { className: "q", textContent: h.quote || "A reel" }), chip("info", "Waiting for you to post it in Instagram"),
-      el("p", { className: "src", textContent: `The app keeps looking for it until ${day(h.until)}.` }), el("div", { className: "acts tall" }, igSees ? look : null, igSees ? null : postedByHand("handoffs/" + h.id, "posted-handoff-" + h.id), drop));
+      el("p", { className: "src", textContent: `The app keeps looking for it until ${day(h.until)}.` }),
+      el("div", { className: "acts tall" }, igSees ? look : null, ...(drafts() ? [drafts().editButton(h.jobId)] : []), igSees ? null : postedByHand("handoffs/" + h.id, "posted-handoff-" + h.id), drop));
   }
   function renderHandoffs(list) {
     $("handoff-wrap").hidden = !list.length;
@@ -1173,6 +1175,7 @@
     return ig;
   }
   async function loadPosts() {
+    if (drafts()) drafts().refresh();             // Made, not posted (web/drafts.js), whether or not Instagram is set up
     if (!S.server.instagram) { $("posts-note").textContent = "Posting to Instagram isn't set up yet."; $("list-posts").replaceChildren(); return; }
     await loadIg();
     $("posts-note").textContent = "Checking Instagram for the latest numbers…";
@@ -1513,6 +1516,11 @@
   $("chat").addEventListener("click", (e) => { if (e.target === $("chat")) $("chat").hidden = true; });
   $("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sayToNishiii($("chat-input").value); });
   $("chat-chips").addEventListener("click", (e) => { if (e.target.tagName === "BUTTON") sayToNishiii(e.target.textContent); });
+
+  // For web/drafts.js: post or hand over a reel kept in Posts, and where the quote on the canvas came from.
+  Object.assign(window.StudioKit, { openPost, openHandoff, show,
+    origin: () => ({ ...onCanvas }), setOrigin: (o) => { onCanvas = { author: "", theme: "", tone: "", source: "", suggestionId: "", ...(o || {}) }; } });
+  const drafts = () => window.StudioDrafts;      // web/drafts.js, loaded after this file
 
   // ---------- start: once the composer knows what the server offers ----------
   let started = false;
