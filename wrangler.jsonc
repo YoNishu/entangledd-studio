@@ -19,8 +19,9 @@
   },
   // 00:30 UTC (06:00 India time): prepare the day's quote suggestions.
   // Every 5 minutes: finish any Instagram post still being processed.
+  // 05:41 UTC (11:11 India time): the daily reminder to post, on the minute. It does nothing else.
   "triggers": {
-    "crons": ["30 0 * * *", "*/5 * * * *"]
+    "crons": ["30 0 * * *", "*/5 * * * *", "41 5 * * *"]
   }
   // Secrets are added in the Cloudflare dashboard, not here:
   // APP_PASSCODE, RENDER_SECRET, GITHUB_TOKEN, ANTHROPIC_API_KEY, PIXABAY_API_KEY,

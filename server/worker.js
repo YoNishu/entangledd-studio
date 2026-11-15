@@ -27,6 +27,11 @@ import * as upkeep from "./upkeep.js";
 import * as claudeuse from "./claudeuse.js";
 const SECTIONS = [health, scorer, lovenotes, upkeep];
 
+// The daily reminder to post is a section too (its routes are under /api/reminders); it also has a few
+// lines of its own at the top of scheduled(), near the end of this file.
+import * as reminders from "./reminders.js";
+SECTIONS.push(reminders);
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PART_SIZE = 8 * 1024 * 1024;        // R2 needs equal parts of at least 5 MB
 const MAX_BG_BYTES = 500 * 1024 * 1024;
@@ -2719,6 +2724,11 @@ export default {
   // Timed jobs (see "triggers" in wrangler.jsonc).
   async scheduled(event, env, ctx) {
     if (!env.MEDIA) return;
+    // The daily reminder to post: sent by the first run at or after each phone's time. 11:11 in India has a
+    // timer line of its own (05:41 UTC), which does this and nothing else; every other time rides on the
+    // five-minute line. (Not on the 00:30 line: the five-minute one runs at that minute as well.)
+    if (event.cron !== "30 0 * * *") ctx.waitUntil(reminders.tick(env, kit, event.scheduledTime || Date.now()).catch((e) => console.error("reminders failed", e && e.message)));
+    if (event.cron === reminders.CRON) return;
     if (event.cron === "30 0 * * *") {
       // Once a day, in order: fetch how her posts did, update what Nishiii knows about her taste,
       // then choose the day's quotes with that fresh in mind.

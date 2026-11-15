@@ -708,3 +708,28 @@ details.lovenotes-edit .list li { background: var(--ink); }
 .lovenotes-edit > :not(summary) { margin-top: 10px; }        /* margins, not a grid gap: a gap doesn't reach inside an opened <details> in today's browsers */
 .lovenotes-edit > summary + * { margin-top: 0; }
 .lovenotes-acts { display: flex; gap: 12px; }
+
+/* ---------- daily reminder (web/reminders.js makes and fills #settings-reminders, under the Face ID lock) ---------- */
+#settings-reminders { display: grid; gap: var(--gap); }
+#settings-reminders:empty { display: none; }
+.ic-bell { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6.3 16.4v-5.2a5.7 5.7 0 0 1 11.4 0v5.2l1.6 2.2H4.7z'/%3E%3Cpath d='M10 21a2.2 2.2 0 0 0 4 0'/%3E%3C/svg%3E"); }
+/* A row with its name on the left and its control on the right; the whole row is the place to tap. */
+.remind-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; font-size: 15px; }
+.switch {
+  -webkit-appearance: none; appearance: none; flex: none; position: relative; width: 52px; height: 32px; margin: 0;
+  border-radius: 999px; background: var(--swell); cursor: pointer;
+}
+.switch::before {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--foam); transition: transform 0.15s ease-out;
+}
+.switch:checked { background: var(--glass); }
+.switch:checked::before { transform: translateX(20px); background: var(--on-glass); }
+.switch:focus-visible { outline: 2px solid var(--glass); outline-offset: 3px; }
+.switch:disabled { opacity: 0.45; cursor: default; }
+#remind-time {
+  width: auto; min-width: 128px; min-height: 46px; background: var(--field); color: var(--foam); border: 1px solid transparent;
+  border-radius: var(--radius); padding: 10px 12px; font: 400 16px/1.4 var(--ui); font-variant-numeric: tabular-nums;
+  -webkit-appearance: none; appearance: none; color-scheme: dark; text-align: center;
+}
+#remind-time::-webkit-date-and-time-value { text-align: center; }
