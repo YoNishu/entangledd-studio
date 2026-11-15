@@ -109,6 +109,34 @@
       textContent: "Found on " + (source.site || u.hostname.replace(/^www\./, "")) });
   }
 
+  // The pages a check of "who said this" rests on (server/verify.js), or a plain word that it is from memory.
+  function checkedOn(r) {
+    const links = (r.sources || []).map(foundLink).filter(Boolean);
+    if (r.basis === "web" && links.length) return links;
+    return [el("p", { className: "note check-memory", textContent: "Nothing about this line was found on the web, so this is from Nishiii's memory. Look it up before posting if it matters." })];
+  }
+  // "Check it" on a quote marked to be checked: looks the line up and shows the answer in the card.
+  function checkButton(item) {
+    const btn = el("button", { className: "btn quiet", type: "button", id: "verify-" + item.id, textContent: "Check it" });
+    btn.addEventListener("click", async () => {
+      btn.disabled = true; btn.textContent = "Checking…";
+      try {
+        const r = await send("check", "POST", { text: item.text, author: item.author || "" });
+        const words = { matches: ["ok", "The author and the wording look right"], different_author: ["bad", item.author ? `Probably not by ${item.author}` : "The author looks wrong"],
+          altered_wording: ["wait", "The wording differs from the original"], found: ["info", r.author ? `Probably by ${r.author}` : "No confirmed author"], unsure: ["gone", "Not settled either way"] };
+        const [kind, text] = words[r.verdict] || words.unsure;
+        const out = el("div", { className: "verified", id: "verified-" + item.id }, chip(kind, text),
+          r.verdict === "different_author" && r.author && r.author.toLowerCase() !== "unknown" ? el("p", { className: "src", textContent: `Credit ${r.author} instead.` }) : null,
+          r.note ? el("p", { textContent: r.note }) : null, ...checkedOn(r));
+        btn.replaceWith(out);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = "Check it";
+        if (!btn.nextElementSibling || !btn.nextElementSibling.classList.contains("flag")) btn.after(el("p", { className: "flag", textContent: friendly(e) }));
+      }
+    });
+    return btn;
+  }
+
   // What actually happened to a suggestion, so "used" is never mistaken for "posted".
   function fateLine(item) {
     if (item.posted === "posted") return chip("ok", "Posted to Instagram");
@@ -132,6 +160,7 @@
       item.wild ? Object.assign(chip("info", "Something different"), { id: "wild-" + item.id }) : null,   // the scorer's wildcard (server/scorer.js)
       item.fromText ? chip("ok", "Copied word for word from the book's text")
         : item.verify ? chip("bad", "Check the wording and author before posting") : null,
+      !item.fromText && item.verify && S.server.ai ? checkButton(item) : null,
       fateLine(item),
       el("div", { className: "acts" }, use, reword, skip));
 
@@ -303,33 +332,76 @@
       });
       return [el("p", { className: "sub", id: "found-" + x.id, textContent: `${n} real ${n === 1 ? "line" : "lines"} found${site.length === 1 ? " on " + site[0] : ""}.` }), wrong];
     };
+    // "Did you mean ...?" when the title she typed is close to a real one found on the web (server/verify.js).
+    const titleRow = (kind, x) => {
+      const m = x.maybe;
+      if (!m || !m.title) return [];
+      const kindWord = kind === "screen" && m.kind !== x.kind ? (m.kind === "series" ? "the series " : "the film ") : "";
+      const fix = el("button", { type: "button", className: "btn soft", id: "title-fix-" + x.id,
+        textContent: `Did you mean ${kindWord}${m.title}${m.year ? ` (${m.year})` : ""}${m.by && kind === "books" && !x.author ? `, by ${m.by}` : ""}?` });
+      const keep = el("button", { type: "button", className: "btn quiet", id: "title-keep-" + x.id, textContent: "Keep mine" });
+      const answer = (accept) => async () => {
+        try {
+          const lib = await send(`library/${kind}/${x.id}/title`, "POST", accept ? { accept: true } : { keep: true });
+          renderLibrary(lib);
+          if (accept && kind === "books") findText(x.id);     // the book's text is looked for again under its proper title
+        } catch (e) { note(friendly(e)); }
+      };
+      fix.addEventListener("click", answer(true));
+      keep.addEventListener("click", answer(false));
+      return [el("div", { className: "acts", id: "title-offer-" + x.id }, fix, keep)];
+    };
+    const year = (x) => (x.known && x.known.year ? ` · ${x.known.year}` : "");
     const bookRow = (b) => {
-      const found = foundRow("books", b);
-      if (found && !b.textUrl) return row("books", b, b.title, b.author, ...found);
+      const found = foundRow("books", b), offer = titleRow("books", b), by = (b.author || (b.known && b.known.by) || "") + year(b);
+      if (offer.length) return row("books", b, b.title, by, ...offer);
+      if (found && !b.textUrl) return row("books", b, b.title, by, ...found);
       if (b.textUrl) {
         const wrong = el("button", { type: "button", textContent: "Not the right book" });
         wrong.addEventListener("click", async () => {
           try { renderLibrary(await send(`library/books/${b.id}/text`, "POST", { forget: true })); } catch (e) { note(friendly(e)); }
         });
-        return row("books", b, b.title, b.author, chip("ok", "Quoted word for word"),
+        return row("books", b, b.title, by, chip("ok", "Quoted word for word"),
           el("p", { className: "sub", textContent: `Matched to "${b.textTitle}"${b.textAuthor ? ` by ${b.textAuthor}` : ""}.` }), wrong);
       }
-      if (b.textChecked) return row("books", b, b.title, b.author, el("p", { className: "sub", textContent: (b.textNote || "").startsWith("Set aside") ? "Nishiii looks for its real lines when you ask." : "Not free to read online. Nishiii looks for its real lines when you ask." }));
+      if (b.textChecked) return row("books", b, b.title, by, el("p", { className: "sub", textContent: (b.textNote || "").startsWith("Set aside") ? "Nishiii looks for its real lines when you ask." : "Not free to read online. Nishiii looks for its real lines when you ask." }));
       const find = el("button", { type: "button", textContent: "Look for its full text" });
       find.addEventListener("click", () => findText(b.id, find));
-      return row("books", b, b.title, b.author, find);
+      return row("books", b, b.title, by, find);
     };
     const fill = (id, rows, empty) => $(id).replaceChildren(...(rows.length ? rows : [el("li", {}, el("p", { className: "empty", textContent: empty }))]));
     fill("list-quotes", lib.quotes.slice().reverse().map((q) => row("quotes", q, q.text, [q.author, q.from].filter(Boolean).join(", "))), "No quotes saved yet.");
     fill("list-books", lib.books.map(bookRow), "No books yet.");
-    fill("list-screen", (lib.screen || []).map((x) => row("screen", x, x.title, x.kind === "series" ? "Series" : "Film", ...(foundRow("screen", x) || []))), "No films or series yet.");
+    fill("list-screen", (lib.screen || []).map((x) => row("screen", x, x.title, (x.kind === "series" ? "Series" : "Film") + year(x), ...titleRow("screen", x), ...(foundRow("screen", x) || []))), "No films or series yet.");
+    checkTitles(lib);
+  }
+
+  // Each title in the Library is checked on the web once, one at a time, newest first, at most two per visit
+  // (the ones she adds are checked at once). The row updates when the answer is in.
+  let titleBusy = false, titleTries = 0, titleRun = Promise.resolve(), textBusy = 0;
+  async function checkTitle(kind, id) {
+    titleBusy = true;
+    try { renderLibrary(await send(`library/${kind}/${id}/title`, "POST", {})); return true; }
+    catch (e) { return false; }
+    finally { titleBusy = false; }
+  }
+  function checkTitles(lib) {
+    if (titleBusy || textBusy || titleTries >= 2 || !S.server.on) return;
+    const todo = [...lib.books.map((x) => ["books", x]), ...(lib.screen || []).map((x) => ["screen", x])].filter(([, x]) => !x.titleChecked).sort((a, b) => (b[1].added || 0) - (a[1].added || 0))[0];
+    if (!todo) return;
+    titleTries += 1;
+    titleRun = checkTitle(todo[0], todo[1].id);
   }
 
   // Looks the book up among books that are free to read. Old classics usually are; modern books are not.
   async function findText(id, button) {
     if (button) { button.disabled = true; button.textContent = "Looking…"; }
-    try { renderLibrary(await send(`library/books/${id}/text`, "POST", {})); }
+    textBusy += 1;
+    let lib = null;
+    try { lib = await send(`library/books/${id}/text`, "POST", {}); }
     catch (e) { if (button) { button.disabled = false; button.textContent = "Look for its full text"; note(friendly(e)); } }
+    finally { textBusy -= 1; }
+    if (lib) renderLibrary(lib);
   }
 
   async function loadLibrary() {
@@ -351,14 +423,16 @@
     e.preventDefault();
     try {
       const lib = await send("library/books", "POST", { title: $("b-title").value, author: $("b-author").value });
+      titleTries = 0;
       renderLibrary(lib);
       $("b-title").value = ""; $("b-author").value = ""; note("");
       const added = lib.books[lib.books.length - 1];
-      if (added && !added.textChecked) findText(added.id);     // in the background; the row updates when the answer is in
+      // In the background, one after the other: the title is checked on the web, then the book's text is looked for.
+      if (added && !added.textChecked) titleRun.then(() => findText(added.id));
     } catch (err) { note(friendly(err)); }
   });
 
-  addForm("add-screen", "screen", () => ({ title: $("s-title").value, kind: $("s-kind").value }), () => { $("s-title").value = ""; });
+  addForm("add-screen", "screen", () => { titleTries = 0; return { title: $("s-title").value, kind: $("s-kind").value }; }, () => { $("s-title").value = ""; });
 
   // Scan: let Claude read a photographed page, then she picks which lines to keep.
   $("scan").addEventListener("change", async () => {
@@ -583,7 +657,7 @@
       if (["different_author", "found"].includes(r.verdict) && known && r.author !== given) act(`Credit ${r.author}`, () => { S.setAuthor(r.author); onCanvas.author = r.author; });
       if (r.verdict === "different_author" && !known && given) act("Take the name off", () => { S.setAuthor(""); onCanvas.author = ""; });
       if (r.verdict === "altered_wording" && r.wording) { kids.push(el("p", { className: "q", textContent: r.wording })); act("Use the original wording", () => S.setWords(r.wording)); }
-      kids.push(el("p", { className: "note", textContent: "This is from Nishiii's memory, not a lookup. Treat it as a strong hint, and look the quote up before posting if it matters." }));
+      kids.push(...checkedOn(r));
       box.replaceChildren(...kids);
     } catch (e) { box.replaceChildren(el("p", { className: "flag", textContent: friendly(e) })); }
     finally { btn.disabled = false; btn.textContent = "Who said this?"; }

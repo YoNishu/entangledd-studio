@@ -293,6 +293,17 @@ function pretendClaude(req) {
   }
   if (system.startsWith("You check whether a quote")) {
     const said = req.messages[0].content;
+    // Evidence from the web (server/verify.js): a page that calls the line misattributed decides it; any other
+    // page that has the line confirms the name it is credited to.
+    const evidence = [...said.matchAll(/^\[(\d+)\] ([\s\S]*?)(?=\n\n\[\d+\] |$(?![\s\S]))/gm)].map((m) => ({ n: Number(m[1]), text: m[2] }));
+    if (evidence.length) {
+      const given = (/Credited to: (.*)/.exec(said) || [])[1] || "";
+      const wrong = evidence.find((e) => /misattributed|credited to the wrong person|did not write/i.test(e.text));
+      const real = wrong && (/really by ([A-Z][\w.]*(?: [A-Z][\w.]*)*)/.exec(wrong.text) || [])[1];
+      const out = wrong ? { verdict: "different_author", author: real || "unknown", work: "", wording: "", note: `The pages say this is really by ${real || "nobody known"}.`, sources: [wrong.n] }
+        : { verdict: given.startsWith("nobody") ? "found" : "matches", author: given.startsWith("nobody") ? "Edda Marlowe" : given, work: "", wording: "", note: "The page has the line under that name.", sources: [evidence[0].n] };
+      return { status: 200, body: { content: [{ type: "text", text: JSON.stringify(out) }] } };
+    }
     const out = /Einstein/.test(said) ? { verdict: "different_author", author: "unknown", work: "", wording: "", note: "This line is often credited to Einstein, but no source of his contains it." }
       : /nobody/.test(said) && /same river/.test(said) ? { verdict: "found", author: "Heraclitus", work: "", wording: "", note: "This is a paraphrase of Heraclitus." }
       : /Marcus/.test(said) ? { verdict: "matches", author: "Marcus Aurelius", work: "Meditations", wording: "", note: "A well-known line from Meditations." }

@@ -32,7 +32,7 @@ with sync_playwright() as p:
 
     print("Everything fine")
     check("one calm line", wait_text(pg, "#health-summary", "Everything is working."), pg.inner_text("#health-summary"))
-    check("all seventeen checks are tucked away", pg.inner_text("#health-rest-label") == "See all 17 checks", pg.inner_text("#health-rest-label"))
+    check("all eighteen checks are tucked away", pg.inner_text("#health-rest-label") == "See all 18 checks", pg.inner_text("#health-rest-label"))
 
     print("Check now looks at everything, in three small requests")
     # The comments permission as if it had never been given: the record forgets having seen it.
@@ -61,7 +61,7 @@ with sync_playwright() as p:
     pg.click("#health-rest-label"); pg.wait_for_timeout(300)
     rows = pg.locator("#health-rest-list > li")
     titles = [rows.nth(i).locator(".main").inner_text() for i in range(rows.count())]
-    check("the ten new lines have plain titles", titles[7:] == ["Book texts", "Music search", "Photos from the search", "Reel maker's self-test", "Your posts on Instagram",
+    check("the eleven new lines have plain titles", titles[7:] == ["Book texts", "Music search", "Photos from the search", "Reel maker's self-test", "Looking things up", "Your posts on Instagram",
           "Post numbers", "Comments", "Backups", "Tidying up", "Problems noticed"], titles)
     pg.locator("#health-item-backup").scroll_into_view_if_needed(); pg.screenshot(path=S + "a6_health_probes.png")
     check("the page raised no script errors", errs == [], errs)

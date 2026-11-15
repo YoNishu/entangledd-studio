@@ -75,15 +75,22 @@ happened.
 
 ### The health record
 
-`GET /api/health` is open to anyone and holds nothing private: for each of seventeen checks an id,
+`GET /api/health` is open to anyone and holds nothing private: for each of eighteen checks an id,
 a state (`ok`, `soon`, `attention`, `off`, `unknown`) and a day count, plus one plain message, a
 few counts and `needsAttention` (true or false). In the app, Settings, **Check everything** shows
 the same record in full, with the steps to fix whatever needs fixing, and **Check now**.
 
-The seventeen: the Instagram connection, the reel maker's key, the reel maker, Nishiii, the
+The eighteen: the Instagram connection, the reel maker's key, the reel maker, Nishiii, the
 background search, the free music library, the daily routines; then book texts, the music search,
-photos from the search, the reel maker's self-test, her posts on Instagram, post numbers,
-comments, backups, tidying up, and problems noticed.
+photos from the search, the reel maker's self-test, looking things up, her posts on Instagram,
+post numbers, comments, backups, tidying up, and problems noticed.
+
+"Looking things up" gives each place's last outcome (worked, turned the app away, didn't answer)
+and, for Gemini and OpenAI, whether the key is accepted (checked by reading the model's details,
+which asks nothing and costs nothing), the day's count and how the last search went (worked,
+the app's daily limit, the account's allowance used up, refused). A refused key needs
+attention; a site that turns the app away, a model no longer offered, or a key that may not
+search is "soon".
 
 ### The weekly check
 
@@ -126,7 +133,21 @@ their key is set in Cloudflare, and only when the free ones gave too few lines:
 
 Anthropic's own paid web search stays off unless `CLAUDE_WEB_SEARCH` is `on`. Whatever is found
 is kept in the Library on that work, so a title is looked up once. `data/lookups.json` in
-storage shows the day's counts and whether each site answered.
+storage shows the day's counts and whether each site answered; the health record shows it.
+
+The same places check two more things (`server/verify.js`), sharing the daily limits:
+
+- **Who said this?** (in Create, on a quote card marked to be checked, and in the chat): the line
+  is looked up on Wikiquote (with the headings above it, so its "Misattributed" and "Disputed"
+  sections count) and on Quote Investigator, both free; then Gemini or OpenAI only if those found
+  nothing. Nishiii gives the verdict from that evidence and the app shows the page it rests on;
+  when nothing is found, the answer is from memory and says so. Only the line and the name on it
+  are sent. The searching stops after nine seconds.
+- **A work added to the Library**: the title is checked on Open Library (books) and Wikipedia
+  (with Wikidata's short descriptions, such as "2010 film by Christopher Nolan"), then Gemini or
+  OpenAI if those found nothing. A title close to hers is offered ("Did you mean ...?"), never
+  put in her place; a real one is kept with its year, author or creator and kind, which help the
+  lookups above pick the right page. Each title is checked once.
 
 ## How to add a little note
 

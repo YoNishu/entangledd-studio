@@ -26,6 +26,7 @@ import * as lovenotes from "./lovenotes.js";
 import * as upkeep from "./upkeep.js";
 import * as claudeuse from "./claudeuse.js";
 import * as findlines from "./findlines.js";      // real lines from books, films and series, found without a paid search
+import * as verify from "./verify.js";            // quotes and titles looked up on the web: who said it, which work it is
 const SECTIONS = [health, scorer, lovenotes, upkeep];
 
 // The daily reminder to post is a section too (its routes are under /api/reminders); it also has a few
@@ -313,6 +314,25 @@ async function libraryRoutes(request, env, parts) {
     else Object.assign(book, await findBookText(env, book));
     await saveDoc(env, "library", lib);
     return json(lib);
+  }
+  if ((kind === "books" || kind === "screen") && id && parts[3] === "title" && method === "POST") {
+    // The title checked on the web (verify.js), or her answer to "Did you mean ...?".
+    const work = lib[kind].find((x) => x.id === id);
+    if (!work) return fail(404, "That's no longer on the list.");
+    const b = await body(request);
+    if (b.accept || b.keep) {
+      const m = work.maybe;
+      if (b.accept && m && lib[kind].some((x) => x.id !== id && norm(x.title) === norm(m.title) && (kind === "books" || x.kind === (m.kind || work.kind)))) return fail(409, "That's already on the list.");
+      verify.settleTitle(work, !!b.accept, kind);
+      await saveDoc(env, "library", lib);
+      return json(lib);
+    }
+    const learnt = await verify.checkTitle(env, kit, work, kind === "books" ? "book" : work.kind);
+    // Read afresh, so anything she changed while the search ran is kept.
+    const now = { ...emptyLibrary(), ...(await loadDoc(env, "library", emptyLibrary())) };
+    const fresh = now[kind].find((x) => x.id === id);
+    if (fresh && norm(fresh.title) === norm(work.title)) { Object.assign(fresh, learnt); await saveDoc(env, "library", now); }
+    return json(now);
   }
   if ((kind === "books" || kind === "screen") && id && parts[3] === "found" && method === "POST") {
     // "Not the right one": the lines found for this work belong to another work of the same name.
@@ -1504,24 +1524,12 @@ async function checkRemoved(env, ig, posts, only) {
 }
 
 // ---------- checking who really said it ----------
-const CHECK_SYSTEM = `You check whether a quote is worded and credited correctly, from what you know. Many quotes online are credited to the wrong person.
-Reply with a JSON object only: {"verdict": "matches" | "different_author" | "altered_wording" | "found" | "unsure", "author": "...", "work": "...", "wording": "...", "note": "..."}
-- "matches": you recognise the quote, the given author is right and the wording is close to the original.
-- "different_author": you recognise it, and it is by someone else or is a known misattribution. Put the right name in "author", or "unknown" if it has no confirmed source.
-- "altered_wording": the author is right but the words differ from the original in a way that matters. Put the usual wording in "wording".
-- "found": no author was given and you know who it is by. Put the name in "author".
-- "unsure": you do not recognise it well enough to say. Never guess to seem helpful.
-- "work": the book, speech or film it comes from, only when you are confident. Otherwise "".
-- "note": one or two plain sentences said to the person who asked. If you mention them, say "you"; never "the user", "she" or "her".`;
-
+// Looked up on Wikiquote, Quote Investigator and, failing those, the web search helpers (see verify.js).
 async function checkQuote(request, env) {
   const b = await body(request);
   const quote = lines(b.text, 600), author = oneLine(b.author, 80);
   if (!quote) return fail(400, "There is no quote on the canvas to check.");
-  const a = parseJson(await claude(env, { system: CHECK_SYSTEM, maxTokens: 500,
-    messages: [{ role: "user", content: `Quote:\n${quote}\nCredited to: ${author || "nobody (no author given)"}` }] }));
-  const verdict = ["matches", "different_author", "altered_wording", "found", "unsure"].includes(a.verdict) ? a.verdict : "unsure";
-  return json({ verdict, author: oneLine(a.author, 80), work: oneLine(a.work, 120), wording: lines(a.wording, 600), note: lines(a.note, 400) });
+  return json(await verify.checkLine(env, kit, quote, author));
 }
 
 // ---------- the week in numbers, and when her posts do best ----------
@@ -1558,7 +1566,7 @@ function weekStats(posts, now) {
 const REPORT_SYSTEM = `You write a short weekly note to Dhruuu about her Instagram quotes page, signed off by nobody. You get this week's numbers, last week's, her best post and any patterns.
 ${TO_HER}
 Write two or three short, plain sentences: what went well ("your posts reached…"), and one concrete thing to try next week. Warm, no hype, no emojis, no markdown.
-Use only the numbers given. If there are fewer than three posts this week, say it is too early to read much into the numbers.`;
+Use only the numbers given. If there are fewer than three posts this week, say it is too early to read much into the numbers.\nNever state facts about how Instagram works (its ranking, features, limits, or which hashtags are banned) from memory: they change often and you cannot check them here. Base every suggestion on the numbers given.`;
 
 async function report(env) {
   const stats = weekStats(await loadDoc(env, "posts", []), Date.now());
@@ -1796,7 +1804,7 @@ const ADVICE_SYSTEM = `You are Nishiii. You read the numbers for Dhruuu's Instag
 ${TO_HER}
 You get totals, the comparisons that have enough posts behind them, the best times so far, and how regularly she posts.
 Reply with a JSON array of exactly three short strings. Each is one concrete thing to try in the coming week, tied to a number you were given ("Your evening posts reach about 4,600 each, so…"). Plain and warm, no hype, no emojis, no markdown.
-Use only the numbers given. If there are fewer than six posts with numbers, say in the first string that it is early and these are hints, not patterns.`;
+Use only the numbers given. If there are fewer than six posts with numbers, say in the first string that it is early and these are hints, not patterns.\nNever state facts about how Instagram works (its ranking, features, limits, or which hashtags are banned) from memory: they change often and you cannot check them here. Base every suggestion on the numbers given.`;
 
 async function insightAdvice(env, range) {
   const posts = await loadDoc(env, "posts", []);
@@ -2443,6 +2451,8 @@ const CHAT_SYSTEM = `You are Nishiii, the chat assistant inside D's Studio, an a
 You can act in the app with your tools: look at today's quotes, fetch quotes from books, films, series or a subject, add things to her Library, put a quote on the canvas in Create, open a section, read how her posts, her week and her page over any period did (get_insights for anything about what works, best times or growth), check who really said a quote, read what you have learned about her taste, save a note she wants you to follow, and write a caption.
 Rules:
 - Use tools for anything about her data. Never make up numbers, posts or quotes.
+- When she asks who said a quote, or before a famous name goes on one, use check_quote: it looks the line up on the web. Say what it rests on: the page it was found on, or that it is from memory.
+- Facts about how Instagram works change often: do not state them from memory as current. Point to what her own numbers show instead.
 - When she asks for quotes, fetch them with ask_for_quotes, then list them briefly, numbered.
 - When she picks a quote, call use_quote with its exact text and author. Tell her it is in Create, where she chooses the background and taps Finish. You cannot create the reel or post to Instagram yourself: both need her own tap.
 - If she tells you a lasting preference ("no hustle quotes"), save it with save_note.
@@ -2466,7 +2476,7 @@ const CHAT_TOOLS = [
   { name: "get_week", description: "This week's totals against last week's, her best post of the week, and which times of day and themes have done best so far.", input_schema: { type: "object", properties: {} } },
   { name: "get_insights", description: "The fuller picture of how her page is doing over a stretch of time: totals and rates, top posts, best days and times, what kinds of post do best (theme, tone, background, length, music, font, hashtags), followers and posting rhythm.",
     input_schema: { type: "object", properties: { range: { type: "string", enum: ["7", "30", "90", "all"], description: "Days to look back; all for everything. Default all." } } } },
-  { name: "check_quote", description: "Check whether a quote is worded and credited correctly, from what is known. Use before she posts a quote with a famous name on it, or when she asks who said something.",
+  { name: "check_quote", description: "Check whether a quote is worded and credited correctly: it is looked up on Wikiquote, Quote Investigator and the web, and the answer says which pages it rests on (basis \"web\") or that it is from memory (basis \"memory\"). Use before she posts a quote with a famous name on it, or when she asks who said something.",
     input_schema: { type: "object", required: ["text"], properties: { text: { type: "string" }, author: { type: "string" } } } },
   { name: "get_taste", description: "What you have learned about her taste so far, and the notes she has given you.", input_schema: { type: "object", properties: {} } },
   { name: "save_note", description: "Save a lasting instruction from her that all future suggestions must follow.",
@@ -2553,9 +2563,8 @@ async function runChatTool(env, name, input, actions) {
       clearestDifferences: ins.standouts, rhythm: ins.rhythm, followers: acct.days.length ? acct.days[acct.days.length - 1].followers : "not recorded yet" };
   }
   if (name === "check_quote") {
-    const a = parseJson(await claude(env, { system: CHECK_SYSTEM, maxTokens: 500,
-      messages: [{ role: "user", content: `Quote:\n${lines(input.text, 600)}\nCredited to: ${oneLine(input.author, 80) || "nobody (no author given)"}` }] }));
-    return { verdict: a.verdict, author: a.author, work: a.work, usualWording: a.wording, note: a.note };
+    const a = await verify.checkLine(env, kit, lines(input.text, 600), oneLine(input.author, 80));
+    return { verdict: a.verdict, author: a.author, work: a.work, usualWording: a.wording, note: a.note, basis: a.basis, pages: a.sources.map((x) => x.url) };
   }
   if (name === "get_taste") {
     const t = await loadDoc(env, "taste", emptyTaste());

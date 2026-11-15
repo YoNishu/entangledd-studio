@@ -2,7 +2,8 @@
 // IMDb, Gemini with Google Search and OpenAI with web search. Loaded by server/dev.mjs; never part of the
 // real app. Every work here is made up; only the shapes of the answers are the real services' shapes.
 //
-//   GEMINI=on|429|refused|gone|memory    a Gemini key is set, and Gemini answers that way (no setting: no key)
+//   GEMINI=on|429|refused|gone|memory|badkey   a Gemini key is set, and Gemini answers that way (no setting: no key;
+//                                        badkey: the key is not one Google knows, answered with 400 as Google does)
 //   OPENAI=on|429|refused|nomodel        the same for OpenAI
 //   SITES=ok|blocked|captcha|empty       how Goodreads and IMDb answer (default ok)
 //   WIKIQUOTE=ok|down                    Wikiquote answers, or turns everything away with 503
@@ -130,16 +131,48 @@ const SERIES = (() => {
   }
   return out + "\n\n== Cast ==\nSigrid Aune — Ines\n\n\n== External links ==\nHarbour Lights at the Internet Movie Database\n";
 })();
+// A person's page, laid out as Wikiquote lays them out: sourced lines, then "Disputed" and "Misattributed"
+// sections, each line with a note under it (server/verify.js reads these for "Who said this?").
+const PERSON = `Edda Marlowe (1931–2004) was a poet from the Orkney Islands.
+
+
+== Quotes ==
+The lamp is lit for the ones who are still walking.
+** Harbour Songs (1968), p. 12
+Every tide is a small forgiveness.
+** Harbour Songs (1968), p. 40
+
+
+== Disputed ==
+Wait for the light; it has never once forgotten the way.
+** Credited to Marlowe from 1990 on; no earlier source is known.
+
+
+== Misattributed ==
+Kindness is the only language the tide understands.
+** Often credited to Marlowe online. It is really by Pell Arden, from a greeting card of 2011.
+
+
+== External links ==
+Edda Marlowe at Wikipedia
+`;
 const WIKI = [
   { title: "The Long Tide (novel)", text: NOVEL, cats: ["2009 novels", "Novels by Jonas Reed"] },
   { title: "The Long Tide (film)", text: FILM, cats: ["2016 films", "Drama films"] },
   { title: "Harbour Lights (TV series)", text: SERIES, cats: ["2020s television series"] },
   { title: "Small Hours", text: SMALL, cats: ["2019 films"] },
   { title: "Mira Kessel", text: AUTHOR, cats: ["Novelists", "1984 births"], mentions: ["The Salt Road", "Winter Orchard"] },
+  { title: "Edda Marlowe", text: PERSON, cats: ["Poets", "1931 births"] },
 ];
 const norm = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 function wikiquote(url) {
   const q = url.searchParams;
+  if (q.get("list") === "search" && q.get("srwhat") === "text") {
+    // A search of the pages' text: pages that have the first five words of the search, in that order.
+    const want = norm(q.get("srsearch")).split(" ").slice(0, 5).join(" ");
+    const hits = WIKI.filter((p) => norm(p.text).includes(want));
+    return { batchcomplete: true, query: { searchinfo: { totalhits: hits.length }, search: hits.map((p) => ({ ns: 0, title: p.title, pageid: 9000 + WIKI.indexOf(p), size: p.text.length })) } };
+  }
   if (q.get("list") === "search") {
     const want = norm(q.get("srsearch"));
     const hits = WIKI.filter((p) => want.includes(norm(p.title.replace(/\s*\(.*\)$/, ""))) || (p.mentions || []).some((m) => want.includes(norm(m))));
@@ -195,9 +228,11 @@ const TITLES = [
   { id: "nm7000009", l: "Quiet Harbour Jones", s: "Actor" },
   { id: "tt7000001", l: "Quiet Harbour", q: "feature", qid: "movie", y: 1999, s: "Per Lund, Aino Sarv", rank: 90211 },
   { id: "tt7000002", l: "Quiet Harbour", q: "TV series", qid: "tvSeries", y: 2022, yr: "2022-2024", s: "Sigrid Aune, Olav Berg", rank: 1422 },
+  { id: "tt7000003", l: "Quiet Harbour", q: "feature", qid: "movie", y: 2012, s: "Lene Dahl", rank: 30400 },     // a remake: only its year tells it apart
 ];
 const SAID = {
   tt7000001: [[["Edvard", "A film line that belongs to the old picture, not the series."]]],
+  tt7000003: [[["Lene", "The remake keeps its own line, and this is it."]]],
   tt7000002: [[["Ines", "The tide does not ask permission to come home."]], [["Tobias", "You keep saying sorry like it is a place we can live in."], ["Ines", "Then let&#39;s at least visit."]],
     [["Old Marit", "People think patience is waiting. It is choosing, again and again, not to leave."]]],
 };
@@ -212,12 +247,32 @@ const CAPTCHA = `<!DOCTYPE html><html><head><title>Just a moment...</title></hea
 
 // ---------------------------------------------------------------- Gemini and OpenAI
 const titleIn = (text) => (/"([^"]+)"/.exec(text) || [])[1] || "";
+// The questions of server/verify.js: who said a quote, and which work a title is. Their answers, as JSON text,
+// with the pages "read" (sites) behind them.
+function verifyAnswer(prompt) {
+  if (prompt.startsWith("Search the web for where this quote comes from")) {
+    const quote = (/^Quote: "(.*)"$/m.exec(prompt) || [])[1] || "";
+    if (unknown(quote)) return { text: "{}", sites: [] };
+    return { sites: ["quoteinvestigator.com", "wikiquote.org"], text: JSON.stringify({ author: "Ilse Varga", work: "", wording: "", misattributed: true,
+      summary: "The pages say the line is really by Ilse Varga, from a 1997 interview.", pages: ["https://quoteinvestigator.com/2020/03/03/moon-minutes/"] }) };
+  }
+  if (prompt.startsWith("Search the web for the ")) {
+    const title = titleIn(prompt);
+    if (unknown(title)) return { text: "{}", sites: [] };
+    return { sites: ["en.wikipedia.org"], text: JSON.stringify({ title: "The Winter Ledger", by: "Hana Moll", year: 2017, kind: /^Search the web for the TV series/.test(prompt) ? "series" : /^Search the web for the film/.test(prompt) ? "film" : "book",
+      page: "https://en.wikipedia.org/wiki/The_Winter_Ledger" }) };
+  }
+  return null;
+}
 const unknown = (title) => /Nothing Online|Nobody Knows/.test(title);
 function gemini(body, model) {
   const fail = (code, status, message) => ({ status: code, body: { error: { code, message, status } } });
   if (mode.gemini === "429") return fail(429, "RESOURCE_EXHAUSTED", "You exceeded your current quota, please check your plan and billing details.");
   if (mode.gemini === "refused") return fail(403, "PERMISSION_DENIED", "Grounding with Google Search is not available on the free tier for this project.");
-  if (mode.gemini === "gone" && model === "gemini-2.5-flash") return fail(404, "NOT_FOUND", "This model models/gemini-2.5-flash is no longer available to new users. Please update your code to use a newer model.");
+  if (mode.gemini === "gone" && model === "gemini-3.8-flash") return fail(404, "NOT_FOUND", "This model models/gemini-3.8-flash is no longer available to new users. Please update your code to use a newer model.");
+  const asked = verifyAnswer(body.contents[0].parts[0].text);
+  if (asked) return { status: 200, body: { candidates: [{ content: { role: "model", parts: [{ text: asked.text }] }, finishReason: "STOP", index: 0,
+    groundingMetadata: { webSearchQueries: ["who said it"], groundingChunks: asked.sites.map((site, i) => ({ web: { uri: `https://vertexaisearch.cloud.google.com/grounding-api-redirect/V${i}`, title: site } })), groundingSupports: [] } }] } };
   const title = titleIn(body.contents[0].parts[0].text);
   const lines = unknown(title) ? [] : [
     { text: `Google found this first line from ${title}, word for word.`, by: "Someone in it", page: "https://www.goodreads.com/work/quotes/1", also: "" },
@@ -241,6 +296,10 @@ function openai(body) {
   if (mode.openai === "429") return fail(429, "insufficient_quota", "You exceeded your current quota, please check your plan and billing details.");
   if (mode.openai === "refused") return fail(401, "invalid_api_key", "Incorrect API key provided.");
   if (mode.openai === "nomodel" && body.model === "gpt-6-luna") return fail(400, "invalid_request_error", "Hosted tool 'web_search' is not supported with gpt-6-luna.");
+  const asked = verifyAnswer(body.input);
+  if (asked) return { status: 200, body: { id: "resp_2", object: "response", status: "completed", model: body.model, output: [
+    { type: "web_search_call", id: "ws_2", status: "completed", action: { type: "search", query: "who said it", sources: asked.sites.map((site) => ({ type: "url", url: `https://${site}/a-page` })) } },
+    { type: "message", id: "msg_2", status: "completed", role: "assistant", content: [{ type: "output_text", text: asked.text, annotations: [] }] }] } };
   const title = titleIn(body.input);
   const lines = unknown(title) ? [] : [
     { text: `OpenAI found this first line from ${title}, on two sites.`, by: "Someone in it", page: "https://www.goodreads.com/work/quotes/2", also: "https://www.imdb.com/title/tt2/quotes/" },
@@ -281,11 +340,23 @@ export async function handle(req, res, url, tools) {
     const id = (/\/(?:work\/quotes|title)\/([a-z0-9]+)/.exec(p) || [])[1];
     return send(200, to === "goodreads" ? goodreadsPage(id) : imdbPage(id), "text/html");
   }
+  if (req.method === "GET" && (to === "gemini" || to === "openai")) {
+    // The health record's check that a key is accepted and its model offered: reading the model costs nothing.
+    const model = p.split("/").pop();
+    entry.model = model;
+    if (to === "gemini") {
+      if (req.headers["x-goog-api-key"] !== GEMINI_KEY || mode.gemini === "badkey") return send(400, { error: { code: 400, message: "API key not valid. Please pass a valid API key.", status: "INVALID_ARGUMENT" } });
+      if (mode.gemini === "gone" && model === "gemini-3.8-flash") return send(404, { error: { code: 404, message: "models/gemini-3.8-flash is not found", status: "NOT_FOUND" } });
+      return send(200, { name: "models/" + model, displayName: model, supportedGenerationMethods: ["generateContent"] });
+    }
+    if (req.headers.authorization !== "Bearer " + OPENAI_KEY || mode.openai === "refused") return send(401, { error: { message: "Incorrect API key provided.", type: "invalid_request_error", code: "invalid_api_key" } });
+    return send(200, { id: model, object: "model", created: 1760000000, owned_by: "openai" });
+  }
   const body = JSON.parse((await tools.readBody(req)).toString() || "{}");
   entry.body = body;
   if (to === "gemini") {
     entry.model = (/models\/([^:]+):generateContent$/.exec(p) || [])[1] || "";
-    if (req.headers["x-goog-api-key"] !== GEMINI_KEY) return send(400, { error: { code: 400, message: "API key not valid. Please pass a valid API key.", status: "INVALID_ARGUMENT" } });
+    if (req.headers["x-goog-api-key"] !== GEMINI_KEY || mode.gemini === "badkey") return send(400, { error: { code: 400, message: "API key not valid. Please pass a valid API key.", status: "INVALID_ARGUMENT" } });
     const out = gemini(body, entry.model);
     return send(out.status, out.body);
   }

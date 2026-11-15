@@ -70,7 +70,7 @@ run handoff_ui     ""                     ""                test_handoff_ui.py
 # Most start their own fresh server (several times, with different settings) through tests/serve.
 run web_quotes     ""                     ""                test_web_quotes.py
 run unit_renew     ""                     ""                unit_renew.mjs
-for f in "$here"/test_a[0-9]_*.py "$here"/test_a[0-9]_*.mjs; do
+for f in "$here"/test_a[0-9]*_*.py "$here"/test_a[0-9]*_*.mjs; do
   [ -f "$f" ] && run "$(basename "${f%.*}")" "" "" "$(basename "$f")"
 done
 # The reel maker's own self-check, and whether it really catches a spoiled reel (needs ffmpeg and Pillow).

@@ -33,6 +33,13 @@ const kept = (work) => (work.found && Array.isArray(work.found.lines) ? work.fou
 const typed = (lib) => [...(lib.books || []).map((x) => ({ ...x, type: "book" })), ...(lib.screen || []).map((x) => ({ ...x, type: x.kind }))];
 const bare = (kit, t) => kit.norm(t).replace(/^the /, "");
 const surnameOf = (kit, work) => (work.type === "book" && work.author ? kit.norm(work.author).split(" ").pop() : "");
+// A work as the lookups see it: with the author and year the title check found on the web (verify.js), when she
+// gave none herself and the title she kept is the one that was checked.
+function withKnown(kit, work) {
+  const k = work.known;
+  if (!k || kit.norm(k.title) !== kit.norm(work.title)) return work;
+  return { ...work, author: work.author || (work.type === "book" ? k.by || "" : ""), year: Number(k.year) || 0 };
+}
 
 // ---------------------------------------------------------------- 0. what the Library already holds
 
@@ -66,33 +73,38 @@ function due(work, have, share, now) {
 
 // data/lookups.json: today's count of questions to Gemini and OpenAI, and for each site when it last gave
 // lines and when (and how) it last turned the app away. Read once for a request, written only when it changed.
-async function openRecord(env, kit, state) {
+export async function openRecord(env, kit, state) {
   if (state.rec) return state.rec;
   state.spent += 1;
   const rec = (await kit.loadDoc(env, "lookups", null)) || {};
   const day = kit.todayIST();
   if (rec.day !== day) Object.assign(rec, { day, gemini: { calls: 0 }, openai: { calls: 0 } });
   rec.sites = rec.sites || {};
+  rec.last = rec.last || {};
   return (state.rec = rec);
 }
-async function saveRecord(env, kit, state) { state.spent += 1; state.dirty = false; await kit.saveDoc(env, "lookups", state.rec); }
+// A new tally for one request: what it has spent of its outside calls, and when it began.
+export const newState = (env, seconds = SECONDS) => ({ spent: 0, rec: null, dirty: false, began: Date.now(), limit: (Number(env.LOOKUP_SECONDS) || seconds) * 1000 });
+// Saves the record if this request changed it.
+export async function closeRecord(env, kit, state) { if (state.rec && state.dirty) await saveRecord(env, kit, state); }
+export async function saveRecord(env, kit, state) { state.spent += 1; state.dirty = false; await kit.saveDoc(env, "lookups", state.rec); }
 // A site answered: with lines (why is empty) or without (why says what came back instead).
-function noteSite(state, site, why) {
+export function noteSite(state, site, why) {
   const s = (state.rec.sites[site] = state.rec.sites[site] || {});
   if (why) { s.failed = Date.now(); s.why = String(why).slice(0, 80); state.dirty = true; }
   else if (!s.ok || s.why) { s.ok = Date.now(); delete s.why; delete s.failed; state.dirty = true; }
 }
 // A site that turned the app away is left alone until tomorrow.
-const resting = (state, site) => { const s = state.rec.sites[site]; return !!(s && s.blocked && Date.now() - s.failed < DAY); };
-function noteBlocked(state, site, why) { noteSite(state, site, why); state.rec.sites[site].blocked = true; }
-async function page(state, url, accept) {
+export const resting = (state, site) => { const s = state.rec.sites[site]; return !!(s && s.blocked && Date.now() - s.failed < DAY); };
+export function noteBlocked(state, site, why) { noteSite(state, site, why); state.rec.sites[site].blocked = true; }
+export async function page(state, url, accept, ms = 8000) {
   state.spent += 1;
-  return fetch(url, { headers: { "User-Agent": UA, Accept: accept, "Accept-Language": "en" }, signal: AbortSignal.timeout(8000) });
+  return fetch(url, { headers: { "User-Agent": UA, Accept: accept, "Accept-Language": "en" }, signal: AbortSignal.timeout(ms) });
 }
 
 // HTML as plain text: line breaks kept, tags dropped, the common entities turned back into characters.
 const ENTITIES = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " ", ldquo: "“", rdquo: "”", lsquo: "‘", rsquo: "’", hellip: "…", mdash: "—", ndash: "–" };
-const plain = (html) => String(html).replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]*>/g, "")
+export const plain = (html) => String(html).replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]*>/g, "")
   .replace(/&#(x?)([0-9a-f]+);/gi, (m, hex, n) => String.fromCodePoint(parseInt(n, hex ? 16 : 10) || 32))
   .replace(/&([a-z]+);/gi, (m, name) => ENTITIES[name.toLowerCase()] ?? m);
 
@@ -115,9 +127,9 @@ function candidates(kit, results, work, not) {
     const base = m ? m[1] : r.title || "", tag = m ? m[2] : "";
     if (bare(kit, base) !== want || not.includes(r.title)) return;
     if (tag && !tagFits(tag, work.type)) return;
-    out.push({ title: r.title, tagged: !!tag, full: (r.size || 0) >= 3000, rank });
+    out.push({ title: r.title, tagged: !!tag, year: !!work.year && tag.includes(String(work.year)), full: (r.size || 0) >= 3000, rank });
   });
-  return out.sort((a, b) => (b.tagged - a.tagged) || (b.full - a.full) || (a.rank - b.rank));
+  return out.sort((a, b) => (b.year - a.year) || (b.tagged - a.tagged) || (b.full - a.full) || (a.rank - b.rank));
 }
 // What kind of work a page says it is about, from its opening words (or, failing that, its categories).
 function kindOfPage(pg) {
@@ -243,14 +255,16 @@ async function goodreadsPage(env, kit, work, state) {
 // IMDb: its own list of suggestions for a title, then that title's quotes page.
 const IMDB_KINDS = { film: ["movie", "tvMovie", "video", "short"], series: ["tvSeries", "tvMiniSeries"] };
 async function imdbPage(env, kit, work, state) {
-  const year = (/\((\d{4})\)\s*$/.exec(work.title) || [])[1], title = work.title.replace(/\s*\(\d{4}\)\s*$/, "");
+  const typedYear = (/\((\d{4})\)\s*$/.exec(work.title) || [])[1], title = work.title.replace(/\s*\(\d{4}\)\s*$/, "");
   let res = await page(state, `${env.IMDB_SUGGEST || "https://v3.sg.media-imdb.com"}/suggestion/x/${encodeURIComponent(title.toLowerCase())}.json`, "application/json");
   if (!res.ok) return void noteBlocked(state, "imdb", "search answered " + res.status);
   let list;
   try { list = JSON.parse(await res.text()).d; } catch (e) { return void noteBlocked(state, "imdb", "search was not a list"); }
   const want = bare(kit, title), not = (work.found && work.found.not) || [];
-  const hit = (Array.isArray(list) ? list : []).find((t) => t && /^tt\d+$/.test(t.id || "") && bare(kit, t.l) === want && IMDB_KINDS[work.type].includes(t.qid)
-    && (!year || String(t.y) === year) && !not.includes("imdb:" + t.id));
+  const same = (Array.isArray(list) ? list : []).filter((t) => t && /^tt\d+$/.test(t.id || "") && bare(kit, t.l) === want && IMDB_KINDS[work.type].includes(t.qid)
+    && (!typedYear || String(t.y) === typedYear) && !not.includes("imdb:" + t.id));
+  const near = work.year ? same.filter((t) => Math.abs(Number(t.y) - work.year) <= 1).sort((a, b) => Math.abs(a.y - work.year) - Math.abs(b.y - work.year)) : [];
+  const hit = near[0] || same[0];
   if (!hit) return null;
   res = await page(state, `${env.IMDB_SITE || "https://www.imdb.com"}/title/${hit.id}/quotes/`, "text/html");
   if (res.status !== 200) return void noteBlocked(state, "imdb", "quotes page answered " + res.status);
@@ -327,7 +341,7 @@ Reply with a JSON array only, no other text, of up to ${want} items:
 [{"text": "the line, word for word as the page has it", "by": "the character who says it, or the author for a book", "page": "the address of the page it is on", "also": "the address of a second page on another site that gives the same wording, or an empty string"}]
 Keep a line only when a page you read gives its wording and says it is from this work. Never fill gaps from memory and never guess. One to three sentences each, under 45 words. If you find nothing real, reply with [].`;
 
-const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
+export const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
 // Turns an answer into lines. "read" are the pages the service says it really read, "behind(n)" the ones it
 // says stand behind a piece of the answer. A page the model only names counts when it is on a site that was
 // read; a line with no read page behind it is left out. A line is sure only when two sites agree on it.
@@ -350,35 +364,44 @@ function webLines(kit, said, read, behind, have) {
 }
 // Asks one of the two, trying its models in order. Counts every question against the day's limit first.
 // A refusal (the allowance is used up, the key is not accepted, the plan does not include searching) means
-// "not today": nothing more is asked of it until tomorrow.
+// "not today": nothing more is asked of it until tomorrow. How the last question went is kept in "last", which
+// the health record shows (probes.js). Answers null when nothing came back.
 async function ask(env, kit, state, who, models, send, read) {
   const rec = await openRecord(env, kit, state), use = rec[who];
-  if (use.off) return [];
+  const outcome = (what) => { rec.last[who] = { at: Date.now(), what }; state.dirty = true; };
+  if (use.off) return null;
   for (const model of String(models).split(",").map((m) => m.trim()).filter((m) => /^[a-z0-9.-]+$/i.test(m)).slice(0, 2)) {
-    if (use.calls >= A_DAY[who]) return [];
+    if (use.calls >= A_DAY[who]) { outcome("limit"); return null; }
     use.calls += 1;
     await saveRecord(env, kit, state);               // counted before asking, so a question that never returns still counts
     let res;
     state.spent += 1;
-    try { res = await send(model); } catch (e) { return []; }
-    if (res.status === 404 || res.status === 400) continue;     // this model is not offered, or may not search: try the next one
-    if (res.status === 429 || res.status === 401 || res.status === 403) { use.off = res.status === 429 ? "used up" : "refused"; state.dirty = true; return []; }
-    if (!res.ok) return [];
-    try { return read(await res.json()); } catch (e) { return []; }
+    try { res = await send(model); } catch (e) { outcome("no answer"); return null; }
+    // Google answers a key it does not know with 400, the same status as for a model that may not search.
+    const badKey = res.status === 400 && /api[ _]?key/i.test(await res.clone().text().catch(() => ""));
+    if ((res.status === 404 || res.status === 400) && !badKey) continue;     // this model is not offered, or may not search: try the next one
+    if (res.status === 429 || res.status === 401 || res.status === 403 || badKey) {
+      use.off = res.status === 429 ? "used up" : "refused"; outcome(use.off); return null;
+    }
+    if (!res.ok) { outcome("no answer"); return null; }
+    try { const got = read(await res.json()); outcome("worked"); return got; } catch (e) { outcome("no answer"); return null; }
   }
-  if (use.calls < A_DAY[who]) { use.off = "no model"; state.dirty = true; }
-  return [];
+  if (use.calls < A_DAY[who]) { use.off = "no model"; outcome("no model"); }
+  return null;
 }
 
-// Gemini with Google Search. Google changes which models a free key may search with, so the setting
-// GEMINI_MODEL (one name, or two with a comma) can replace this list without a change to the app.
-const GEMINI_MODELS = "gemini-2.5-flash,gemini-2.5-flash-lite";
-function fromGemini(env, kit, work, want, have, state) {
+// Gemini with Google Search. Google changes which models a key may search with (the 2.5 models are kept only
+// for keys that used them before), so the setting GEMINI_MODEL (one name, or two with a comma) can replace this
+// list without a change to the app.
+export const GEMINI_MODELS = "gemini-3.8-flash,gemini-3.5-flash-lite";
+// One question to Gemini with Google Search: { said, read, behind } (the answer, the pages read, and for a
+// piece of the answer the pages behind it), or null.
+export function geminiSearch(env, kit, state, prompt, ms = 20000) {
   const siteOf = (c) => { const t = String(c.title || "").trim().toLowerCase().replace(/^www\./, ""); return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(t) ? t : hostOf(c.uri); };
   return ask(env, kit, state, "gemini", env.GEMINI_MODEL || GEMINI_MODELS,
     (model) => fetch(`${env.GEMINI_API || "https://generativelanguage.googleapis.com"}/v1beta/models/${model}:generateContent`, {
-      method: "POST", headers: { "x-goog-api-key": env.GEMINI_API_KEY, "Content-Type": "application/json" }, signal: AbortSignal.timeout(20000),
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: question(work, want) }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0.2 } }) }),
+      method: "POST", headers: { "x-goog-api-key": env.GEMINI_API_KEY, "Content-Type": "application/json" }, signal: AbortSignal.timeout(ms),
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0.2 } }) }),
     (data) => {
       const cand = (data.candidates || [])[0] || {}, meta = cand.groundingMetadata || {};
       const said = (((cand.content || {}).parts) || []).map((p) => p.text || "").join("");
@@ -392,16 +415,20 @@ function fromGemini(env, kit, work, want, have, state) {
         }
         return [...at].map((i) => read[i]);
       };
-      return webLines(kit, said, read.filter((r) => r.uri && r.site), behind, have);
+      return { said, read: read.filter((r) => r.uri && r.site), behind };
     });
 }
+async function fromGemini(env, kit, work, want, have, state) {
+  const got = await geminiSearch(env, kit, state, question(work, want));
+  return got ? webLines(kit, got.said, got.read, got.behind, have) : [];
+}
 // OpenAI with its web search tool (the Responses API). OPENAI_MODEL can replace the list, as for Gemini.
-const OPENAI_MODELS = "gpt-6-luna,gpt-6.1-terra";
-function fromOpenAI(env, kit, work, want, have, state) {
+export const OPENAI_MODELS = "gpt-6-luna,gpt-6.1-terra";
+export function openaiSearch(env, kit, state, prompt, ms = 25000) {
   return ask(env, kit, state, "openai", env.OPENAI_MODEL || OPENAI_MODELS,
     (model) => fetch(`${env.OPENAI_API || "https://api.openai.com"}/v1/responses`, {
-      method: "POST", headers: { Authorization: "Bearer " + env.OPENAI_API_KEY, "Content-Type": "application/json" }, signal: AbortSignal.timeout(25000),
-      body: JSON.stringify({ model, input: question(work, want), tools: [{ type: "web_search" }], tool_choice: "required", include: ["web_search_call.action.sources"], store: false }) }),
+      method: "POST", headers: { Authorization: "Bearer " + env.OPENAI_API_KEY, "Content-Type": "application/json" }, signal: AbortSignal.timeout(ms),
+      body: JSON.stringify({ model, input: prompt, tools: [{ type: "web_search" }], tool_choice: "required", include: ["web_search_call.action.sources"], store: false }) }),
     (data) => {
       const out = Array.isArray(data.output) ? data.output : [];
       const parts = out.filter((o) => o.type === "message").flatMap((o) => o.content || []).filter((c) => c.type === "output_text");
@@ -410,8 +437,12 @@ function fromOpenAI(env, kit, work, want, have, state) {
       const cited = parts.flatMap((c) => (c.annotations || []).filter((a) => a.type === "url_citation").map((a) => ({ uri: kit.foundAt(a.url), site: hostOf(a.url), about: kit.norm(String(c.text || "").slice(a.start_index, a.end_index)) })));
       const opened = out.filter((o) => o.type === "web_search_call").flatMap((o) => (o.action && o.action.sources) || []).map((s) => ({ uri: kit.foundAt(s.url), site: hostOf(s.url) }));
       const behind = (n) => cited.filter((c) => c.uri && c.about && (c.about.includes(n) || (c.about.length >= 20 && n.includes(c.about))));
-      return webLines(kit, said, [...cited, ...opened].filter((r) => r.uri && r.site), behind, have);
+      return { said, read: [...cited, ...opened].filter((r) => r.uri && r.site), behind };
     });
+}
+async function fromOpenAI(env, kit, work, want, have, state) {
+  const got = await openaiSearch(env, kit, state, question(work, want));
+  return got ? webLines(kit, got.said, got.read, got.behind, have) : [];
 }
 
 // ---------------------------------------------------------------- the whole search for one request
@@ -419,6 +450,7 @@ function fromOpenAI(env, kit, work, want, have, state) {
 // Looks one work up, place after place until there are enough lines, and returns what to keep on it.
 // A look that runs out of time or of calls stops there, and the next one carries on at the place it stopped.
 async function lookUp(env, kit, work, need, about, taste, state) {
+  work = withKnown(kit, work);
   const have = new Set(kept(work).map((l) => kit.norm(l.text)));
   const prior = work.found || {};
   let lines = [], where = "";
@@ -463,7 +495,7 @@ async function lookUp(env, kit, work, need, about, taste, state) {
 // Returns { items, short }: the quotes, and the works that did not get as many as their share.
 export async function forWorks(env, kit, lib, works, { room, also = 0, about = "", taste = null, seen, ranker = null }) {
   const items = [], short = [], looked = [];
-  const state = { spent: 0, rec: null, dirty: false, began: Date.now(), limit: (Number(env.LOOKUP_SECONDS) || SECONDS) * 1000 };
+  const state = newState(env);
   const words = kit.norm(about).split(" ").filter((w) => w.length > 3);
   for (let i = 0; i < works.length && room > 0; i++) {
     const work = works[i];
@@ -484,7 +516,7 @@ export async function forWorks(env, kit, lib, works, { room, also = 0, about = "
     room -= take.length;
     if (take.length < share) short.push(work);
   }
-  if (state.dirty) await saveRecord(env, kit, state);
+  await closeRecord(env, kit, state);
   if (looked.length) await keep(env, kit, lib, looked);
   return { items, short };
 }

@@ -13,6 +13,7 @@
    if it stays that way for three days. */
 import { hide, dayIST, RECONNECT } from "./health.js";
 import { upkeepState } from "./upkeep.js";
+import { A_DAY, GEMINI_MODELS, OPENAI_MODELS } from "./findlines.js";
 
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
 const SLOW_MS = 15000;
@@ -294,11 +295,70 @@ function probeErrors(env, kit, ctx) {
   return { title, state: "ok", brief: "", line: `${n === 1 ? "1 problem" : `${n} problems`} in the last day, which is within the ordinary.${what}` };
 }
 
+// ---------------------------------------------------------------- looking things up (findlines.js, verify.js)
+
+// The free places, as data/lookups.json names them, and the two search helpers with their settings.
+const PLACES = [["wikiquote", "Wikiquote"], ["quoteinvestigator", "Quote Investigator"], ["goodreads", "Goodreads"], ["imdb", "IMDb"],
+  ["wikipedia", "Wikipedia"], ["openlibrary", "Open Library"]];
+const HELPERS = [["gemini", "Gemini", "GEMINI_API_KEY", "GEMINI_MODEL", GEMINI_MODELS, "Google AI Studio (aistudio.google.com), API keys"],
+  ["openai", "OpenAI", "OPENAI_API_KEY", "OPENAI_MODEL", OPENAI_MODELS, "platform.openai.com, API keys"]];
+const LAST = { worked: "worked", limit: "stopped at the app's daily limit", "used up": "stopped: the account's allowance was used up",
+  refused: "was refused", "no model": "found no model it may use", "no answer": "got no answer" };
+const inCloudflare = (name) => `In Cloudflare: Workers & Pages, entangledd-studio, Settings, Variables and Secrets. Edit ${name}, paste the new value, then Deploy.`;
+
+// Is the key accepted, and is the model offered? Reading a model's details asks nothing and costs nothing.
+async function keyAnswer(env, who, model) {
+  const res = who === "gemini"
+    ? await fetch(`${env.GEMINI_API || "https://generativelanguage.googleapis.com"}/v1beta/models/${model}`, { headers: { "x-goog-api-key": env.GEMINI_API_KEY }, signal: AbortSignal.timeout(SLOW_MS) })
+    : await fetch(`${env.OPENAI_API || "https://api.openai.com"}/v1/models/${model}`, { headers: { Authorization: "Bearer " + env.OPENAI_API_KEY }, signal: AbortSignal.timeout(SLOW_MS) });
+  if (res.body) await res.body.cancel().catch(() => {});
+  return res.ok ? "ok" : [400, 401, 403].includes(res.status) ? "refused" : res.status === 404 ? "no model" : "unknown";
+}
+
+async function probeLookups(env, kit) {
+  const title = "Looking things up";
+  const rec = (await kit.loadDoc(env, "lookups", null)) || {};
+  const sites = rec.sites || {}, last = rec.last || {}, today = rec.day === kit.todayIST();
+  const said = [], soon = [], urgent = [], fix = [];
+  for (const [id, name] of PLACES) {
+    const s = sites[id];
+    if (!s || !(s.ok || s.failed)) continue;
+    if ((s.failed || 0) > (s.ok || 0)) {
+      said.push(`${name} ${s.blocked ? "turned the app away" : "didn't answer"} on ${dayIST(s.failed)}${s.why ? ` (${s.why})` : ""}.`);
+      soon.push(`${name} ${s.blocked ? "turns the app away" : "doesn't answer"}`);
+    } else said.push(`${name} worked on ${dayIST(s.ok)}.`);
+  }
+  if (soon.length) fix.push("Nothing urgent: what isn't found comes from the other places, and from Nishiii's memory, clearly marked.",
+    ...(soon.some((x) => /^(Goodreads|IMDb)/.test(x)) ? ["If Goodreads or IMDb keep turning the app away, stop asking them: " + inCloudflare("QUOTE_SITES").replace("paste the new value", "set it to off")] : []));
+  for (const [id, name, KEY, MODEL, DEFAULT, where] of HELPERS) {
+    if (!env[KEY]) { said.push(`${name}: no key.`); continue; }
+    const models = String(env[MODEL] || DEFAULT).split(",").map((m) => m.trim()).filter((m) => /^[a-z0-9.-]+$/i.test(m)).slice(0, 2);
+    let answer = "unknown";
+    try { for (const m of models) { answer = await inTime(keyAnswer(env, id, m), name); if (answer !== "no model") break; } }
+    catch (e) { answer = "unknown"; }
+    const l = last[id], calls = today ? (rec[id] || {}).calls || 0 : 0;
+    const lastly = l && LAST[l.what] ? ` The last search ${LAST[l.what]} on ${dayIST(l.at)}.` : "";
+    if (answer === "refused") {
+      said.push(`${name} refuses its key.${lastly}`); urgent.push(`${name} refuses its key`);
+      fix.push(`Make a new ${name} key: ${where}.`, inCloudflare(KEY));
+    } else if (answer === "no model") {
+      said.push(`${name} no longer offers the models the app asks for (${models.join(", ")}).`); soon.push(`${name} no longer offers the app's models`);
+      fix.push(`Find a current ${name} model that can search the web, then ${inCloudflare(MODEL).replace("In Cloudflare", "in Cloudflare").replace("paste the new value", "type its name")}`);
+    } else if (l && l.what === "refused") {
+      said.push(`${name} accepts the key but refused to search.${lastly}`); soon.push(`${name} refuses to search`);
+      fix.push(`In ${where.split(",")[0]}, check that the plan allows web search, or remove ${KEY} in Cloudflare.`);
+    } else said.push(`${name}: ${answer === "ok" ? "key accepted" : "couldn't be asked just now"}, ${calls} of ${A_DAY[id]} searches today.${lastly}`);
+  }
+  const state = urgent.length ? "attention" : soon.length ? "soon" : "ok";
+  const line = (state === "ok" ? "Working. " : "") + (said.length ? said.join(" ") : "Nothing has been looked up yet.");
+  return { title, state, line, brief: [...urgent, ...soon].join("; "), ...(fix.length && state !== "ok" ? { fix } : {}) };
+}
+
 // ---------------------------------------------------------------- the two groups
 
 export const PARTS = {
-  services: { ids: ["books", "tracks", "photos", "selfcheck"],
-    checks: { books: probeBooks, tracks: probeTracks, photos: probePhotos, selfcheck: probeSelfcheck },
+  services: { ids: ["books", "tracks", "photos", "selfcheck", "lookups"],
+    checks: { books: probeBooks, tracks: probeTracks, photos: probePhotos, selfcheck: probeSelfcheck, lookups: probeLookups },
     prepare: async () => {} },
   page: { ids: ["feed", "numbers", "comments", "backup", "cleaning", "errors"],
     checks: { feed: probeFeed, numbers: probeNumbers, comments: probeComments, backup: probeBackup, cleaning: probeCleaning, errors: probeErrors },
@@ -312,5 +372,5 @@ export const PARTS = {
     } },
 };
 export const PROBE_IDS = [...PARTS.services.ids, ...PARTS.page.ids];
-export const PROBE_TITLES = { books: "Book texts", tracks: "Music search", photos: "Photos from the search", selfcheck: "Reel maker's self-test",
+export const PROBE_TITLES = { books: "Book texts", tracks: "Music search", photos: "Photos from the search", selfcheck: "Reel maker's self-test", lookups: "Looking things up",
   feed: "Your posts on Instagram", numbers: "Post numbers", comments: "Comments", backup: "Backups", cleaning: "Tidying up", errors: "Problems noticed" };

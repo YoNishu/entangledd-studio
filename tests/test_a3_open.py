@@ -20,7 +20,7 @@ tick_job("instagram-renew"); tick_job("health-check")
 s, b, h = http("GET", "/api/health")
 check("needsAttention is false and the message says so", b["needsAttention"] is False and b["message"] == "Everything is working.", b)
 check("only the agreed top-level fields", sorted(b) == ["ageHours", "app", "asOf", "counts", "items", "message", "needsAttention", "notes"], sorted(b))
-check("per line only id, state, daysLeft, checked", all(sorted(i) == ["checked", "daysLeft", "id", "state"] for i in b["items"]) and len(b["items"]) == 17, b["items"][:1])      # seven lines of keys, ten probes (Agent 6)
+check("per line only id, state, daysLeft, checked", all(sorted(i) == ["checked", "daysLeft", "id", "state"] for i in b["items"]) and len(b["items"]) == 18, b["items"][:1])      # seven lines of keys, eleven probes (Agent 6, Agent 10)
 check("a short public cache life", "max-age=300" in (h.get("cache-control") or h.get("Cache-Control") or ""), h)
 check("the full record for the same moment has seven titled lines", len(http("GET", "/api/checkup", token=t)[1]["items"]) == 7)
 
@@ -50,7 +50,7 @@ private = ["theentangledd", "Entangledd\"", "17890", "local/dev", "ffmpeg", "/tm
 found = [p for p in private if p in raw] + no_secrets(raw)
 check("no names, ids, addresses, steps, raw errors or keys in the open answer", not found, found)
 check("the signed-in record does carry the detail and the steps", "ffmpeg exploded" in items["reels"]["line"] and len(items["github"]["fix"]) == 3)
-check("the open answer stays small", len(raw) < 3500, len(raw))      # seventeen lines now
+check("the open answer stays small", len(raw) < 3500, len(raw))      # eighteen lines now
 
 print("A record gone stale means the timers stopped")
 rec = doc("health"); rec["asOf"] -= 3 * DAY; putdoc("health", rec)

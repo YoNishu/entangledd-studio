@@ -44,6 +44,7 @@ list at the end, "Ideas for later, only if she asks".
 | 21 | A daily reminder on her phone at 11:11, if she turns it on | Done |
 | 22 | The test suite in the repository (`tests/`) | Done |
 | 23 | Real lines from a named book, film or series, found on Wikiquote, Goodreads and IMDb at no cost (and through Gemini or OpenAI web search when a key is set), kept in the Library | Done |
+| 24 | "Who said this?" and Library titles looked up on the web (Wikiquote, Quote Investigator, Wikipedia, Open Library; Gemini or OpenAI when those find nothing), with the pages shown; lookups in the health record | Done |
 
 ## How the app is laid out
 
@@ -94,10 +95,10 @@ included, of the 50 allowed.
 | `lovenotes-deliveries` | 1 h | Opens sealed deliveries of little notes (listed only while one is waiting) |
 | `upkeep-clean` | 6 h | Removes stored files that have outlived their lifetime (table below) |
 | `upkeep-backup` | 1 h look, daily copy | Copies the documents that cannot be made again to `backup/<day>/`, seven per run |
-| `health-services` | 24 h | Probes: book texts, the music search, a photo fetched the way the app fetches it, the reel maker's self-test |
+| `health-services` | 24 h | Probes: book texts, the music search, a photo fetched the way the app fetches it, the reel maker's self-test, looking things up |
 | `health-page` | 24 h | Probes: her posts on Instagram, post numbers, comments; then backups, tidying up, problems noticed |
 
-**The health record** (`server/health.js`, `server/probes.js`). Seventeen lines, each `ok`,
+**The health record** (`server/health.js`, `server/probes.js`). Eighteen lines, each `ok`,
 `soon`, `attention`, `off` or `unknown`. `GET /api/health` (open) gives ids, states, day counts,
 one message in fixed words, three counts and `needsAttention`; it costs one storage read and
 never calls an outside service. `GET /api/checkup` (signed in) gives the full record with the
@@ -189,8 +190,25 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
   .ttf in `web/fonts`, add an `@font-face` line in `web/app.css` and list it in `web/app.js`.
 - HDR clips (recent iPhones) are tone-mapped to normal colours when the reel is rendered. The
   preview in the app is not, so it can look slightly different from the finished reel.
-- "Check who said this" is Claude's memory, not a lookup. It catches famous misattributions; it
-  cannot prove an obscure quote.
+- "Who said this?" is looked up (`server/verify.js`, `POST /api/check`, the chat's `check_quote`):
+  Wikiquote's text search and the matching page with the headings above the line (a
+  "Misattributed" or "Disputed" section is the strongest evidence), and Quote Investigator's own
+  search (`/wp-json/wp/v2/search`) and article (`/wp-json/wp/v2/posts/<id>`), both free and
+  asked side by side; Gemini or OpenAI only when those found nothing (same daily limits). Claude
+  gives the verdict from that evidence and names what it rests on: the answer carries
+  `basis` (`web` or `memory`) and `sources` (`url`, `site`, `title`), shown as "Found on ..."
+  links. With nothing found it is Claude's memory, marked so. Only the line and the name on it
+  are sent anywhere. Searching stops after nine seconds (four per free page).
+- A book, film or series added to the Library is checked once (`POST
+  /api/library/<books|screen>/<id>/title`; `{accept: true}` or `{keep: true}` answers the offer):
+  Open Library's search for books, Wikipedia's search with each page's short description, then
+  Gemini or OpenAI if those found nothing. Kept on the item: `titleChecked`, `known` (`title`,
+  `by`, `year`, `kind`, `page`, `site`) when her title is a real one, `maybe` when a real title
+  is close to hers or of the other kind (offered as "Did you mean ...?", applied only by her
+  tap; accepting fills an empty author, sets the kind, and drops lines found under the old title),
+  `titleKept` when she kept hers. The Library checks at most two older unchecked titles per
+  visit. findlines uses `known`: the author for Goodreads and Wikiquote when she gave none, and
+  the year to choose between same-named titles (IMDb, within a year; Wikiquote's "(2016 film)").
 - Quotes on request for a named book (without free full text), film or series are real lines
   looked up for her (`server/findlines.js`). The places are tried in this order, the next one
   only when those before gave too few: lines already kept for that work in the Library (found
@@ -210,7 +228,12 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
   "Not the right one" to drop them and never use that page for it again.
 - One search and one page per work at each site. A site that turns the app away (403, a "prove
   you are human" page, a page without quotes) has nothing that day; `data/lookups.json` notes
-  when each site last worked or failed, and holds the day's count for Gemini and OpenAI.
+  when each site last worked or failed (also Quote Investigator, Wikipedia and Open Library),
+  holds the day's count for Gemini and OpenAI, and in `last` how each one's last question went
+  (`worked`, `limit`, `used up`, `refused`, `no model`, `no answer`). It is not backed up: it
+  rebuilds itself within a day, and an old copy could wrongly rest a site. Gemini's default models
+  are `gemini-3.8-flash`, then `gemini-3.5-flash-lite` (Google keeps the 2.5 models only for keys
+  that used them before); a key Google does not know (400 "API key not valid") counts as refused.
   Goodreads and IMDb do not offer this as a service and may refuse a server; the app then moves on.
 - Book text comes from Project Gutenberg through the Gutendex catalogue, so only books old
   enough to be free have it. Lines taken from a book's text are kept only if the exact words
