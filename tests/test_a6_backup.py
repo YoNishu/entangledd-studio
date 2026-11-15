@@ -48,7 +48,7 @@ check("the day is now complete", st["day"] == today and st["left"] == 0, st)
 if st["prunedDay"] != today: run_only("upkeep-backup")
 cost3 = run_only("upkeep-backup")
 check("once the day is done, the hourly look costs one read and writes nothing of its own",
-      [w for w in cost3["what"] if "jobstamps" not in w and w not in ("get data/posts.json", "get data/handoffs.json")] == ["get data/backupstate.json"], cost3["what"])
+      [w for w in cost3["what"] if "jobstamps" not in w and w not in ("get data/posts.json", "get data/handoffs.json", "get data/reminders.json")] == ["get data/backupstate.json"], cost3["what"])
 
 # What a caller can see: days and names. Never the content.
 s, listing, _ = http("GET", "/api/backups")

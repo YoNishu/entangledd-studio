@@ -19,15 +19,15 @@ def spent(method, path, token=None, body=None):
 def show(o): return f"{o['storage']} storage + {o['outside']} outside: " + ", ".join(o["what"])
 def set_ig(**changes):
     ig = doc("instagram"); ig.update(changes); putdoc("instagram", ig)
-TICK = 2          # the five-minute tick's own two reads (posts waiting, reels handed to Instagram), before any job
+TICK = 3          # the five-minute tick's own reads (posts waiting, reels handed to Instagram, the daily reminders), before any job
 
 print("An ordinary day")
 serve(); t = login(); connect(t)
 o = run_job("health-check")
-check(f"the daily check: {cost(o)} in all, {cost(o) - TICK} of them the job's (aim: about 20)", cost(o) <= 15, show(o))      # one read more: the day's count of questions (Agent 6)
+check(f"the daily check: {cost(o)} in all, {cost(o) - TICK} of them the job's (aim: about 20)", cost(o) <= 16, show(o))      # one read more: the day's count of questions (Agent 6)
 check("it wrote exactly two things: the timer's stamp and the record", sorted(w for w in o["what"] if w.startswith("put")) == ["put data/health.json", "put data/jobstamps.json"], show(o))
 o = run_job("instagram-renew")
-check(f"the renewal job when nothing is due: {cost(o)} in all, not one call to Meta", cost(o) <= 5 and o["outside"] == 0, show(o))
+check(f"the renewal job when nothing is due: {cost(o)} in all, not one call to Meta", cost(o) <= 6 and o["outside"] == 0, show(o))
 s, b, o = spent("POST", "/api/checkup", t)
 check("(a check made a moment ago turns Check now away, for one read)", s == 429 and cost(o) == 1, (s, show(o)))
 rec = doc("health"); rec["asOf"] -= 120000; putdoc("health", rec)
@@ -59,14 +59,14 @@ hset(dataDays=10, newDataDays=90, exchange="extend"); set_ig(dataAccessUntil=now
 o = run_job("instagram-renew")
 ig = doc("instagram")
 check("it did renew both", ig["userToken"].startswith("LONG-user-token-R") and ig["pageToken"].startswith("PAGE-token-R"), (ig["userToken"][:20], ig["pageToken"][:14]))
-check(f"cost: {cost(o)} in all, {cost(o) - TICK} of them the job's", cost(o) <= 13, show(o))
+check(f"cost: {cost(o)} in all, {cost(o) - TICK} of them the job's", cost(o) <= 14, show(o))
 check("six calls to Meta, one save of the connection", o["outside"] == 6 and o["what"].count("put data/instagram.json") == 1, show(o))
 
 print("A refused renewal")
 serve(); t = login(); connect(t)
 hset(userDays=20, exchange="refuse"); set_ig(userTokenExpires=now_ms() + 20 * DAY)
 o = run_job("instagram-renew")
-check(f"cost: {cost(o)} in all (one call to Meta, one note saved)", cost(o) <= 8 and o["outside"] == 1 and o["what"].count("put data/instagram.json") == 1, show(o))
+check(f"cost: {cost(o)} in all (one call to Meta, one note saved)", cost(o) <= 9 and o["outside"] == 1 and o["what"].count("put data/instagram.json") == 1, show(o))
 
 print("The worst day there can be: everything that can need mending, at once")
 serve("OV_KEYS=1"); t = login(); connect(t)
