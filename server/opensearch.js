@@ -27,6 +27,8 @@ const SKIP = /(^|\.)(instagram\.com|pinterest\.[a-z.]+|facebook\.com|tiktok\.com
 // Sites that tend to hold lines from a work, tried first.
 const GOOD = /(^|\.)(goodreads\.com|wikiquote\.org|mydramalist\.com|fandom\.com|quotefancy\.com|azquotes\.com|dramabeans\.com|kissasian|dramawiki|asianwiki\.com|tumblr\.com|medium\.com|wordpress\.com|blogspot\.com|quotes\.net|subslikescript\.com)$/;
 
+// What the live proving script (tests/live) is told as the lookups run; never set in the real app.
+export const say = (env, what, detail) => { if (typeof env.LOOKUP_LOG === "function") env.LOOKUP_LOG(what, detail); };
 const wall = (html) => /captcha|verify you are human|are you a robot|unusual traffic|anomaly-modal|bots use duckduckgo|access denied|enable javascript and cookies/i.test(String(html).slice(0, 8000));
 const blocked = (why) => Object.assign(new Error(why), { blocked: why });
 
@@ -188,8 +190,9 @@ export async function results(env, kit, state, queries, { enough = 6 } = {}) {
       if (!spend(state, kit, cap)) { F.step(state, id, "not asked", { why: "the app's daily limit for it" }); break; }
       if (cap === "results") keyless += 1;
       let got;
-      try { got = await run(env, kit, state, q); }
+      try { got = await run(env, kit, state, q); say(env, "results", { via: id, q, list: got.map((r) => [r.url, r.title, r.snippet]) }); }
       catch (e) {
+        say(env, "results", { via: id, q, failed: e && (e.blocked || e.message) });
         if (e && e.blocked) F.noteBlocked(state, id, e.blocked);
         else F.noteSite(state, id, e && e.name === "TimeoutError" ? "no answer in time" : "could not be reached");
         break;                                         // this provider is no good now: the next one
@@ -220,45 +223,137 @@ export function rank(list, names = [], not = []) {
   return list.map((r, i) => ({ r, i, s: score(r) })).filter((x) => x.r.host && !SKIP.test(x.r.host) && !not.includes(x.r.url))
     .sort((a, b) => b.s - a.s || a.i - b.i).map((x) => x.r);
 }
-// Fetches up to "max" of them at once: [{ url, site, title, text }]. A page that turns the app away is on the trail.
+// Fetches up to "max" of them at once: [{ url, site, title, head, text }]. A page Tavily already read in full is
+// used as it came; one it sent only a short extract of is fetched, and the extract used if the site says no. A
+// page that turns the app away is on the trail.
+const FULL = 1500;
 export async function readPages(env, kit, state, list, max = MAX_PAGES) {
   const pick = [];
   for (const r of list) {
     if (pick.length >= max) break;
-    if (!r.raw && !allowed(env, r.url)) continue;
+    if (!(r.raw && r.raw.length >= FULL) && !allowed(env, r.url)) continue;
     pick.push(r);
   }
+  const extract = (r, why) => {
+    const text = String(r.raw || "").replace(/[ \t]+/g, " ");
+    say(env, "page", { url: r.url, how: why, chars: text.length });
+    return text.length >= 200 ? { url: r.url, site: r.host, title: r.title, head: "", text, via: r.via } : null;
+  };
   const got = await Promise.all(pick.map(async (r) => {
-    if (r.raw && r.raw.length >= 200) return { url: r.url, site: r.host, title: r.title, text: r.raw.replace(/[ \t]+/g, " "), via: r.via };
+    if (r.raw && r.raw.length >= FULL) return extract(r, "as the search sent it");
     if (!spend(state, kit, "pages")) { F.step(state, "web", "not asked", { why: "the app's daily limit of pages" }); return null; }
     try {
       const pg = await fetchCapped(env, state, r.url, { accept: "text/html,text/plain" });
-      if (pg.status !== 200 || !/text\/(html|plain)|xhtml/i.test(pg.type)) { F.step(state, "web", "no page", { why: `${r.host} answered ${pg.status}` }); return null; }
-      const text = /html/i.test(pg.type) ? pageText(pg.text) : pg.text;
-      return text.length >= 200 ? { url: kit.foundAt(pg.url) || pg.url, site: r.host, title: r.title, text, via: r.via } : null;
+      if (pg.status !== 200 || !/text\/(html|plain)|xhtml/i.test(pg.type)) { F.step(state, "web", "no page", { why: `${r.host} answered ${pg.status}` }); return r.raw ? extract(r, "the extract") : null; }
+      const html = /html/i.test(pg.type);
+      const text = html ? pageText(pg.text) : pg.text;
+      const head = html ? F.plain((/<title[^>]*>([\s\S]{0,300}?)<\/title>/i.exec(pg.text) || [])[1] || "").trim() : "";
+      say(env, "page", { url: pg.url, how: "fetched", status: pg.status, bytes: pg.text.length, chars: text.length, head });
+      return text.length >= 200 ? { url: kit.foundAt(pg.url) || pg.url, site: r.host, title: r.title, head, text, via: r.via } : null;
     } catch (e) {
       F.step(state, "web", e && e.blocked ? "blocked" : "no answer", { why: `${r.host}: ${e && e.blocked ? e.blocked : e && e.name === "TimeoutError" ? "no answer in time" : "could not be reached"}` });
-      return null;
+      say(env, "page", { url: r.url, how: "failed", why: e && (e.blocked || e.message) });
+      return r.raw ? extract(r, "the extract, the page said no") : null;
     }
   }));
   return got.filter(Boolean);
 }
 
+// ---------------------------------------------------------------- lines on a page, without Claude
+
+// Words made comparable the way pages differ: curly quotes and apostrophes straight, every dash one hyphen, "…"
+// three dots, any kind of space one space, lower case. "You don’t have to" on one page is "You don't have to"
+// on another.
+export const sameWords = (t) => String(t || "").replace(/[‘’‚‛ʼ′`´]/g, "'").replace(/[“”„‟″«»「」『』]/g, '"')
+  .replace(/[‐‑‒–—―−]/g, "-").replace(/…/g, "...").replace(/[\s  -​  　]+/g, " ").trim().toLowerCase();
+// Is the line on the page, in the same words (quote marks, dashes, spaces and case aside)?
+export const onPage = (pageWords, line) => {
+  const n = sameWords(line).replace(/^["'\s]+|["'\s]+$/g, "");
+  return n.length >= 12 && pageWords.includes(n);
+};
+
+// Labels on review and recap pages that look like "Name: words" but are not someone speaking.
+const NOT_SPEAKERS = /^(notes?|episodes?|ep|eps|rating|ratings|score|overall|story|acting|cast|music|rewatch value|source|sources|review|reviews|posted|posted by|by|from|via|credit|credits|photo|image|genre|genres|tags?|labels?|updated?|date|time|title|native title|also known as|screenwriter|director|directors|country|network|aired|airs|duration|content rating|ranked|popularity|watchers|status|q|a|warning|spoilers?|edit|summary|plot|synopsis|verdict|pros|cons|read more|translation|subtitles?|written by|category|filed under|link|comments?|reply|share|chinese|english|pinyin|season|part|chapter|related|watch|where to watch|final thoughts|conclusion|significant quotes|quotes|quote|favourite quote|favorite quote|note to self)$/i;
+const NAME = "[A-Z][\\p{L}'’.-]+(?: [A-Z][\\p{L}'’.-]+){0,2}";
+const SPOKEN = new RegExp(`^\\s*(?:[-*•]\\s*)?(${NAME})\\s*(?:\\([^)]{0,30}\\))?\\s*[:：]\\s*(.+)$`, "u");
+const BEFORE = new RegExp(`(${NAME})\\s*(?:\\([^)]{0,30}\\))?\\s*(?:[:：]|,?\\s+(?:said|says|told|tells|asks|asked|replies|replied|to [A-Z][\\p{L}]+)\\b[^“"«「]{0,20}[,:]?)\\s*$`, "u");
+const AFTER = new RegExp(`^\\s*[,.]?\\s*(?:[-–—]\\s*|,?\\s*(?:said|says)\\s+)(${NAME})`, "u");
+const QUOTED = /“([^“”\n]{20,300})”|"([^"\n]{20,300})"|«\s?([^«»\n]{20,300}?)\s?»|「([^「」\n]{20,300})」|『([^『』\n]{20,300})』/g;
+
+// A piece of text worth offering as a line: four words or more, real words, not an address or a heading.
+function lineLike(t) {
+  const s = t.trim();
+  if (s.length < 20 || s.length > 300 || s.split(/\s+/).length < 4) return false;
+  if (/https?:|www\.|\.com\b|@|#\w|\{|\}|<|>/.test(s) || !/[a-z]/.test(s)) return false;
+  const caps = s.split(/\s+/).filter((w) => /^[A-Z]/.test(w)).length;
+  return caps / s.split(/\s+/).length < 0.7;                      // a title or a list of names, not a line
+}
+const knownName = (names, who) => names.find((n) => n && who && sameWords(n) === sameWords(who)) || "";
+// Lines on a page, found without Claude: text inside quotation marks (straight, curly, « », 「」), and
+// "Speaker: line" where the speaker is a name known for the work or a capitalised name of one to three words.
+// "names" are the work's cast and characters (a known name before a quote is its speaker). "list" reads each
+// line under a heading as a line (Wikiquote's own pages). [{ text, by, other }]: "other" is a name the page
+// credits the line to that is not one of the work's (a known author on a mixed list page).
+export function extractLines(text, { names = [], list = false } = {}) {
+  const out = [], seen = new Set();
+  const add = (raw, by = "", other = "") => {
+    const t = String(raw).replace(/\s+/g, " ").replace(/^[\s"'“”‘’]+|[\s"'“”]+$/g, "").trim();
+    const n = sameWords(t);
+    if (!lineLike(t) || seen.has(n)) return;
+    seen.add(n);
+    out.push({ text: t, by, other });
+  };
+  const all = String(text);
+  for (const m of all.matchAll(QUOTED)) {
+    const inner = m[1] || m[2] || m[3] || m[4] || m[5];
+    const before = all.slice(Math.max(0, m.index - 70), m.index).split("\n").pop();
+    const after = all.slice(m.index + m[0].length, m.index + m[0].length + 50).split("\n")[0];
+    const known = names.filter((n) => n && n.length >= 3 && before.includes(n)).pop() || "";
+    const b = BEFORE.exec(before), a = AFTER.exec(after);
+    const said = known || (b && !NOT_SPEAKERS.test(b[1]) ? b[1] : "") || (a && !NOT_SPEAKERS.test(a[1]) ? a[1] : "");
+    const mine = knownName(names, said);
+    // A name after a dash that is none of the work's: the line is credited to someone else.
+    add(inner, mine || (said && !(a && said === a[1]) ? said : ""), a && !mine && said === a[1] ? a[1] : "");
+  }
+  let heading = "";
+  for (const line of all.split("\n")) {
+    const h = /^={2,6}\s*(.*?)\s*={2,6}\s*$/.exec(line);
+    if (h) { heading = h[1]; continue; }
+    const s = SPOKEN.exec(line);
+    if (s && !NOT_SPEAKERS.test(s[1])) {
+      add(s[2], knownName(names, s[1]) || s[1]);
+      continue;
+    }
+    if (list && !/[“"«「]/.test(line)) add(line, /^(season|series|episode|part|chapter|dialogue|act|book|volume)\b/i.test(heading) || /\d/.test(heading) ? "" : heading);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- lines from what was read
 
-// Does the text name the work, and not just the words of its title? Its original title, or its title together
-// with one more public fact (its year, a lead actor, its author, or what kind of work it is).
-export function namesWork(kit, work, text) {
-  const t = String(text), low = kit.norm(t);
+// Does the text name the work, and not just the words of its title? Its original title (in its own script); or
+// its title, proper title or another title it goes by, together with one more public fact: its year, a lead actor,
+// a character, its author or its network; or with the title in the page's own title or address. Only when
+// nothing more is known of the work does the kind of work ("drama", "film") count as that fact.
+// "pg" is the page ({ title, url }), when there is one.
+export function namesWork(kit, work, text, pg = null) {
+  const t = String(text), low = ` ${kit.norm(t)} `;
   if (work.original && /[^\x00-\x7f]/.test(work.original) && t.includes(work.original)) return true;
-  const titled = [work.title, work.real, ...(work.aka || [])].filter(Boolean).some((n) => {
-    const c = F.coreTitle(kit, n);
-    return c && ` ${low} `.includes(` ${c} `);
-  });
-  if (!titled) return false;
-  const facts = [work.year && String(work.year), ...(work.cast || []), work.author, work.type === "book" ? "" : work.type === "film" ? "film" : "drama"].filter(Boolean);
-  return facts.some((f) => ` ${low} `.includes(` ${kit.norm(f)} `)) || (work.type === "series" && /\b(episode|tv series|web series|c-?drama|k-?drama)\b/i.test(t));
+  const cores = [work.title, work.real, ...(work.aka || []), ...(/[^\x00-\x7f]/.test(work.original || "") ? [] : [work.original])].filter(Boolean)
+    .map((n) => F.coreTitle(kit, n)).filter(Boolean);
+  if (!cores.some((c) => low.includes(` ${c} `))) return false;
+  const facts = [work.year && String(work.year), ...(work.cast || []), ...(work.characters || []), work.author, work.network].filter(Boolean);
+  if (facts.some((f) => low.includes(` ${kit.norm(f)} `))) return true;
+  if (pg) {
+    const head = ` ${kit.norm(`${pg.title || ""} ${pg.head || ""} ${String(pg.url || "").replace(/^https?:\/\/[^/]+/, "")}`)} `;
+    if (cores.some((c) => c.includes(" ") && head.includes(` ${c} `)) && kindSaid(work, t)) return true;
+  }
+  if (facts.length) return false;
+  return kindSaid(work, t);
 }
+// Does the page say what kind of work it is about?
+const kindSaid = (work, t) => work.type === "book" ? /\b(novel|book|author)\b/i.test(t) : work.type === "film" ? /\b(film|movie)\b/i.test(t)
+  : /\b(drama|episodes?|tv series|web series|c-?drama|k-?drama|series)\b/i.test(t);
 
 const PICK_SYSTEM = `You pick real, quotable lines from pages found on the web, for a quiet, reflective Instagram quotes page.
 Reply with a JSON array only: [{"page": the number of the page, "text": "...", "by": "...", "from": "...", "theme": "one or two words", "tone": "one word"}]
@@ -281,35 +376,53 @@ function passages(kit, text, near) {
   }
   return out.join("\n…\n");
 }
-// Claude picks lines from the pages read; each is kept only if its exact words are on the page it names, it is
-// new, and (when a work is asked about) credited to that work and on a page that names it. { lines, dropped }.
+// Claude picks lines from the pages read (or, when Claude cannot answer or picks nothing usable, extractLines
+// does); each is kept only if its words are on the page it names (quote marks, dashes and spaces aside), it is
+// new, and (when a work is asked about) the page names the work and the line is not credited to another work or
+// person. { lines, dropped, how }.
 export async function pickLines(env, kit, pages, { work = null, want = 8, have = new Set(), about = "", ask = "", near = [] }) {
   const dropped = {};
-  const drop = (why) => { dropped[why] = (dropped[why] || 0) + 1; };
-  if (!pages.length) return { lines: [], dropped };
+  const drop = (why, text = "", site = "") => { dropped[why] = (dropped[why] || 0) + 1; say(env, "rejected", { why, site, text: String(text).slice(0, 120) }); };
+  if (!pages.length) return { lines: [], dropped, how: "" };
   const shown = pages.map((p) => passages(kit, p.text, near));
-  const flat = shown.map((s) => kit.flatten(s));
-  const answer = kit.parseJson(await kit.claude(env, { system: PICK_SYSTEM, maxTokens: 2500, messages: [{ role: "user", content:
-    `${work ? `Work: ${F.describe(work)}\n` : ""}${ask ? `Wanted: ${ask}\n` : ""}${about ? `about: ${about}\n` : ""}Pick up to ${want} lines.\n\n`
-    + shown.map((s, i) => `--- page ${i + 1} (${pages[i].site}) ---\n${s}`).join("\n\n") }] }));
+  const words = pages.map((p) => sameWords(p.text));
+  const about_ = pages.map((p) => !work || namesWork(kit, work, p.text, p));
+  const names = work ? [...(work.cast || []), ...(work.characters || [])] : [];
   const lines = [];
-  for (const q of Array.isArray(answer) ? answer : []) {
-    const i = Number(q && q.page) - 1, pg = pages[i];
+  const take = (q, i) => {
+    const pg = pages[i];
     const text = kit.flatten(q && q.text).replace(/^"+|"+$/g, ""), n = kit.norm(text);
-    if (!pg) { drop("no page named"); continue; }
-    if (text.length < 20 || text.length > 400) { drop("too short or too long"); continue; }
-    if (!flat[i].includes(text)) { drop("not word for word on the page"); continue; }
-    if (have.has(n)) { drop("already kept"); continue; }
+    if (!pg) return drop("no page named", text);
+    if (text.length < 20 || text.length > 400) return drop("too short or too long", text, pg.site);
+    if (!onPage(words[i], text)) return drop("not on the page", text, pg.site);
+    if (have.has(n)) return drop("already kept", text, pg.site);
     const by = kit.oneLine(q.by, 80), from = kit.oneLine(q.from, 120);
-    const credited = by && flat[i].toLowerCase().includes(by.toLowerCase()) ? by : "";
-    if (work && (!namesWork(kit, work, pg.text) || !F.fromThisWork(kit, work, from))) { drop("not from this work"); continue; }
-    if (!work && !credited && !(from && flat[i].toLowerCase().includes(from.toLowerCase()))) { drop("no one named for it"); continue; }
+    const credited = by && words[i].includes(sameWords(by)) ? by : "";
+    if (work && !about_[i]) return drop("page not about this work", text, pg.site);
+    if (work && from && !F.fromThisWork(kit, work, from)) return drop("from another work", text, pg.site);
+    if (work && q.other && !knownName(names, q.other)) return drop("credited to someone else", text, pg.site);
+    if (!work && !credited && !(from && words[i].includes(sameWords(from)))) return drop("no one named for it", text, pg.site);
     lines.push({ text, by: credited, url: pg.url, site: pg.site, verify: false, theme: kit.oneLine(q.theme, 30), tone: kit.oneLine(q.tone, 20),
       ...(!work && from ? { work: from, type: "classic" } : {}) });
     have.add(n);
-    if (lines.length >= want) break;
+  };
+  let answer = null, how = "claude";
+  try {
+    answer = kit.parseJson(await kit.claude(env, { system: PICK_SYSTEM, maxTokens: 2500, messages: [{ role: "user", content:
+      `${work ? `Work: ${F.describe(work)}\n` : ""}${ask ? `Wanted: ${ask}\n` : ""}${about ? `about: ${about}\n` : ""}Pick up to ${want} lines.\n\n`
+      + shown.map((s, i) => `--- page ${i + 1} (${pages[i].site}) ---\n${s}`).join("\n\n") }] }));
+  } catch (e) { say(env, "claude", { why: kit.oneLine(e && e.message, 120) }); }
+  for (const q of Array.isArray(answer) ? answer : []) { if (lines.length >= want) break; take(q, Number(q && q.page) - 1); }
+  // Claude could not answer, or none of its picks passed: the lines on the pages themselves, found without it.
+  if (!lines.length && work) {
+    how = "extractor";
+    pages.forEach((pg, i) => {
+      const got = about_[i] ? extractLines(pg.text, { names }) : [];
+      say(env, "candidates", { site: pg.site, url: pg.url, n: got.length });
+      for (const q of got) { if (lines.length >= want) break; take(q, i); }
+    });
   }
-  return { lines, dropped };
+  return { lines, dropped, how };
 }
 
 // Lines from the snippets alone: only a quoted line that two results on different sites carry in the same
@@ -354,7 +467,8 @@ export async function linesForWork(env, kit, work, state, { want = 10, have = ne
   if (!list.length) return { lines: [], pages: [], dropped: {} };
   const names = [work.real || work.title, work.original].filter(Boolean);
   const read = await readPages(env, kit, state, rank(list, names, (work.found && work.found.not) || []));
-  const pages = read.filter((p) => namesWork(kit, work, p.text));
+  const pages = read.filter((p) => namesWork(kit, work, p.text, p));
+  for (const p of read) say(env, "about the work", { url: p.url, yes: pages.includes(p) });
   const dropped = {};
   if (read.length > pages.length) dropped["pages not about this work"] = read.length - pages.length;
   let lines = [];

@@ -435,25 +435,40 @@ function passagesOf(text) {
   }
   return out;
 }
+// Nishiii picks lines from the page; when Nishiii cannot answer or none of the picks passes, the lines on the
+// page are taken without Claude (opensearch.js extractLines: each line under a character's heading, quoted text,
+// "Name: line"). A line is kept only if its words are really on the page that was read.
 async function pickFrom(env, kit, work, pg, about, taste, have, state) {
   const passages = passagesOf(pg.text);
-  state.spent += 4;                                // the question itself, and the counting that goes with every question to Claude
-  const answer = kit.parseJson(await kit.claude(env, { system: PICK_SYSTEM, maxTokens: 2500, messages: [{ role: "user", content:
-    `Work: ${work.title} (${work.type})${work.author ? ` by ${work.author}` : ""}\nPick up to ${PICK} lines.\n${about ? `about: ${about}\n` : ""}${taste ? `taste: ${JSON.stringify({ loves: taste.loves, avoids: taste.avoids, herNotes: taste.herNotes })}\n` : ""}\nPassages:\n${passages.map((p, i) => `--- ${i + 1} ---\n${p}`).join("\n")}` }] }));
+  let answer = null;
+  try {
+    state.spent += 4;                                // the question itself, and the counting that goes with every question to Claude
+    answer = kit.parseJson(await kit.claude(env, { system: PICK_SYSTEM, maxTokens: 2500, messages: [{ role: "user", content:
+      `Work: ${work.title} (${work.type})${work.author ? ` by ${work.author}` : ""}\nPick up to ${PICK} lines.\n${about ? `about: ${about}\n` : ""}${taste ? `taste: ${JSON.stringify({ loves: taste.loves, avoids: taste.avoids, herNotes: taste.herNotes })}\n` : ""}\nPassages:\n${passages.map((p, i) => `--- ${i + 1} ---\n${p}`).join("\n")}` }] }));
+  } catch (e) { O.say(env, "claude", { why: oneLineOf(e) }); }
   const flat = passages.map(kit.flatten).join("\n"), lower = flat.toLowerCase(), lines = [];
-  for (const q of Array.isArray(answer) ? answer : []) {
-    const text = kit.flatten(q && q.text).replace(/^"+|"+$/g, "");
-    // Kept only if the exact words are really on the page that was read.
-    if (text.length < 20 || text.length > 400 || !flat.includes(text) || have.has(kit.norm(text)) || HEADING.test(text)) continue;
-    const by = kit.oneLine(q.by, 80);
-    const named = by && lower.includes(by.toLowerCase()) ? by : "";
-    lines.push({ text, by: work.type === "book" ? pg.by || named : named, url: pg.url, site: pg.site, verify: false,
-      theme: kit.oneLine(q.theme, 30), tone: kit.oneLine(q.tone, 20) });
-    have.add(kit.norm(text));
-    if (lines.length >= PICK) break;
+  const pick = (list, words) => {
+    for (const q of Array.isArray(list) ? list : []) {
+      const text = kit.flatten(q && q.text).replace(/^"+|"+$/g, "");
+      // Kept only if the words are really on the page that was read.
+      if (text.length < 20 || text.length > 400 || !O.onPage(words, text) || have.has(kit.norm(text)) || HEADING.test(text)) { O.say(env, "rejected", { site: pg.site, why: "not on the page, too short or already kept", text: text.slice(0, 120) }); continue; }
+      const by = kit.oneLine(q.by, 80);
+      const named = by && lower.includes(by.toLowerCase()) ? by : "";
+      lines.push({ text, by: work.type === "book" ? pg.by || named : named, url: pg.url, site: pg.site, verify: false,
+        theme: kit.oneLine(q.theme, 30), tone: kit.oneLine(q.tone, 20) });
+      have.add(kit.norm(text));
+      if (lines.length >= PICK) break;
+    }
+  };
+  pick(answer, O.sameWords(flat));
+  if (!lines.length) {
+    const got = O.extractLines(pg.text, { names: [...(work.cast || []), ...(work.characters || [])], list: pg.site === "wikiquote.org" });
+    O.say(env, "candidates", { site: pg.site, url: pg.url, n: got.length, how: "without Claude" });
+    pick(got.filter((q) => !q.other), O.sameWords(pg.text));
   }
   return lines;
 }
+const oneLineOf = (e) => String((e && e.message) || e || "").replace(/\s+/g, " ").slice(0, 120);
 
 // ---------------------------------------------------------------- 3 and 4. Gemini and OpenAI, searching the web
 
