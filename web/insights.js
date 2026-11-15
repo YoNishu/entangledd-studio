@@ -1,4 +1,4 @@
-/* Entangledd Studio: the Insights section.
+/* D's Studio: the Insights section.
    Draws what the server works out from the page's numbers: totals for a chosen period, reach over time,
    followers, best posts, best days and times, what kinds of post do best, who saw them, and posting rhythm.
    Charts are plain SVG. Every value in a chart is also written out as text nearby, so nothing depends on
@@ -392,18 +392,68 @@
   }
   $("ins-download").addEventListener("click", download);
 
+  // ---------- the week at a glance (7 days): this week against last, the weekly note, what went furthest ----------
+  // (It used to sit on top of Posts; every number now lives here.)
+  function renderWeek(w) {
+    const card = $("ins-week");
+    card.hidden = !(w.thisWeek.posts || w.lastWeek.posts);
+    if (card.hidden) return;
+    const cell = (name, key) => el("div", {}, el("dt", { textContent: name }), el("dd", { textContent: compact(w.thisWeek[key]) }),
+      el("small", { textContent: w.lastWeek.posts ? `was ${compact(w.lastWeek[key])}` : "" }));
+    const kids = [el("h3", { textContent: "This week against last" }),
+      el("dl", { className: "nums" }, cell("Posts", "posts"), cell("Reach", "reach"), cell("Likes", "likes"), cell("Saves", "saved"), cell("Shares", "shares"), cell("Comments", "comments"))];
+    if (w.note) kids.push(el("p", { className: "q", textContent: w.note }));
+    if (w.best) kids.push(el("p", { className: "src", textContent: `Went furthest: "${(w.best.quote || "a post").replace(/\s+/g, " ").slice(0, 70)}", reaching ${compact((w.best.metrics || {}).reach || (w.best.metrics || {}).views)}.` }));
+    if (w.themes.length) kids.push(el("p", { className: "src", textContent: `Themes that travel furthest: ${w.themes.map((t) => `${t.name} (${compact(t.reach)})`).join(", ")}.` }));
+    card.replaceChildren(...kids);
+  }
+  function loadWeek(mine) {
+    if (range !== "7") { $("ins-week").hidden = true; return; }
+    getJson("report", { cache: "no-store" }).then((w) => { if (mine === loadNo && range === "7") renderWeek(w); }).catch(() => { $("ins-week").hidden = true; });
+  }
+
+  // ---------- "Numbers updated 12 minutes ago", and Refresh ----------
+  const agoText = (ms) => {
+    const mins = Math.floor((Date.now() - ms) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+    const hours = Math.floor(mins / 60);
+    return hours < 24 ? `${hours} hour${hours === 1 ? "" : "s"} ago` : `on ${day(ms)}`;
+  };
+  const clockText = (ms) => {
+    const t = new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
+    return new Date(ms).toDateString() === new Date().toDateString() ? t : `${day(ms)}, ${t}`;
+  };
+  function showFresh() {
+    const line = $("ins-fresh");
+    $("ins-fresh-row").hidden = !data || !data.connected;
+    if (!data || !data.connected) return;
+    if (data.instagram && !data.instagram.ok) {
+      const from = data.updatedAt ? ` These are the numbers from ${clockText(data.updatedAt)}.` : "";
+      line.textContent = (data.instagram.paused ? "Meta has paused the app's access to Instagram for now." : "Instagram isn't answering right now.") + from;
+    } else line.textContent = data.updatedAt ? `Numbers updated ${agoText(data.updatedAt)}.` : "";
+  }
+  setInterval(() => { if (!$("view-insights").hidden) showFresh(); }, 30000);
+  $("ins-fresh-row").hidden = true;
+
   // ---------- loading ----------
   function render(d, mine) {
+    loadWeek(mine);
     renderTop(d); renderTrend(d); renderFollowers(d); renderBest(d); renderTimes(d); renderWorks(d); renderKnow(d, mine); renderPage(d); renderAudience(d); renderRhythm(d);
   }
-  async function load() {
-    const mine = ++loadNo, body = $("ins-body");
-    $("ins-note").textContent = data ? "" : "Fetching your numbers…";
-    body.classList.add("stale");                 // the old numbers stay in place, dimmed, until the new ones arrive
+  // force: her Refresh (everything shown is asked for again). quiet: a follow-up while some numbers were
+  // still due; nothing is dimmed and the page stays where it is.
+  async function load(force = false, quiet = false, round = 0) {
+    const mine = ++loadNo, body = $("ins-body"), btn = $("ins-refresh");
+    if (!data) $("ins-note").textContent = "Fetching your numbers…";
+    if (!quiet && data) body.classList.add("stale");      // the old numbers stay in place, dimmed, until the new ones arrive
+    btn.disabled = true; btn.setAttribute("aria-busy", "true"); btn.textContent = "Refreshing…";
     try {
-      const d = await getJson(`insights?range=${range}`);
+      const d = await getJson(`insights?range=${range}${force ? "&force=1" : ""}`, { cache: "no-store" });
       if (mine !== loadNo) return;
       data = d;
+      showFresh();
+      if (d.behind > 0 && round < 3) setTimeout(() => { if (!$("view-insights").hidden && mine === loadNo) load(false, true, round + 1); }, 400);
       if (!d.totals.posts) {
         body.hidden = true;
         $("ins-note").textContent = d.range === "all"
@@ -413,10 +463,13 @@
       }
       body.hidden = false;
       $("ins-note").textContent = d.connected ? "" : "Instagram isn't connected, so these are the last numbers the app saved. Connect it in Settings for fresh ones.";
+      const y = window.scrollY;
       render(d, mine);
+      window.scrollTo(0, y);
     } catch (e) { if (mine === loadNo) $("ins-note").textContent = friendly(e); }
-    finally { if (mine === loadNo) body.classList.remove("stale"); }
+    finally { if (mine === loadNo) { body.classList.remove("stale"); btn.disabled = false; btn.removeAttribute("aria-busy"); btn.textContent = "Refresh"; } }
   }
+  $("ins-refresh").addEventListener("click", () => load(true));
   $("ins-range").addEventListener("click", (e) => {
     const r = e.target.dataset.range;
     if (!r || r === range) return;

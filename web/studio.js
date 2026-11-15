@@ -938,29 +938,6 @@
     return el("article", { className: "card" }, ...kids);
   }
 
-  // The week at a glance, on top of Posts.
-  function renderWeek(w) {
-    const card = $("week-card");
-    card.hidden = !(w.thisWeek.posts || w.lastWeek.posts);
-    if (card.hidden) return;
-    const cell = (name, key) => el("div", {}, el("dt", { textContent: name }), el("dd", { textContent: compact(w.thisWeek[key]) }),
-      el("small", { textContent: w.lastWeek.posts ? `was ${compact(w.lastWeek[key])}` : "" }));
-    const kids = [el("h2", { textContent: "Your last 7 days" }),
-      el("dl", { className: "nums" }, cell("Posts", "posts"), cell("Reach", "reach"), cell("Likes", "likes"), cell("Saves", "saved"), cell("Shares", "shares"), cell("Comments", "comments"))];
-    if (w.note) kids.push(el("p", { className: "q", textContent: w.note }));
-    const extra = [];
-    if (w.best) extra.push(el("p", { className: "src", textContent: `Went furthest: "${(w.best.quote || "a post").replace(/\s+/g, " ").slice(0, 70)}", reaching ${compact((w.best.metrics || {}).reach || (w.best.metrics || {}).views)}.` }));
-    if (w.times.length) extra.push(el("p", { className: "src", textContent: `Best time so far: ${w.times[0].name.toLowerCase()}, about ${compact(w.times[0].reach)} reach a post across ${w.times[0].posts} posts. Next is ${w.times[1].name.toLowerCase()} at ${compact(w.times[1].reach)}.` }));
-    else if (w.measured < 6) extra.push(el("p", { className: "src", textContent: `Best times to post show up here after six posts have numbers. So far: ${w.measured}.` }));
-    if (w.themes.length) extra.push(el("p", { className: "src", textContent: `Themes that travel furthest: ${w.themes.map((t) => `${t.name} (${compact(t.reach)})`).join(", ")}.` }));
-    if (extra.length) kids.push(el("details", { className: "more" }, el("summary", { textContent: "More about this week" }), el("div", { className: "more-body" }, ...extra)));
-    const more = el("button", { className: "btn quiet ic ic-insights", type: "button", textContent: "See everything in Insights" });
-    more.addEventListener("click", () => show("insights"));
-    kids.push(more);
-    card.replaceChildren(...kids);
-    $("queue-note").textContent = w.times.length ? `Nothing here posts by itself: each one waits for your tap. Your posts have done best in the ${w.times[0].name.toLowerCase()} so far.` : "Nothing here posts by itself: each one waits for your tap. Finished reels are kept for a week.";
-  }
-
   // Reels made earlier and kept to post later.
   // "I posted it in Instagram": she posted this reel from the Instagram app herself. It moves to Posted at once;
   // the app links the real reel (and its numbers) when it can next see the page.
@@ -1174,22 +1151,56 @@
     try { ig = await getJson("instagram"); } catch (e) { ig = null; $("ig-status").textContent = friendly(e); }
     return ig;
   }
-  async function loadPosts() {
-    if (drafts()) drafts().refresh();             // Made, not posted (web/drafts.js), whether or not Instagram is set up
-    if (!S.server.instagram) { $("posts-note").textContent = "Posting to Instagram isn't set up yet."; $("list-posts").replaceChildren(); return; }
-    await loadIg();
-    $("posts-note").textContent = "Checking Instagram for the latest numbers…";
-    try {
-      const { posts } = await getJson("posts");
-      $("list-posts").replaceChildren(...posts.map(postCard));
-      // After the list, so the week's numbers include what was just refreshed from Instagram.
-      getJson("report").then(renderWeek).catch(() => { $("week-card").hidden = true; });
-      getJson("queue").then((r) => { igSees = r.sees !== false; renderQueue(r.queue); }).catch(() => {});
-      getJson("handoffs").then((r) => { igSees = r.sees !== false; renderHandoffs(r.handoffs); }).catch(() => {});
-      $("posts-note").textContent = !(ig && ig.connected) ? "Instagram isn't connected. Connect it in Settings, at the top right."
-        : posts.length ? "Posts you delete on Instagram leave this list too." : "Nothing posted from the app yet.";
-    } catch (e) { $("posts-note").textContent = friendly(e); }
+  // "Checked with Instagram 12 minutes ago": when the list and its numbers were last brought up to date.
+  const agoText = (ms) => {
+    const mins = Math.floor((Date.now() - ms) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+    const hours = Math.floor(mins / 60);
+    return hours < 24 ? `${hours} hour${hours === 1 ? "" : "s"} ago` : `on ${day(ms)}`;
+  };
+  const clockText = (ms) => {
+    const t = new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
+    return new Date(ms).toDateString() === new Date().toDateString() ? t : `${day(ms)}, ${t}`;
+  };
+  let postsFresh = null, postsLoading = 0;
+  function showPostsFresh() {
+    const f = postsFresh, line = $("posts-fresh");
+    $("posts-fresh-row").hidden = !f;
+    if (!f) return;
+    if (f.instagram && !f.instagram.ok) {
+      const from = f.checkedAt ? ` These are your posts and numbers from ${clockText(f.checkedAt)}.` : "";
+      line.textContent = (f.instagram.paused ? "Meta has paused the app's access to Instagram for now." : "Instagram isn't answering right now.") + from;
+    } else line.textContent = `Checked with Instagram ${agoText(f.checkedAt)}.`;
   }
+  setInterval(() => { if (!$("view-posts").hidden) showPostsFresh(); }, 30000);
+  // force: her Refresh, which asks Instagram again for every card's numbers. quiet: no "Checking…" line,
+  // the cards already shown stay until the new ones are ready (and the page does not move).
+  async function loadPosts(force = false, quiet = false, round = 0) {
+    if (drafts()) drafts().refresh();             // Made, not posted (web/drafts.js), whether or not Instagram is set up
+    if (!S.server.instagram) { $("posts-note").textContent = "Posting to Instagram isn't set up yet."; $("list-posts").replaceChildren(); $("posts-fresh-row").hidden = true; return; }
+    const mine = ++postsLoading, btn = $("posts-refresh");
+    await loadIg();
+    if (!quiet && !$("list-posts").children.length) $("posts-note").textContent = "Checking Instagram for the latest…";
+    btn.disabled = true; btn.setAttribute("aria-busy", "true"); btn.textContent = "Refreshing…";
+    try {
+      const r = await getJson("posts" + (force ? "?force=1" : ""), { cache: "no-store" });
+      if (mine !== postsLoading) return;
+      const y = window.scrollY;
+      $("list-posts").replaceChildren(...r.posts.map(postCard));
+      window.scrollTo(0, y);
+      postsFresh = { checkedAt: r.checkedAt, instagram: r.instagram };
+      showPostsFresh();
+      getJson("queue").then((q) => { igSees = q.sees !== false; renderQueue(q.queue); }).catch(() => {});
+      getJson("handoffs").then((h) => { igSees = h.sees !== false; renderHandoffs(h.handoffs); }).catch(() => {});
+      $("posts-note").textContent = !(ig && ig.connected) ? "Instagram isn't connected. Connect it in Settings, at the top right."
+        : r.posts.length ? "Posts you delete on Instagram leave this list too." : "Nothing posted from the app yet.";
+      // More cards were due than one asking brings in: ask again, quietly.
+      if (r.behind > 0 && round < 3) setTimeout(() => { if (!$("view-posts").hidden) loadPosts(false, true, round + 1); }, 400);
+    } catch (e) { if (mine === postsLoading) $("posts-note").textContent = friendly(e); }
+    finally { if (mine === postsLoading) { btn.disabled = false; btn.removeAttribute("aria-busy"); btn.textContent = "Refresh"; } }
+  }
+  $("posts-refresh").addEventListener("click", () => loadPosts(true));
 
   // ---------- Settings: Face ID lock, Instagram connection, signing out ----------
   function renderFaceId(msg) {

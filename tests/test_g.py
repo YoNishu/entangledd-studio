@@ -79,7 +79,7 @@ with sync_playwright() as p:
     urllib.request.urlopen(f"{_W.URL}/__seed_posts")
     pg.click("#nav-posts"); pg.wait_for_timeout(2500)
     pg.click("#posts-part-posted"); pg.wait_for_timeout(300)      # Posts has two parts: Posted, and Drafts (not yet on Instagram)
-    print("week card:", pg.inner_text("#week-card").replace("\n"," | ")[:520])
+    print("updated line:", pg.inner_text("#posts-fresh"), "| first card:", pg.locator("#list-posts .card").first.inner_text().replace("\n"," | ")[:200])   # the week card is in Insights now
     print("waiting:", pg.locator("#list-queue .card").count(), "|", pg.inner_text("#queue-note"), "|", pg.locator("#list-queue .card").first.inner_text().replace("\n"," | ")[:150])
     pg.screenshot(path=S+"125_posts_week.png"); pg.click("#posts-part-drafts"); pg.locator("#queue-wrap").scroll_into_view_if_needed(); pg.screenshot(path=S+"126_posts_queue.png")
     n_before=pg.locator("#list-posts .card").count()
