@@ -243,6 +243,22 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
 - The app draws the text layer; the renderer only lays it over the background, so the preview
   and the finished reel always match.
 
+## Reel file
+
+Instagram's "Reel Specifications" (developers.facebook.com, Instagram Platform, IG User Media reference,
+read 15 Nov 2026): MP4 or MOV, no edit lists, moov atom at the front; H.264 or HEVC, progressive, closed GOP,
+4:2:0; 23-60 fps; at most 1920 columns, 9:16 recommended; video bitrate VBR, 25 Mbps maximum; audio AAC,
+48 kHz maximum, mono or stereo, "128kbps"; 3 s to 15 min; 300 MB maximum.
+
+What `render/render.py` makes (and `render/selfcheck.sh` checks): 1080x1920 H.264 High 4.2, x264 preset slow
+crf 15, picture bitrate at most 12 Mbps (less for long reels, so a 90 s reel stays under 85 MB, below the
+95 MB the app takes back), an IDR keyframe every 2 s and no other (closed groups), yuv420p BT.709 limited
+range; 30 fps for photos, a video's own 23.976/24/25/29.97/30 (half of 48 to 60); AAC 192 kbps 48 kHz
+stereo (above the 128 kbps line on purpose: Instagram re-encodes the sound and has accepted 160 kbps files);
+index first, no edit list (negative composition offsets keep the first picture at 0 s).
+After a post, the server asks Instagram once for the served file's size and keeps `post.served = { kbps, at }`;
+`/api/health` shows the last three as one line.
+
 ## Limits to remember
 
 - Fonts: Lora and Poppins load first; eight more load in the background. To add another, put the
