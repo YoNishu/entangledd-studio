@@ -1,0 +1,38 @@
+name: Live lookups
+
+# Runs the app's real lookups for quotes from a work (server/findlines.js, opensearch.js, verify.js) against the
+# real internet, for a few public works, and prints everything they did: the title check, every query and
+# address, the pages read, every line left out and why, and the lines kept. Storage is kept in memory; no key or
+# secret is used, so Claude, Gemini, OpenAI and Tavily are skipped. It reports and never fails the push.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "tests/live/**"
+      - "server/findlines.js"
+      - "server/opensearch.js"
+      - "server/verify.js"
+      - ".github/workflows/live-lookups.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Look the works up on the real web
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          node tests/live/run.mjs 2>&1 | tee live.txt || true
+          { echo '```'; sed -n '/^=== summary/,$p' live.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

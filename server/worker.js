@@ -2745,6 +2745,7 @@ const kit = { json, fail, UserError, body, loadDoc, saveDoc, signedIn, claude, c
   musicSearchCached,
   searchPixabay, searchPexels, stockTargets, fetchStockFile, PROVIDERS,
   graphAnswered: () => graphAnswered };
+export { kit };                           // for the live proving script (tests/live), which runs the real lookups in Node
 
 // The sections' timed jobs. At most one runs per five-minute tick, so no single run does too much:
 // the free plan allows 50 outside calls (storage reads and writes count) and very little computing per run.
