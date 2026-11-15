@@ -190,9 +190,27 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
   preview in the app is not, so it can look slightly different from the finished reel.
 - "Check who said this" is Claude's memory, not a lookup. It catches famous misattributions; it
   cannot prove an obscure quote.
-- Quotes on request for a named book, film or series are looked up on the web when web search is
-  on for the Anthropic organisation (Claude Console, Settings, Capabilities; on unless switched
-  off). If it is off, Nishiii answers from memory and says so. Each search is billed by Anthropic.
+- Quotes on request for a named book (without free full text), film or series are real lines
+  looked up for her (`server/findlines.js`). The places are tried in this order, the next one
+  only when those before gave too few: lines already kept for that work in the Library (found
+  earlier, or saved by her with its title under "Where it's from"); Wikiquote; Goodreads for a
+  book or IMDb for a film or series, read directly; Gemini with Google Search, if
+  `GEMINI_API_KEY` is set (at most 40 questions a day); OpenAI with web search, if
+  `OPENAI_API_KEY` is set (at most 20 a day); Anthropic's paid web search, only if
+  `CLAUDE_WEB_SEARCH` is `on`; and last Nishiii's memory, marked to check. The first three need
+  no key and cost nothing.
+- A line from a page is kept only if its exact words are on that page, and only from the page of
+  the right work (title, kind and, for a book, the author she gave). Lines from Gemini and OpenAI
+  are kept only with a page that was really read, and are marked to check unless two sites agree.
+  Gemini and OpenAI are told the title, kind, author and number of lines, nothing about her.
+- What is found is kept on the work in the Library (`found`: at most 30 lines, each with its
+  page), so a title is looked up once: again when the kept lines run short, or after 30 days.
+  Today's five may use kept lines too. The Library shows "12 real lines found" on the work, with
+  "Not the right one" to drop them and never use that page for it again.
+- One search and one page per work at each site. A site that turns the app away (403, a "prove
+  you are human" page, a page without quotes) has nothing that day; `data/lookups.json` notes
+  when each site last worked or failed, and holds the day's count for Gemini and OpenAI.
+  Goodreads and IMDb do not offer this as a service and may refuse a server; the app then moves on.
 - Book text comes from Project Gutenberg through the Gutendex catalogue, so only books old
   enough to be free have it. Lines taken from a book's text are kept only if the exact words
   are found in the text.

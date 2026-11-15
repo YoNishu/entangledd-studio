@@ -43,7 +43,8 @@ A push to `main` deploys the app (Cloudflare) and nothing else is needed. Settin
 entangledd-studio, Settings, Variables and Secrets): `APP_PASSCODE`, `RENDER_SECRET`,
 `GITHUB_TOKEN`, `ANTHROPIC_API_KEY`, `PIXABAY_API_KEY` (or `PEXELS_API_KEY`), `META_APP_ID`,
 `META_APP_SECRET`. Optional: `OPENVERSE_CLIENT_ID` and `OPENVERSE_CLIENT_SECRET` (a larger music
-search allowance), `CLAUDE_DAILY_CAP` (see below). The GitHub repository holds the same
+search allowance), `CLAUDE_DAILY_CAP` (see below), `GEMINI_API_KEY` and `OPENAI_API_KEY` (see
+"Real lines from books, films and series"). The GitHub repository holds the same
 `RENDER_SECRET` as an Actions secret.
 
 ## What runs by itself
@@ -104,9 +105,28 @@ minutes: on a computer open developers.facebook.com/tools/explorer, choose the a
 Access Token with every permission ticked, copy it; in D's Studio open Settings, Connect again,
 paste, Connect Instagram.
 
-Three settings, made once, keep everything else quiet: a GitHub token with no end date,
-auto-reload on the Anthropic account, and web search left switched on for the Anthropic
-organisation (Claude Console, Settings, Capabilities; it is on unless someone turned it off).
+Two settings, made once, keep everything else quiet: a GitHub token with no end date, and
+auto-reload on the Anthropic account.
+
+## Real lines from books, films and series
+
+When she asks for quotes from a named book, film or series, the app looks for its real lines:
+first those it already keeps for that work, then Wikiquote, then Goodreads (books) or IMDb
+(films and series). These need no key and cost nothing. Two more places are used only when
+their key is set in Cloudflare, and only when the free ones gave too few lines:
+
+- `GEMINI_API_KEY`: Gemini with Google Search. Make the key at aistudio.google.com (Get API
+  key, Create API key) in a project with **no billing account**, so it can never be charged.
+  The app asks at most 40 times a day. Google decides which models a free key may search with,
+  and at present may allow none; then this place is quietly skipped. `GEMINI_MODEL` can name
+  another model.
+- `OPENAI_API_KEY`: OpenAI with web search (about one cent a search, plus a little for the
+  words). Make the key at platform.openai.com (API keys) and set a monthly budget under
+  Settings, Limits. The app asks at most 20 times a day. `OPENAI_MODEL` can name another model.
+
+Anthropic's own paid web search stays off unless `CLAUDE_WEB_SEARCH` is `on`. Whatever is found
+is kept in the Library on that work, so a title is looked up once. `data/lookups.json` in
+storage shows the day's counts and whether each site answered.
 
 ## How to add a little note
 

@@ -421,7 +421,8 @@ async function claudeRaw(env, { system, messages, maxTokens = 2000, tools }) {
 // For quotes from a particular book, film or series, Nishiii may search the web (Anthropic's web search tool),
 // so a new series or a modern book it knows little about still gives real, attributed lines.
 // Anthropic charges for each search, so it is used only when the setting CLAUDE_WEB_SEARCH is "on" (it is off
-// unless Nishith sets it in Cloudflare). Off, a request is answered from memory alone, as it always was.
+// unless Nishith sets it in Cloudflare), and then only as the last place to look, after the ones that cost
+// nothing or have their own small daily limit (findlines.js). Off, what those did not find comes from memory.
 const SEARCH_TOOL = { type: "web_search_20250305", name: "web_search" };
 async function claudeSearching(env, { system, messages, maxTokens, uses = 4 }) {
   let turn = messages, data;
@@ -2500,7 +2501,7 @@ async function runChatTool(env, name, input, actions) {
     const fresh = await suggestFrom(env, { sources: ids.filter(Boolean), about: input.about, count: input.count || 5 }, list);
     await saveDoc(env, "asked", [...list, ...fresh].slice(-ASKED_KEEP));
     actions.push({ type: "refresh", what: "asked" });
-    return fresh.map((q) => ({ text: q.text, author: q.author, from: q.source.title || q.source.type, checkWording: q.verify }));
+    return fresh.map((q) => ({ text: q.text, author: q.author, from: q.source.title || q.source.type, checkWording: q.verify, foundOn: q.source.site || undefined }));
   }
   if (name === "add_to_library") {
     const lib = { ...emptyLibrary(), ...(await loadDoc(env, "library", emptyLibrary())) };
