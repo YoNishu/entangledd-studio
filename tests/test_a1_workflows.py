@@ -41,7 +41,7 @@ def steps_ok(label, steps, composite=False):
         if s.get("id"): seen.add(s["id"])
 
 files = sorted(glob.glob(ROOT + "/.github/workflows/*.yml"))
-check("the three workflows are there", [os.path.basename(f) for f in files] == ["render-check.yml", "render-job.yml", "render-reel.yml"], files)
+check("the four workflows are there", [os.path.basename(f) for f in files] == ["live-lookups.yml", "render-check.yml", "render-job.yml", "render-reel.yml"], files)
 flows = {}
 for f in files:
     name = os.path.basename(f)
