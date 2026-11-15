@@ -12,7 +12,8 @@
      reminder at the first run at or after its time, at most once a day, and not at all on a day she
      has already posted;
    - a phone whose push service says it is gone (404 or 410) is taken off the list;
-   - healthCheck(): one line for the health record in Settings.
+   - healthCheck(): one line on how the reminders are doing, in the shape the health checks use
+     (answered at /api/reminders/health; not yet among the lines under "Check everything").
 
    The standards followed, with no library: RFC 8030 (sending), RFC 8291 (locking the message:
    ECDH on P-256, HKDF-SHA-256, AES-128-GCM, "aes128gcm"), RFC 8292 (VAPID: a signed note saying which
