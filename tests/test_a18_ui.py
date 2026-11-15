@@ -26,7 +26,7 @@ with sync_playwright() as p:
     nishiii = pg.inner_text("#view-nishiii")
     check("the Nishiii section has no ask block", pg.locator("#ask-open, #asked-list, #asked-note").count() == 0
           and "Ask Nishiii for quotes" not in nishiii and "Ask for quotes" not in nishiii, nishiii[:200])
-    check("the chat button and the taste part are still there", pg.locator("#view-nishiii #nishiii-chat").count() == 1 and pg.locator("#view-nishiii #taste-refresh").count() == 1)
+    check("the chat part and the taste part are there", pg.locator("#view-nishiii #nishiii-chat-part").count() == 1 and pg.locator("#view-nishiii #taste-refresh").count() == 1)
 
     # ---- Library -> Find quotes -> one series -> 10
     pg.click("#nav-library"); pg.wait_for_selector("#find-open", state="visible", timeout=8000)

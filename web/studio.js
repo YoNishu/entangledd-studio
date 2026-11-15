@@ -1629,7 +1629,7 @@
           // Quotes Nishiii found in the chat are kept under "Quotes you found" in the Library.
           if (current === "library") loadAsked();
           const go = el("button", { className: "btn act ic ic-quote", type: "button", textContent: "See them in the Library" });
-          go.addEventListener("click", () => { $("chat").hidden = true; show("library"); });
+          go.addEventListener("click", () => leaveChat("library"));
           $("chat-log").append(go);
         }
         if (a.what === "taste" && current === "nishiii") loadTaste();
