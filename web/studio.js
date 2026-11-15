@@ -94,7 +94,7 @@
   let onCanvas = { author: "", theme: "", tone: "", source: "", suggestionId: "" };   // where the quote now on the canvas came from
   const sourceLine = (s) => {
     if (s.type === "own") return s.title ? `Your own collection: ${s.title}` : "Your own collection";
-    if (s.type === "book") return `From your book list: ${s.title}`;
+    if (s.type === "book") return s.elsewhere ? `From the book ${s.title}` : `From your book list: ${s.title}`;   // elsewhere: found on the web, not one of hers
     if (s.type === "film") return `From the film ${s.title}`;
     if (s.type === "series") return `From the series ${s.title}`;
     return s.title ? `Well-known line, from ${s.title}` : "Well-known line";
@@ -764,7 +764,20 @@
     } catch (e) { if (mine === searchNo && !fetching) status(friendly(e)); }
   }
   const newSearch = () => { stock.q = $("stock-q").value.trim(); stock.page = 1; search(false); };
-  $("stock").addEventListener("click", () => { $("stock-sheet").hidden = false; if (!$("stock-grid").children.length) newSearch(); });
+  $("stock").addEventListener("click", () => { $("stock-sheet").hidden = false; if (!$("stock-grid").children.length) newSearch(); stockIdeas(); });
+  // Background words that did well on her own posts (server/engine.js): a tap searches for them.
+  let ideasShown = false;
+  function stockIdeas() {
+    if (ideasShown) return;
+    ideasShown = true;
+    getJson("engine").then((e) => {
+      const words = (e && e.bgWords) || [];
+      if (!words.length || $("stock-ideas")) return;
+      const row = el("div", { className: "chips pick", id: "stock-ideas" }, el("span", { className: "note", textContent: "Did well for you:" }),
+        ...words.map((w) => { const b = el("button", { type: "button", textContent: w }); b.addEventListener("click", () => { $("stock-q").value = w; newSearch(); }); return b; }));
+      $("stock-form").after(row);
+    }).catch(() => { ideasShown = false; });
+  }
   $("stock-close").addEventListener("click", () => { $("stock-sheet").hidden = true; });
   $("stock-sheet").addEventListener("click", (e) => { if (e.target === $("stock-sheet")) $("stock-sheet").hidden = true; });
   $("stock-form").addEventListener("submit", (e) => { e.preventDefault(); newSearch(); });

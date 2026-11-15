@@ -2,7 +2,7 @@
 // way; an avoid buries a line; a small account's hit outranks a big account's ordinary post; day one gives a varied
 // five from several sources; one source alone still gives five; reasons are true; picks are trusted from the first
 // pick, smoothly, with a safety net; 500 candidates are scored in a few milliseconds.
-import { build, score, choose, gather, questions, PARTS } from "../server/engine.js";
+import { build, score, choose, gather, questions, works, hashtagsThatWork, bgWordsThatWork, PARTS } from "../server/engine.js";
 import * as tags from "../server/tags.js";
 import { keyOf, nextState, decide, statusOf, pickScorer, worse } from "../server/scorer.js";
 
@@ -147,6 +147,17 @@ const qs = questions({ lib: { books: [{ title: "Quiet Book", author: "Ada Writer
 const all = qs.map((x) => x.text).join("\n");
 check("web questions name themes, authors and titles", /about sea/.test(all) && /about hope/.test(all) && /by Mary Oliver/.test(all) && /similar to "Quiet Book"/.test(all) && /came out in 2025 or 2026/.test(all));
 check("and never her notes, her lines or names from them", !/Dhruuu|Nishith|fiance|secret|my own/i.test(all));
+
+// ---- the engine across the app: what works, hashtags and background words that did well for her
+const pub = (theme, saved, caption, bgWords) => ({ state: "published", quote: theme + " line", theme, tone: "plain", caption, made: { bg: "video", bgFrom: "search", bgWords }, metrics: { reach: 1000, saved, shares: 0, likes: 40, comments: 0 } });
+const wp = [pub("hope", 60, "a #hope #quiet line", "misty sea"), pub("hope", 55, "#hope again", "misty sea"), pub("hope", 50, "#hope #dawn", "Misty Sea"),
+  pub("love", 2, "#love #quiet", "city lights"), pub("love", 3, "#love", "city lights"), pub("love", 1, "#love #dawn", "city lights")];
+const w = works(wp, [small], tagsDoc);
+check("what works: her strongest group, in plain words", w.phrases[0] === "posts about hope do well for you" && w.posts === 6, w);
+check("and the page where a theme does well, by name", w.phrases.includes("hope does well on @small.page"), w);
+check("hashtags that did well for her: only hers, only better than usual, best first", JSON.stringify(hashtagsThatWork(wp)) === JSON.stringify(["#hope"]), hashtagsThatWork(wp));
+check("background words that did well for her", JSON.stringify(bgWordsThatWork(wp)) === JSON.stringify(["misty sea"]), bgWordsThatWork(wp));
+check("one post is not enough for a hashtag", hashtagsThatWork([pub("x", 90, "#once", "a")]).length === 0);
 
 // ---- timing: 500 candidates
 const big500 = Array.from({ length: 500 }, (_, i) => q(`Candidate number ${i} about ${tags.THEME_LIST[i % tags.THEME_LIST.length]} and more words here`, tags.THEME_LIST[i % tags.THEME_LIST.length], { author: "Au" + (i % 40) }));

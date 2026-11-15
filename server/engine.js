@@ -335,19 +335,22 @@ export function choose(P, pool, want, already = [], { wild = true, mix = true } 
 }
 
 // ---------------------------------------------------------------- the pool
-function bankLine(l) {
-  return { text: l.text, author: l.by || "", source: { type: ["book", "film", "series"].includes(l.type) ? l.type : "classic", title: l.work || "", url: l.url || undefined, site: l.site || undefined },
+// A banked line as a suggestion. "elsewhere": its work is not one of hers, so the card doesn't say "from your book list".
+function bankLine(l, mine = new Set()) {
+  const type = ["book", "film", "series"].includes(l.type) && l.work ? l.type : "classic";
+  return { text: l.text, author: l.by || "", source: { type, title: l.work || "", url: l.url || undefined, site: l.site || undefined, ...(type !== "classic" && !mine.has(low(l.work, 120)) ? { elsewhere: true } : {}) },
     theme: l.th || "", tone: l.to || "", verify: !!l.verify, src: l.from };
 }
+const titlesOf = (lib) => new Set([...((lib && lib.books) || []), ...((lib && lib.screen) || [])].map((w) => low(w.title, 120)));
 // Candidates from every source but memory, each marked with where it came from. Adds what it takes to "seen".
 export function gather(kit, sig, seen, max = POOL) {
   const out = [];
   const add = (list, n) => { let k = 0; for (const q of list) { if (k >= n) break; const t = kit.norm(q.text); if (!q.text || seen.has(t)) continue; seen.add(t); out.push(q); k++; } };
   add(shuffle((sig.lib.quotes || []).map((q) => ({ text: q.text, author: q.author || "", source: { type: "own", title: q.from || "" }, theme: "", tone: "", verify: false, src: "own" }))), max.own);
   add(findlines.keptPool(kit, sig.lib, seen, max.found * 2).map((q) => ({ ...q, src: "found" })), max.found);
-  const bank = sig.bank || emptyBank();
-  add(shuffle(bank.lines.filter((l) => l.from === "discover")).map(bankLine), max.discover);
-  add(shuffle(bank.lines.filter((l) => l.from === "echo" && (l.work || l.by))).map(bankLine), max.echo);
+  const bank = sig.bank || emptyBank(), mine = titlesOf(sig.lib);
+  add(shuffle(bank.lines.filter((l) => l.from === "discover")).map((l) => bankLine(l, mine)), max.discover);
+  add(shuffle(bank.lines.filter((l) => l.from === "echo" && (l.work || l.by))).map((l) => bankLine(l, mine)), max.echo);
   return out;
 }
 // Bank lines on a subject she asked about (its words, or the theme they name).
@@ -355,7 +358,7 @@ export function onSubject(kit, sig, about, seen, n = 6) {
   const words = kit.norm(about).split(" ").filter((w) => w.length > 3), th = tags.theme(about);
   const bank = sig.bank || emptyBank();
   const hits = bank.lines.filter((l) => !seen.has(kit.norm(l.text)) && (l.th === th || words.some((w) => kit.norm(l.text).includes(w))));
-  const out = shuffle(hits).slice(0, n).map(bankLine);
+  const mine = titlesOf(sig.lib), out = shuffle(hits).slice(0, n).map((l) => bankLine(l, mine));
   for (const q of out) seen.add(kit.norm(q.text));
   return out;
 }
@@ -380,16 +383,21 @@ export async function start(env, kit, have = {}) {
   };
 }
 
-// ---------------------------------------------------------------- hashtags that did well for her
-// The hashtags in her own captions that came with more saves, shares, comments and likes per person reached than
-// her usual post: real, and in use (she used them), best first. At least two posts behind each; shrunk when few.
-export function hashtagsThatWork(posts, max = 6) {
+// ---------------------------------------------------------------- hashtags and background words that did well for her
+// The hashtags in her own captions (or the words she searched for backgrounds with) that came with more saves, shares,
+// comments and likes per person reached than her usual post: real, and in use (she used them), best first. At least
+// two posts behind each; shrunk when few.
+const hashtagsOf = (p) => [...new Set(String(p.caption || "").toLowerCase().match(/#[\p{L}\p{N}_]+/gu) || [])].slice(0, 30);
+const bgWordsOf = (p) => (p.made && p.made.bgFrom === "search" && p.made.bgWords ? [low(p.made.bgWords, 60)] : []);
+export const hashtagsThatWork = (posts, max = 6) => thatWork(posts, hashtagsOf, max);
+export const bgWordsThatWork = (posts, max = 4) => thatWork(posts, bgWordsOf, max);
+function thatWork(posts, namesOf, max) {
   const rows = [];
   for (const p of Array.isArray(posts) ? posts : []) {
     const m = p && p.metrics, reach = m ? Number(m.reach != null ? m.reach : m.views) || 0 : 0;
     if (!p || p.state !== "published" || reach <= 0) continue;
     const y = (3 * (Number(m.saved) || 0) + 3 * (Number(m.shares) || 0) + 2 * (Number(m.comments) || 0) + (Number(m.likes) || 0)) / reach;
-    rows.push({ y, tags: [...new Set(String(p.caption || "").toLowerCase().match(/#[\p{L}\p{N}_]+/gu) || [])].slice(0, 30) });
+    rows.push({ y, tags: namesOf(p) });
   }
   const usual = median(rows.map((r) => r.y)) || 1e-4, by = new Map();
   for (const r of rows) for (const t of r.tags) by.set(t, [...(by.get(t) || []), Math.log((r.y + 1e-4) / (usual + 1e-4))]);
@@ -432,7 +440,7 @@ export function status(P, sig) {
   const line = [from.length ? `Learning from ${from.slice(0, -1).join(", ")}${from.length > 1 ? " and " : ""}${from[from.length - 1]}.` : "Learning from your first picks.",
     learnt.length ? `So far: ${learnt.slice(0, 2).join("; ")}.` : "", sure].filter(Boolean).join(" ");
   const parts = PARTS.map(([id, w]) => ({ id, name: PART_NAME[id], weight: round(w * P.ev[id]) }));
-  return { line, learnt, works: w.phrases, sources, parts, picks: P.picks, state: P.pickState || "learning" };
+  return { line, learnt, works: w.phrases, bgWords: bgWordsThatWork(sig.posts), sources, parts, picks: P.picks, state: P.pickState || "learning" };
 }
 
 // ---------------------------------------------------------------- timed jobs (one per tick; each well under 20 outside calls)
