@@ -48,12 +48,11 @@ check("storage keys are unchanged", '"entangledd.token.v1"' in get("/app.js") an
 before = subprocess.run(["git", "-C", WT, "show", "d576d40:web/index.html"], capture_output=True, text=True, check=True).stdout
 ids_before = set(re.findall(r'\bid="([^"]+)"', before))
 ids_now = set(re.findall(r'\bid="([^"]+)"', html))
-check("every element id from before still exists", ids_before <= ids_now, sorted(ids_before - ids_now))
-# (and, since, the places for drafts and made reels: web/drafts.js; and Posts in two parts, Posted and Drafts)
-check("the only new ids are the wordmark drawing, the worded chat button and the drafts' places", ids_now - ids_before == {"wm", "nishiii-chat",
-      "draft-slot", "edit-reel", "made-wrap", "made-note", "list-made",
-      "posts-parts", "save-draft-wrap", "save-draft", "save-draft-note", "posts-part-posted", "posts-part-drafts", "drafts-count", "posts-drafts", "posts-posted",
-      "saved-wrap", "saved-note", "list-saved", "drafts-empty"}, sorted(ids_now - ids_before))
+# Ids taken away on purpose since: the chat sheet and its header button (the chat is a part of the Nishiii tab now).
+GONE = {"chat", "chat-close", "chat-open", "chat-title"}
+check("every element id from before still exists, but for those taken away on purpose", ids_before - ids_now <= GONE, sorted(ids_before - ids_now - GONE))
+all_ids = re.findall(r'\bid="([^"]+)"', html)
+check("no element id is used twice", len(all_ids) == len(set(all_ids)), sorted({i for i in all_ids if all_ids.count(i) > 1}))
 sym = re.search(r'<symbol id="wm" viewBox="([^"]+)"', html)
 check("the wordmark's drawing starts at 0 0, so it needs no offsets", bool(sym) and sym.group(1).startswith("0 0 ") and html.count('<use href="#wm"/>') == 2, sym and sym.group(1))
 

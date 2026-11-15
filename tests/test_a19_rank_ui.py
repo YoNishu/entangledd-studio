@@ -97,7 +97,7 @@ with sync_playwright() as p:
         check("after a skip of number 2: 1, 3, 4, 5 on screen", [c["n"] for c in after] == ["1", "3", "4", "5"], str([c["n"] for c in after]))
         check("and 'First of five.' still", after[0]["sr"] == "First of five.", after[0]["sr"])
         if width == 390:
-            pg.click("#nav-nishiii"); pg.wait_for_selector("#scorer-today", timeout=15000); pg.wait_for_timeout(300)
+            pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_selector("#scorer-today", timeout=15000); pg.wait_for_timeout(300)
             listed = pg.eval_on_selector_all("#scorer-today li", "ls => ls.map(l => [l.dataset.rank, l.dataset.id])")
             check("the Nishiii section lists the same order with the same numbers as Today", listed == [[c["n"], c["id"]] for c in after], str(listed))
             pg.locator("#scorer-slot").scroll_into_view_if_needed(); pg.wait_for_timeout(200)
