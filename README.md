@@ -124,20 +124,40 @@ auto-reload on the Anthropic account.
 
 When she asks for quotes from a named book, film or series, the app looks for its real lines:
 first those it already keeps for that work, then Wikiquote, then Goodreads (books) or IMDb
-(films and series). These need no key and cost nothing. Two more places are used only when
-their key is set in Cloudflare, and only when the free ones gave too few lines:
+(films and series). These need no key and cost nothing. Then the web itself, with no key and no
+money (`server/opensearch.js`): DuckDuckGo's plain results page (Bing's when DuckDuckGo turns the
+app away), and up to four of the pages it points to, read for lines that are on them word for word
+and credited to the work (a page that only shares words with the title, such as one about the
+season, is left out; a line only in search snippets is kept when two sites agree, marked to check).
+At most two results pages and four pages per search, 400 KB a page, only https, 60 results pages
+and 120 pages a day. `OPEN_SEARCH=off` switches it off. Two free search keys go first when set:
+
+- `TAVILY_API_KEY`: Tavily (1,000 searches a month free, no card). Sign up at tavily.com, copy the
+  key from the dashboard (it starts `tvly-`). It sends the text of each page it read, so no page
+  is fetched again. The app asks at most 30 times a day.
+- `SERPER_API_KEY`: Serper, Google's results as JSON (2,500 searches once, free, no card). Sign up
+  at serper.dev, copy the API key from the dashboard. Its result pages are fetched and read as
+  above. At most 20 a day.
+
+Two more places are used only when their key is set in Cloudflare, and only when those gave too few:
 
 - `GEMINI_API_KEY`: Gemini with Google Search. Make the key at aistudio.google.com (Get API
-  key, Create API key) in a project with **no billing account**, so it can never be charged.
-  The app asks at most 40 times a day. Google decides which models a free key may search with,
-  and may allow none; the app reads the list of models the key may use (once a week), takes the
-  newest flash models, and passes to the next when one is refused the search tool. Every refusal
-  is on the trail with Google's own words. `GEMINI_MODEL` (up to three names, with commas)
-  replaces the choice.
+  key, Create API key). The app asks at most 40 times a day. On a free key Google gives search
+  only to gemini-2.5-flash-lite and gemini-2.5-flash (500 a day, checked on Google's price list in
+  November 2026); Gemini 3 and newer models answer 429 with "limit: 0" until billing is set up
+  (then 5,000 searches a month free, then $14 per 1,000). The app reads the list of models the key
+  may use (once a week), tries those two first, then the flash-lite and flash models newest first
+  (up to five). A model with no allowance sends it to the next; a passing rate limit is waited out
+  once; only when no model may search does Gemini rest for the day. Every refusal is on the trail
+  with Google's own words, and the health line says what the key lacks. `GEMINI_MODEL` (up to
+  five names, with commas) replaces the choice.
 - `OPENAI_API_KEY`: OpenAI with web search (about one cent a search, plus a little for the
   words). Make the key at platform.openai.com (API keys) and set a monthly budget under
   Settings, Limits. The app asks at most 20 times a day. The model is chosen from the list the key
   may use (gpt-6-luna, then gpt-6.1-terra, gpt-6.1-sol, gpt-6-astra). `OPENAI_MODEL` replaces it.
+  A key with no credit answers 429 `insufficient_quota`: OpenAI then rests for the day.
+
+IMDb answers robots with 202 and an empty page: after that it is not asked for a week.
 
 Anthropic's own paid web search stays off unless `CLAUDE_WEB_SEARCH` is `on`. Whatever is found
 is kept in the Library on that work, so a title is looked up once (a look that found nothing is

@@ -14,6 +14,7 @@
 import { hide, dayIST, RECONNECT } from "./health.js";
 import { upkeepState } from "./upkeep.js";
 import { A_DAY, FEATURES, listModels, sayTrail, stepsText } from "./findlines.js";
+import { OPEN_A_DAY } from "./opensearch.js";
 
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
 const SLOW_MS = 15000;
@@ -47,7 +48,7 @@ async function probeBooks(env, kit) {
   const allowed = !!target && (target.protocol === "https:" || local) && kit.textHostAllowed(env, target.hostname);
   let res = null;
   if (allowed) {
-    try { res = await fetch(target, { headers: { Range: "bytes=0-2047" }, signal: AbortSignal.timeout(SLOW_MS) }); }
+    try { res = await fetch(target, { headers: { Range: "bytes=0-2047", "User-Agent": "DsStudio/1.0 (personal quotes app; health check)" }, signal: AbortSignal.timeout(SLOW_MS) }); }
     catch (e) { throw new Error("the book's text couldn't be reached just now"); }
     if (res.body) await res.body.cancel().catch(() => {});            // only the headers matter here
   }
@@ -299,17 +300,23 @@ function probeErrors(env, kit, ctx) {
 
 // The free places, as data/lookups.json names them, and the two search helpers with their settings.
 const PLACES = [["wikiquote", "Wikiquote"], ["quoteinvestigator", "Quote Investigator"], ["goodreads", "Goodreads"], ["imdb", "IMDb"],
-  ["wikipedia", "Wikipedia"], ["openlibrary", "Open Library"]];
+  ["wikipedia", "Wikipedia"], ["openlibrary", "Open Library"], ["tavily", "Tavily"], ["serper", "Serper"], ["duckduckgo", "DuckDuckGo"], ["bing", "Bing"]];
 const HELPERS = [["gemini", "Gemini", "GEMINI_API_KEY", "GEMINI_MODEL", "Google AI Studio (aistudio.google.com), API keys"],
   ["openai", "OpenAI", "OPENAI_API_KEY", "OPENAI_MODEL", "platform.openai.com, API keys"]];
 const LAST = { worked: "worked", limit: "stopped at the app's daily limit", "used up": "stopped: the account's allowance was used up",
-  refused: "was refused", "may not search": "was refused the search tool", "no model": "found no model it may use", "no answer": "got no answer" };
+  refused: "was refused", "may not search": "was refused the search tool", "no model": "found no model it may use", "no answer": "got no answer",
+  "no allowance": "was refused: no model has an allowance on this key", "no credit": "was refused: the account has no credit", busy: "was asked to wait (a passing limit)" };
+// What a key with no allowance needs, in one line each.
+const NO_ALLOWANCE = {
+  gemini: ["Gemini: Google gives a free key no searches on its newer models. Nothing to do: the app searches the web without it. To add Google: aistudio.google.com, Get API key, the key's project, Set up billing (Gemini 3 and newer: 5,000 searches a month free, then $14 per 1,000; the app asks at most 40 a day)."],
+  openai: ["OpenAI: the key has no credit. Nothing to do: the app searches the web without it. To add OpenAI: platform.openai.com, Settings, Billing, Add to credit balance (from $5), then Limits, set a monthly budget."] };
 // The features that search the web through Gemini or OpenAI, as data/lookups.json names them (findlines.js).
 const FEATURE_NAMES = { lookup: "quotes from a work", discover: "finding new lines", echo: "checking new lines", check: "\"Who said this?\"", title: "checking a title" };
 const USE_SAID = { found: "worked", answered: "answered", "all rejected": "answered, but every line was left out", "no answer": "got no answer",
   "key refused": "was refused: the key", "may not search": "was refused the search tool", "no model": "found no model", "used up": "stopped: allowance used up",
+  "no allowance": "was refused: no allowance on this model", "no credit": "was refused: no credit", busy: "was asked to wait",
   limit: "stopped at the app's daily limit", resting: "rested after an earlier refusal" };
-const BAD_USE = new Set(["key refused", "may not search", "no model", "used up"]);
+const BAD_USE = new Set(["key refused", "may not search", "no model", "used up", "no allowance", "no credit"]);
 const inCloudflare = (name) => `In Cloudflare: Workers & Pages, entangledd-studio, Settings, Variables and Secrets. Edit ${name}, paste the new value, then Deploy.`;
 
 async function probeLookups(env, kit) {
@@ -332,7 +339,9 @@ async function probeLookups(env, kit) {
     // The list of models the key may use: reading it asks nothing and costs nothing.
     let got;
     try { got = await inTime(listModels(env, id, SLOW_MS), name); } catch (e) { got = null; }
-    const l = last[id], calls = today ? (rec[id] || {}).calls || 0 : 0;
+    const l = last[id], use = today ? rec[id] || {} : {}, calls = use.calls || 0, refusedN = use.refused || 0, answered = use.answered ?? Math.max(0, calls - refusedN);
+    const count = `${answered} of ${A_DAY[id]} searches answered today${refusedN ? `, ${refusedN} refused` : ""}`;
+    const theirWords = (() => { const u = Object.values(rec.uses || {}).filter((x) => x && x.who === id && x.said).sort((a, b) => b.at - a.at)[0]; return u ? ` (${id === "gemini" ? "Google" : "OpenAI"} said: "${hide(u.said).slice(0, 140)}")` : ""; })();
     const lastly = l && LAST[l.what] ? ` The last search ${LAST[l.what]} on ${dayIST(l.at)}.` : "";
     const refused = got && [400, 401, 403].includes(got.status) && !got.list.length;
     if (refused) {
@@ -341,19 +350,28 @@ async function probeLookups(env, kit) {
     } else if (got && got.status === 200 && !got.list.length && !env[MODEL]) {
       said.push(`${name} lists no model the app can search with.`); soon.push(`${name} offers none of the app's models`);
       fix.push(`Find a current ${name} model that can search the web, then ${inCloudflare(MODEL).replace("In Cloudflare", "in Cloudflare").replace("paste the new value", "type its name")}`);
+    } else if (l && (l.what === "no allowance" || l.what === "no credit")) {
+      said.push(`${l.what === "no allowance" ? "Google gives this free key no searches" : "OpenAI has no credit on this key"}: ${count}${theirWords}. The app searches the web without it.`);
+      soon.push(`${name} has no ${l.what === "no allowance" ? "free searches" : "credit"}`);
+      fix.push(...NO_ALLOWANCE[id]);
     } else if (l && (l.what === "refused" || l.what === "may not search")) {
       said.push(`${name} accepts the key but refused to search.${lastly}`); soon.push(`${name} refuses to search`);
       fix.push(`In ${where.split(",")[0]}, check that the plan allows web search, or remove ${KEY} in Cloudflare.`);
     } else {
       const models = env[MODEL] ? `the setting ${MODEL}: ${env[MODEL]}` : got && got.list.length ? `models it may use: ${got.list.join(", ")}` : "";
-      said.push(`${name}: ${got && got.status === 200 ? "key accepted" : "couldn't be asked just now"}${models ? `, ${models}` : ""}, ${calls} of ${A_DAY[id]} searches today.${lastly}`);
+      said.push(`${name}: ${got && got.status === 200 ? "key accepted" : "couldn't be asked just now"}${models ? `, ${models}` : ""}, ${count}.${lastly}${l && l.what === "worked" && l.model ? ` The model that answered: ${l.model}.` : ""}`);
     }
   }
+  // The web with no paid allowance (opensearch.js).
+  const open = rec.open && rec.open.day === kit.todayIST() ? rec.open : {};
+  const keyed = [["TAVILY_API_KEY", "Tavily", "tavily"], ["SERPER_API_KEY", "Serper", "serper"]].filter(([k]) => env[k]).map(([, n, id]) => `${n} ${open[id] || 0} of ${OPEN_A_DAY[id]}`);
+  said.push(env.OPEN_SEARCH === "off" && !keyed.length ? "The web without a key: switched off (OPEN_SEARCH)." :
+    `The web without a key${env.OPEN_SEARCH === "off" ? " (results pages switched off)" : ""}: ${open.results || 0} results pages and ${open.pages || 0} pages read today${keyed.length ? `; ${keyed.join(", ")} searches` : ""}.`);
   // Each feature that searches: how its last search went.
   const uses = rec.uses || {};
   const perFeature = FEATURES.filter((f) => uses[f]).map((f) => {
     const u = uses[f];
-    const bits = [u.who === "gemini" ? "Gemini" : u.who === "openai" ? "OpenAI" : u.who, u.model, u.status && `status ${u.status}`, u.why, u.said && `"${hide(u.said)}"`].filter(Boolean).join(", ");
+    const bits = [u.who === "gemini" ? "Gemini" : u.who === "openai" ? "OpenAI" : u.who === "web" ? "the web" : u.who, u.model, u.status && `status ${u.status}`, u.why, u.said && `"${hide(u.said)}"`].filter(Boolean).join(", ");
     if (BAD_USE.has(u.what) && !soon.some((x) => x.startsWith("A search"))) soon.push("A search was refused");
     return `${FEATURE_NAMES[f]}: ${USE_SAID[u.what] || u.what} on ${dayIST(u.at)} (${bits})`;
   });

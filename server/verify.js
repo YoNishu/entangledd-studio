@@ -14,6 +14,7 @@
    Nothing personal is ever sent anywhere: only the line and the name it is credited to, or the title, the
    author she typed and the kind of work. Every search has a few seconds, then the app goes on without it. */
 import * as F from "./findlines.js";
+import * as O from "./opensearch.js";
 
 const CHECK_SECONDS = 9;          // a check stops searching after this long and answers with what it has
 const TITLE_SECONDS = 8;          // the same for a title
@@ -114,6 +115,27 @@ async function qiEvidence(env, kit, state, quote, until) {
     text: `Quote Investigator, the article "${title}". It begins: ${text.slice(0, 450)}\nIts conclusion: ${end >= 0 ? text.slice(end, end + 900) : text.slice(-900)}` }];
 }
 
+// The web with no paid allowance (opensearch.js): the line searched for in quotes, and the line found on up to
+// three of the pages the results point to, with the lines around it.
+async function openEvidence(env, kit, state, quote, author, until) {
+  if (!O.providers(env).length || until - Date.now() < 2500) return [];
+  const words12 = String(quote).replace(/["“”]/g, "").split(/\s+/).slice(0, 12).join(" ");
+  const { list } = await O.results(env, kit, state,
+    [`"${words12}"${author ? " " + author : ""}`], { enough: 5 });
+  if (!list.length || until - Date.now() < 1500) return [];
+  const pages = await O.readPages(env, kit, state, O.rank(list, [phrase(kit, quote, 4), author].filter(Boolean)), 3);
+  const out = [];
+  for (const pg of pages) {
+    const at = locate(kit, pg.text, quote);
+    if (!at) continue;
+    out.push({ site: pg.site, url: kit.foundAt(pg.url) || (env.OPEN_DEV_HOSTS ? pg.url : ""), title: kit.oneLine(pg.title, 160), first: /quoteinvestigator|wikiquote/.test(pg.site),
+      text: `A page on ${pg.site}${pg.title ? `, "${kit.oneLine(pg.title, 120)}"` : ""}, found with a web search:\n${at.context}` });
+  }
+  F.step(state, "web", out.length ? "found" : "no line passed", { n: out.length, read: pages.map((p) => p.site).slice(0, 3), ...(out.length ? {} : { why: "the line is on none of the pages read" }) });
+  F.noteUse(state, "web", out.length ? "found" : "all rejected", { n: out.length });
+  return out;
+}
+
 // Gemini or OpenAI, searching the web, when the free places found nothing.
 const CHECK_QUESTION = (quote, author) => `Search the web for where this quote comes from and who really said or wrote it. Quote Investigator and Wikiquote (with its "Misattributed" and "Disputed" sections) are the most careful sources: prefer them.
 Quote: "${quote}"
@@ -167,6 +189,7 @@ export async function checkLine(env, kit, quote, author) {
     guarded(state, "quoteinvestigator", () => qiEvidence(env, kit, state, quote, until)),
   ]);
   let evidence = free.flat();
+  if (!evidence.length) evidence = await openEvidence(env, kit, state, quote, author, until).catch(() => []);
   if (!evidence.length) evidence = await helperEvidence(env, kit, state, quote, author, until);
   if (state.trail.length) F.keepTrail(state, { title: "(check)", type: "check" }, state.trail, evidence.length);
   await F.closeRecord(env, kit, state);
@@ -244,6 +267,35 @@ async function wikipedia(env, kit, state, item, kind, until) {
       year: yearIn(desc), kind: k, country: countryIn(desc), about: kit.oneLine(desc, 120), site: "wikipedia.org", page: "https://en.wikipedia.org/wiki/" + encodeURIComponent(String(p.title).replace(/ /g, "_")) };
   }).filter(Boolean);
 }
+// The web with no paid allowance (opensearch.js): the results for the title, read as candidates. A result's own
+// title gives the work's title and year ("The Early Spring (2026) - MyDramaList"); its title and snippet say what
+// kind of work it is, its country ("Chinese Drama"), its original title (words in another script) and, when they
+// say "starring", its lead actors. Nothing is taken from anywhere but the results.
+export function fromResults(kit, list, kind) {
+  const out = [];
+  for (const r of list) {
+    const all = `${r.title} ${r.snippet}`;
+    const base = String(r.title || "").split(/\s+[-|–—]\s+|\s*:\s+(?=quotes|cast|review)/i)[0].trim();
+    const name = base.replace(/\s*\([^)]*\)\s*$/, "").trim();
+    if (!name) continue;
+    const series = /\b(drama|episodes?|tv series|web series|television series|miniseries)\b/i.test(all);
+    const k = kind === "book" ? (KIND_FITS.book.test(all) ? "book" : "") : series ? "series" : KIND_FITS.film.test(all) ? "film" : "";
+    if (!k) continue;
+    const original = (/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]{2,20}/.exec(all) || [])[0] || "";
+    const cast = (/\b(?:[Ss]tarring|[Ss]tars)\s*:?\s+([A-Z][a-z]+(?: [A-Z][a-z]+)+)(?:,?\s+(?:and\s+)?([A-Z][a-z]+(?: [A-Z][a-z]+)+))?/.exec(all) || []).slice(1).filter(Boolean);
+    out.push({ title: kit.oneLine(name, 120), by: "", year: yearIn(base) || yearIn(r.snippet), kind: k, original, cast,
+      country: countryIn(all.replace(/\b(Drama|Series|Film|Novel|Movie)\b/g, (w) => w.toLowerCase())),
+      site: r.host, page: kit.foundAt(r.url) || "", about: kit.oneLine(r.snippet, 120) });
+  }
+  return out;
+}
+async function openTitle(env, kit, state, item, kind, until) {
+  if (!O.providers(env).length || until - Date.now() < 2000) return [];
+  const word = { book: "book", film: "film", series: "TV series drama" }[kind];
+  const { list } = await O.results(env, kit, state, [`"${item.title}" ${word}${kind === "book" && item.author ? " " + item.author : ""}`], { enough: 5 });
+  return fromResults(kit, list, kind);
+}
+
 // Gemini or OpenAI, when the free places found nothing.
 const TITLE_QUESTION = (item, kind) => `Search the web for the ${{ book: "book", film: "film", series: "TV series" }[kind]} that someone calls "${item.title}"${kind === "book" && item.author ? ` by ${item.author}` : ""}. Which ${{ book: "book", film: "film", series: "film or series" }[kind]} is it? The title may be misspelt, or be a common phrase that is also the name of a new work.
 Reply with a JSON object only, no other text: {"title": "its proper title in English", "original": "its title in its original language, or an empty string", "aka": ["other English titles it goes by"], "by": "the author of a book, or the director or creator", "year": the year it first came out as a number, "country": "the country it is from, as an adjective, such as Chinese", "cast": ["up to three lead actors, for a film or series"], "kind": "book" or "film" or "series", "page": "the address of a page that confirms it"}
@@ -289,6 +341,7 @@ export async function checkTitle(env, kit, item, kind, outer = null) {
   let hit = null;
   if (kind === "book") hit = pick(await guarded(state, "openlibrary", () => openLibrary(env, kit, state, item, until)));
   if (!hit || hit.how !== "same") hit = pick(await guarded(state, "wikipedia", () => wikipedia(env, kit, state, item, kind, until))) || hit;
+  if (!hit) hit = pick(await openTitle(env, kit, state, item, kind, until).catch(() => []));
   if (!hit) hit = pick(await helperTitle(env, kit, state, item, kind, until));
   state.feature = feature;
   const out = { titleChecked: Date.now(), known: null, maybe: null };

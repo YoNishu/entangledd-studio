@@ -43,15 +43,15 @@ l = line(T)
 asked = calls()
 listed = http("GET", "/__lines_log?list=models&reset=1")[1]
 check("both keys accepted: calm, with the models each may use and the day's count", l["state"] == "ok"
-      and "Gemini: key accepted, models it may use: gemini-3.8-flash, gemini-3.5-flash-lite, 0 of 40 searches today." in l["line"]
-      and "OpenAI: key accepted, models it may use: gpt-6-luna, gpt-6.1-terra, gpt-6.1-sol, 0 of 20 searches today." in l["line"], l)
+      and "Gemini: key accepted, models it may use: gemini-3.5-flash-lite, gemini-3.8-flash, 0 of 40 searches answered today." in l["line"]
+      and "OpenAI: key accepted, models it may use: gpt-6-luna, gpt-6.1-terra, gpt-6.1-sol, 0 of 20 searches answered today." in l["line"], l)
 check("the key check only reads the lists of models, so it asks nothing and costs nothing", asked == [] and [x["to"] for x in listed] == ["gemini", "openai"], (asked, listed))
 ops(reset=True); part_now(T, "services"); cost = ops()
 check("the services run still costs under twenty calls", cost["storage"] + cost["outside"] <= 20, (cost["storage"], cost["outside"]))
 rec = {"day": india_day(), "gemini": {"calls": 40}, "openai": {"calls": 3}, "sites": {}, "last": {"gemini": {"at": 1, "what": "limit"}, "openai": {"at": 1, "what": "used up"}}}
 putdoc("lookups", rec)
 l = line(T)
-check("a limit reached is told plainly, and is no alarm", l["state"] == "ok" and "40 of 40 searches today. The last search stopped at the app's daily limit" in l["line"]
+check("a limit reached is told plainly, and is no alarm", l["state"] == "ok" and "40 of 40 searches answered today. The last search stopped at the app's daily limit" in l["line"]
       and "the account's allowance was used up" in l["line"], l)
 lines_set(gemini="gone")
 l = line(T)

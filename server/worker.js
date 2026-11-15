@@ -28,6 +28,7 @@ import * as claudeuse from "./claudeuse.js";
 import * as findlines from "./findlines.js";      // real lines from books, films and series, found without a paid search
 import * as verify from "./verify.js";            // quotes and titles looked up on the web: who said it, which work it is
 import * as engine from "./engine.js";            // the pool of quotes from every source, and one score for all of them
+import { gutenbergText } from "./opensearch.js";   // the address of a free book's text
 const SECTIONS = [health, scorer, lovenotes, upkeep, engine];
 SECTIONS.push(findlines);                        // GET /api/lookups: the trail of the last look-ups, for Nishith
 
@@ -521,7 +522,7 @@ async function findBookText(env, book) {
     return plain && byHer && (r.languages || []).includes("en") && (t === want || t.startsWith(want + " ") || (!!surname && ` ${t} `.includes(` ${want} `)));
   });
   if (!pick) return { textChecked: Date.now(), textUrl: "", textNote: "No free full text was found, which is normal for modern books. Quotes from it come from Nishiii's memory." };
-  const url = Object.entries(pick.formats).find(([k]) => k.startsWith("text/plain"))[1];
+  const url = gutenbergText(pick);
   const flip = (n) => { const m = /^([^,]+),\s*([^,]+)$/.exec(n || ""); return m ? `${m[2]} ${m[1]}` : n || ""; };
   return { textChecked: Date.now(), textUrl: url, textTitle: oneLine(pick.title, 160), textAuthor: oneLine(flip(((pick.authors || [])[0] || {}).name), 80), gutenbergId: pick.id,
     textNote: "Full text found on Project Gutenberg. Quotes from this book are copied from the text itself." };
@@ -533,7 +534,7 @@ async function loadBookText(env, book) {
   try { target = new URL(book.textUrl); } catch (e) { return ""; }
   const local = !!env.STOCK_HOSTS && target.protocol === "http:";
   if ((target.protocol !== "https:" && !local) || !textHostAllowed(env, target.hostname)) return "";
-  const res = await fetch(target);
+  const res = await fetch(target, { headers: { "User-Agent": "DsStudio/1.0 (personal quotes app; one book at a time)" } });
   if (!res.ok) return "";
   let text = (await res.text()).slice(0, 2_500_000);
   // Drop the catalogue's own notices before and after the book.

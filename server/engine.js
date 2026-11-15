@@ -29,6 +29,7 @@
 import * as tags from "./tags.js";
 import * as scorer from "./scorer.js";
 import * as findlines from "./findlines.js";
+import { providers } from "./opensearch.js";
 
 const DAY = 24 * 3600 * 1000;
 // id, starting weight, K: the evidence at which the part counts half its weight (0: always full weight).
@@ -521,19 +522,30 @@ Keep a line only when a page you read gives its wording and who it is by. Never 
   return out;
 }
 
+// The same question in a few words, for a results page: "theme:hope" is "quotes about hope from books films".
+export function openQuery(q) {
+  const [kind, ...rest] = String(q || "").split(":"), what = rest.pop() || "";
+  const ask = "real quotes, each with who wrote or says it";
+  if (kind === "theme") return { query: `quotes about ${what} from books films series`, ask: `${ask}, about ${what}`, near: [what] };
+  if (kind === "author") return { query: `"${what}" quotes`, ask: `real quotes by ${what}`, near: [what] };
+  if (kind === "new") return { query: `${what} quotes from ${rest[0] || ""} books dramas films`.replace(/\s+/g, " "), ask: `${ask}, about ${what}, from works of ${rest[0] || "recent years"}`, near: [what] };
+  return null;                                       // "like:" needs judgement a results page can't give
+}
+
 async function discoverJob(env, kit) {
   const [lib, history, tasteDoc, bank0, tags0] = await Promise.all([kit.loadDoc(env, "library", { books: [], screen: [], quotes: [] }), kit.loadDoc(env, "history", []),
     kit.loadDoc(env, "taste", null), kit.loadDoc(env, "engine/bank", null), kit.loadDoc(env, "engine/tags", null)]);
   const bank = today(soundBank(bank0), kit);
   const allow = { gemini: env.GEMINI_API_KEY ? A_DAY.gemini : 0, openai: env.OPENAI_API_KEY ? A_DAY.openai : 0 };
-  if ((bank.used.gemini || 0) >= allow.gemini && (bank.used.openai || 0) >= allow.openai) return null;
+  const open = providers(env).length > 0;            // the web with no paid allowance (opensearch.js)
+  if (!open && (bank.used.gemini || 0) >= allow.gemini && (bank.used.openai || 0) >= allow.openai) return null;
   const now = Date.now();
   const next = questions({ lib, history, tasteDoc, tagsDoc: soundTags(tags0) }, new Date(now).getUTCFullYear()).find((x) => !(now - (bank.asked[x.q] || 0) < 30 * DAY));
   if (!next) return null;
   bank.asked[next.q] = now;
   const have = new Set([...bank.lines.map((l) => kit.norm(l.text)), ...history.map((h) => kit.norm(h.text))]);
   const used = { gemini: bank.used.gemini || 0, openai: bank.used.openai || 0 };
-  const got = await findlines.searchWeb(env, kit, next.text, 8, have, { allow, used, feature: "discover" });
+  const got = await findlines.searchWeb(env, kit, next.text, 8, have, { allow, used, feature: "discover", open: openQuery(next.q) });
   const th = next.q.startsWith("theme:") || next.q.startsWith("new:") ? next.q.split(":").pop() : "";
   const lines = got.lines.filter((l) => l.by || l.work).map((l) => ({ text: l.text, by: l.by, work: l.work || "", type: l.type || "classic", url: l.url, site: l.site, verify: l.verify, th, to: "", from: "discover", q: next.q, at: now }));
   addLines(bank, lines);
@@ -585,11 +597,13 @@ async function echoJob(env, kit) {
   const allow = { gemini: env.GEMINI_API_KEY ? A_DAY.gemini : 0, openai: env.OPENAI_API_KEY ? A_DAY.openai : 0 };
   const used = { gemini: bank.used.gemini || 0, openai: bank.used.openai || 0 };
   const first = out[0];
-  if (first && (used.gemini < allow.gemini || used.openai < allow.openai)) {
+  if (first && (providers(env).length || used.gemini < allow.gemini || used.openai < allow.openai)) {
     const prompt = `Search the web for the quote "${first.text.replace(/"/g, "")}" by ${first.by.replace(/"/g, "")}. Find pages that give its exact wording and who it is by.
 Reply with a JSON array only, no other text: [{"text": "the line, word for word as the page has it", "by": "who wrote or said it", "work": "the book, film or series, or an empty string", "type": "book, film, series or classic", "page": "the address of the page", "also": "the address of a second page on another site with the same wording, or an empty string"}]
 If no page you read gives this line, reply with [].`;
-    const got = await findlines.searchWeb(env, kit, prompt, 1, new Set(), { allow, used, feature: "echo" });
+    const words = first.text.replace(/["“”]/g, "").split(/\s+/).slice(0, 12).join(" ");
+    const got = await findlines.searchWeb(env, kit, prompt, 1, new Set(), { allow, used, feature: "echo",
+      open: { query: `"${words}" ${first.by.replace(/"/g, "")}`, ask: `the quote "${first.text.replace(/"/g, "")}" by ${first.by.replace(/"/g, "")}, in the exact words the page gives`, near: [words.split(" ").slice(0, 4).join(" "), first.by] } });
     const same = got.lines.find((l) => kit.norm(l.text).includes(kit.norm(first.text).slice(0, 40)) || kit.norm(first.text).includes(kit.norm(l.text)));
     if (same) Object.assign(first, { text: same.text, url: same.url, site: same.site, verify: same.verify, checked: true, work: first.work || same.work || "" });
     bank.used.gemini = used.gemini; bank.used.openai = used.openai;

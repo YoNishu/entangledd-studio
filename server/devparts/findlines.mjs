@@ -4,13 +4,15 @@
 //
 //   GEMINI=on|429|refused|gone|memory|badkey|nosearch|nolist   a Gemini key is set, and Gemini answers that way (no
 //                                        setting: no key; badkey: the key is not one Google knows, answered with 400 as
-//                                        Google does; nosearch: the first model refuses the search tool, the next works;
+//                                        Google does; nosearch: the first model (gemini-3.5-flash-lite) refuses the search tool, the next works;
 //                                        nolist: the list of models can't be read, so the built-in names are tried)
-//   OPENAI=on|429|refused|nomodel        the same for OpenAI
+//   GEMINI=limit0|lite|busy|busy2        a 429 with "limit: 0" for every model (lite: but gemini-2.5-flash-lite, listed, answers);
+//                                        busy: the first question gets a per-minute 429 (retry in 1s); busy2: every question does
+//   OPENAI=on|429|refused|nomodel|ratelimit  the same for OpenAI (429: insufficient_quota; ratelimit: one passing 429 first)
 //   GET /__gemini/v1beta/models, GET /__openai/v1/models   the lists of models a key may use (logged apart: /__lines_log?list=models)
 //   "The Late Thaw" is a made-up 2026 Chinese drama (春迟): asked about plainly, the pretend search brings back lines
 //   about the season; asked about with its facts, its lines, found on social posts behind Google's redirect links.
-//   SITES=ok|blocked|captcha|empty       how Goodreads and IMDb answer (default ok)
+//   SITES=ok|blocked|captcha|empty|challenge   how Goodreads and IMDb answer (default ok; challenge: IMDb's quotes page answers 202)
 //   WIKIQUOTE=ok|down                    Wikiquote answers, or turns everything away with 503
 //   GET /__lines_set?gemini=..&openai=..&sites=..&wikiquote=..   changes any of these while running ("off" takes a key away)
 //   GET /__lines_set?slow=700           every pretend service here waits that many milliseconds before answering
@@ -308,19 +310,30 @@ function modelList(who, req, url) {
     if (mode.gemini === "nolist") return [503, { error: { code: 503, message: "The service is currently unavailable.", status: "UNAVAILABLE" } }];
     const m = (name, methods = ["generateContent", "countTokens"]) => ({ name: "models/" + name, baseModelId: name.replace(/-\d{3}$/, ""), version: "001", displayName: name, supportedGenerationMethods: methods });
     return [200, { models: [m("gemini-2.5-flash-preview-tts"), m("gemini-3.1-pro-preview"), m("gemini-3.5-flash-lite"), m("gemini-embedding-001", ["embedContent"]),
-      m("gemini-3.8-flash"), m("gemini-3.8-flash-image-preview"), m("imagen-5.0-generate", ["predict"]), m("gemma-4-27b-it")] }];
+      m("gemini-3.8-flash"), m("gemini-3.8-flash-image-preview"), m("imagen-5.0-generate", ["predict"]), m("gemma-4-27b-it"),
+      ...(mode.gemini === "lite" ? [m("gemini-2.5-flash-lite-001")] : [])] }];
   }
   if (req.headers.authorization !== "Bearer " + OPENAI_KEY || mode.openai === "refused") return [401, { error: { message: "Incorrect API key provided.", type: "invalid_request_error", code: "invalid_api_key" } }];
   const m = (id, created) => ({ id, object: "model", created, owned_by: "openai" });
   return [200, { object: "list", data: [m("gpt-realtime-2.1", 1770000000), m("gpt-6-astra", 1771000000), m("gpt-image-2.6-flare", 1772000000), m("gpt-6.1-terra", 1773000000),
     m("gpt-6-luna", 1769000000), m("gpt-6.1-sol", 1773500000), m("gpt-transcribe", 1760000000)] }];
 }
+// Google's real answer for a model with no allowance on a free key ("limit: 0"), and for a passing per-minute limit.
+const quota429 = (model, perMinute) => ({ status: 429, body: { error: { code: 429, status: "RESOURCE_EXHAUSTED",
+  message: `You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: ${perMinute ? 10 : 0}, model: ${model}\nPlease retry in ${perMinute ? "1.2" : "33.6"}s.`,
+  details: [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+    quotaId: perMinute ? "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" : "GenerateRequestsPerDayPerProjectPerModel-FreeTier", quotaDimensions: { location: "global", model } }] },
+    { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: perMinute ? "1s" : "33s" }] } } });
+let busyOnce = 0, openaiBusy = 0;
 function gemini(body, model) {
   const fail = (code, status, message) => ({ status: code, body: { error: { code, message, status } } });
+  if (mode.gemini === "limit0" || (mode.gemini === "lite" && model !== "gemini-2.5-flash-lite")) return quota429(model, false);
+  if (mode.gemini === "busy" && busyOnce++ === 0) return quota429(model, true);
+  if (mode.gemini === "busy2") return quota429(model, true);
   if (mode.gemini === "429") return fail(429, "RESOURCE_EXHAUSTED", "You exceeded your current quota, please check your plan and billing details.");
   if (mode.gemini === "refused") return fail(403, "PERMISSION_DENIED", "Grounding with Google Search is not available on the free tier for this project.");
   if (mode.gemini === "gone" && model === "gemini-3.8-flash") return fail(404, "NOT_FOUND", "This model models/gemini-3.8-flash is no longer available to new users. Please update your code to use a newer model.");
-  if (mode.gemini === "nosearch" && model === "gemini-3.8-flash") return fail(400, "INVALID_ARGUMENT", "Search Grounding is not supported for this model.");
+  if (mode.gemini === "nosearch" && model === "gemini-3.5-flash-lite") return fail(400, "INVALID_ARGUMENT", "Search Grounding is not supported for this model.");     // the first in the app's order
   const asked = verifyAnswer(body.contents[0].parts[0].text);
   const thaw = !asked && lateThaw(body.contents[0].parts[0].text);
   if (thaw) return { status: 200, body: thaw };
@@ -347,6 +360,7 @@ function gemini(body, model) {
 function openai(body) {
   const fail = (status, type, message) => ({ status, body: { error: { message, type, param: null, code: type } } });
   if (mode.openai === "429") return fail(429, "insufficient_quota", "You exceeded your current quota, please check your plan and billing details.");
+  if (mode.openai === "ratelimit" && openaiBusy++ === 0) return fail(429, "rate_limit_exceeded", "Rate limit reached for requests per min. Please try again in 500ms.");
   if (mode.openai === "refused") return fail(401, "invalid_api_key", "Incorrect API key provided.");
   if (mode.openai === "nomodel" && body.model === "gpt-6-luna") return fail(400, "invalid_request_error", "Hosted tool 'web_search' is not supported with gpt-6-luna.");
   const asked = verifyAnswer(body.input);
@@ -392,6 +406,7 @@ export async function handle(req, res, url, tools) {
     }
     if (p.endsWith("/book/auto_complete")) return send(200, BOOKS.filter((b) => norm(b.title).includes(norm(url.searchParams.get("q")))));
     if (mode.sites === "captcha") return send(200, CAPTCHA, "text/html");
+    if (mode.sites === "challenge" && to === "imdb") return send(202, "", "text/html");     // IMDb's answer to robots: 202 and an empty page
     const id = (/\/(?:work\/quotes|title)\/([a-z0-9]+)/.exec(p) || [])[1];
     return send(200, to === "goodreads" ? goodreadsPage(id) : imdbPage(id), "text/html");
   }
