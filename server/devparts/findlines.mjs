@@ -259,7 +259,7 @@ function verifyAnswer(prompt) {
   if (prompt.startsWith("Search the web for the ")) {
     const title = titleIn(prompt);
     if (unknown(title)) return { text: "{}", sites: [] };
-    return { sites: ["en.wikipedia.org"], text: JSON.stringify({ title: "The Winter Ledger", by: "Hana Moll", year: 2017, kind: /TV series/.test(prompt) ? "series" : /film/.test(prompt) ? "film" : "book",
+    return { sites: ["en.wikipedia.org"], text: JSON.stringify({ title: "The Winter Ledger", by: "Hana Moll", year: 2017, kind: /^Search the web for the TV series/.test(prompt) ? "series" : /^Search the web for the film/.test(prompt) ? "film" : "book",
       page: "https://en.wikipedia.org/wiki/The_Winter_Ledger" }) };
   }
   return null;
