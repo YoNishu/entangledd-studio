@@ -194,25 +194,39 @@ try {
 </section>
 
 <section class="page" id="view-posts" aria-label="Posts" hidden>
-  <article class="card week" id="week-card" hidden></article>
-  <div class="group" id="made-wrap" hidden>
-    <h2 class="ic ic-reel">Made, not posted</h2>
-    <p class="note" id="made-note"></p>
-    <div class="cards" id="list-made"></div>
+  <div class="seg two" id="posts-parts" role="group" aria-label="Show">
+    <button type="button" id="posts-part-posted" aria-controls="posts-posted" aria-pressed="true">Posted</button>
+    <button type="button" id="posts-part-drafts" aria-controls="posts-drafts" aria-pressed="false">Drafts<span class="count" id="drafts-count" hidden></span></button>
   </div>
-  <div class="group" id="handoff-wrap" hidden>
-    <h2 class="ic ic-insta">Being finished in Instagram</h2>
-    <p class="note">Once you post one there, it moves down to Posted by itself, usually within a few minutes.</p>
-    <div class="cards" id="list-handoffs"></div>
+  <div class="part" id="posts-drafts" hidden>
+    <div class="group" id="saved-wrap" hidden>
+      <h2 class="ic ic-create">Not finished yet</h2>
+      <p class="note" id="saved-note"></p>
+      <div class="cards" id="list-saved"></div>
+    </div>
+    <div class="group" id="made-wrap" hidden>
+      <h2 class="ic ic-reel">Made, not posted</h2>
+      <p class="note" id="made-note"></p>
+      <div class="cards" id="list-made"></div>
+    </div>
+    <div class="group" id="queue-wrap" hidden>
+      <h2 class="ic ic-later">Waiting to be posted</h2>
+      <p class="note" id="queue-note"></p>
+      <div class="cards" id="list-queue"></div>
+    </div>
+    <div class="group" id="handoff-wrap" hidden>
+      <h2 class="ic ic-insta">Being finished in Instagram</h2>
+      <p class="note">Once you post one there, it moves to Posted by itself, usually within a few minutes.</p>
+      <div class="cards" id="list-handoffs"></div>
+    </div>
+    <p class="note" id="drafts-empty" hidden>Nothing unfinished. A reel you start in Create is kept here by itself.</p>
   </div>
-  <div class="group" id="queue-wrap" hidden>
-    <h2 class="ic ic-later">Waiting to be posted</h2>
-    <p class="note" id="queue-note"></p>
-    <div class="cards" id="list-queue"></div>
+  <div class="part" id="posts-posted">
+    <article class="card week" id="week-card" hidden></article>
+    <h2 class="ic ic-check" id="posted-head" hidden>Posted</h2>
+    <p class="note" id="posts-note" role="status"></p>
+    <div class="cards" id="list-posts"></div>
   </div>
-  <h2 class="ic ic-check" id="posted-head" hidden>Posted</h2>
-  <p class="note" id="posts-note" role="status"></p>
-  <div class="cards" id="list-posts"></div>
 </section>
 
 <section class="page" id="view-insights" aria-label="Insights" hidden>

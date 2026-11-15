@@ -989,7 +989,7 @@
       el("p", { className: "src", id: "auto-" + q.id, textContent: igSees ? "Posted it from Instagram yourself? It moves to Posted by itself." : "Instagram isn't answering the app right now, so it can't see what you post there." }),
       el("div", { className: "acts tall" }, go, song, ...(drafts() ? [drafts().editButton(q.jobId)] : []), igSees ? null : postedByHand("queue/" + q.id, "posted-queue-" + q.id), drop));
   }
-  const showPostedHead = () => { $("posted-head").hidden = $("queue-wrap").hidden && $("handoff-wrap").hidden && $("made-wrap").hidden; };
+  const showPostedHead = () => { if (drafts()) drafts().recount(); };      // the count on Drafts (web/drafts.js)
   function renderQueue(queue) {
     $("queue-wrap").hidden = !queue.length;
     $("list-queue").replaceChildren(...queue.map(queueCard));

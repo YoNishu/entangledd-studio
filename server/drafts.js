@@ -2,6 +2,10 @@
 
    What is stored:
    - data/draft.json   the current draft: { id, of, updated, snap }. One per app; the last save wins (two phones).
+   - data/drafts.json  drafts set aside, newest first: [{ id, of, updated, snap }]. When a different piece of work
+                       becomes the current draft, the one it replaces is moved here first, so starting something
+                       new never loses the earlier one. At most DRAFTS_MAX, each kept DRAFT_DAYS. A draft that is
+                       opened again (Continue) leaves this list and is the current draft once more.
    - data/made.json    the reels made from the app: [{ id, jobId, made, snap, about, posted?, postId? }].
                        At most 20 not posted, each kept 30 days; a posted one keeps what it was made from for
                        7 days ("Make a version of this"), then the entry goes (the post's own record stays).
@@ -17,7 +21,7 @@
    Handlers are called as handler(request, env, parts, kit). */
 
 const DAY = 24 * 60 * 60 * 1000;
-export const MADE_MAX = 20, MADE_DAYS = 30, DRAFT_DAYS = 30, POSTED_DAYS = 7;
+export const MADE_MAX = 20, MADE_DAYS = 30, DRAFT_DAYS = 30, POSTED_DAYS = 7, DRAFTS_MAX = 10;
 const HANDOFF_HOURS = 72;                         // as in worker.js: a hand-over is looked for this long
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PART_SIZE = 8 * 1024 * 1024;                // as for a reel's background: equal parts of at least 5 MB
@@ -50,6 +54,47 @@ const alive = (h, now) => now - h.at < HANDOFF_HOURS * 3600 * 1000;
 const keptUntil = (m) => (m.posted ? m.posted + POSTED_DAYS * DAY : m.made + MADE_DAYS * DAY);
 const draftAlive = (d, now) => !!d && now - (d.updated || 0) < DRAFT_DAYS * DAY;
 
+// ---------------------------------------------------------------- drafts set aside (data/drafts.json)
+
+// The same composer, leaving out what does not change the reel (the caption, which block was picked).
+const looks = (snap) => { const { caption, selected, ...rest } = snap || {}; return JSON.stringify(rest); };
+// Something of her own: words, a background or music.
+const hasContent = (snap) => !!snap && (!!snap.bg || !!snap.music || (snap.blocks || []).some((b) => String(b.text || "").trim()));
+// A made reel's copy she has not changed since: the reel itself keeps it, in Made, not posted.
+const madeCopy = (d, made) => { const m = made.find((x) => x.id === d.of || (x.draftId && x.draftId === d.id)); return !!m && looks(m.snap) === looks(d.snap); };
+const worthKeeping = (d, made, now) => draftAlive(d, now) && d.words !== false && hasContent(d.snap) && !madeCopy(d, made);
+// The shelf without what has outlived its keeping, newest first, at most DRAFTS_MAX.
+const fresh = (shelf, now) => (Array.isArray(shelf) ? shelf : []).filter((d) => draftAlive(d, now)).sort((a, b) => b.updated - a.updated).slice(0, DRAFTS_MAX);
+const putAside = (shelf, d, now) => fresh([{ id: d.id, of: d.of || "", updated: d.updated, snap: d.snap }, ...shelf.filter((x) => x.id !== d.id)], now);
+
+// PUT /api/drafts/current. When a different piece of work arrives, the stored one is set aside first (unless it is
+// blank or only a made reel's unchanged copy), and the arriving one leaves the shelf if it was there. With
+// setAside: true (the files of a draft that has meanwhile been replaced are now sent), the draft is updated where it
+// is, and never made current again. One read when nothing changes hands; at most three reads and three writes.
+async function putCurrent(request, env, kit) {
+  const b = await kit.body(request);
+  if (!UUID.test(b.id || "")) return kit.fail(400, "That draft has no name.");
+  const now = Date.now(), draft = { id: b.id, of: UUID.test(b.of || "") ? b.of : "", updated: now, snap: cleanSnap(b.snap, kit) };
+  if (b.words === false) draft.words = false;      // only a style's sample words: the next piece keeps the rest
+  const stored = await kit.loadDoc(env, "draft", null);
+  if (stored && stored.id === draft.id) {
+    await kit.saveDoc(env, "draft", draft);
+    return kit.json({ ok: true, updated: now, aside: "" });
+  }
+  const [shelfAll, made] = await Promise.all([kit.loadDoc(env, "drafts", []), kit.loadDoc(env, "made", [])]);
+  let shelf = fresh(shelfAll, now), aside = "";
+  if (b.setAside) {
+    const was = shelf.find((x) => x.id === draft.id);
+    if (was || worthKeeping(draft, made, now)) shelf = putAside(shelf, { ...draft, updated: was ? Math.max(was.updated, now) : now }, now);
+  } else {
+    shelf = shelf.filter((x) => x.id !== draft.id);
+    if (stored && worthKeeping(stored, made, now)) { shelf = putAside(shelf, stored, now); aside = stored.id; }
+  }
+  if (JSON.stringify(shelf) !== JSON.stringify(shelfAll)) await kit.saveDoc(env, "drafts", shelf);
+  if (!b.setAside) await kit.saveDoc(env, "draft", draft);
+  return kit.json({ ok: true, updated: now, aside });
+}
+
 // Marks the reels that have been posted (the record of posts says so), and drops what has outlived its keeping.
 // Returns true when something changed.
 function settle(made, posts, now) {
@@ -65,9 +110,9 @@ function settle(made, posts, now) {
 }
 
 async function readAll(env, kit) {
-  const [draft, made, posts, queue, handoffs] = await Promise.all([kit.loadDoc(env, "draft", null), kit.loadDoc(env, "made", []),
-    kit.loadDoc(env, "posts", []), kit.loadDoc(env, "queue", []), kit.loadDoc(env, "handoffs", [])]);
-  return { draft, made, posts, queue, handoffs };
+  const [draft, made, posts, queue, handoffs, shelf] = await Promise.all([kit.loadDoc(env, "draft", null), kit.loadDoc(env, "made", []),
+    kit.loadDoc(env, "posts", []), kit.loadDoc(env, "queue", []), kit.loadDoc(env, "handoffs", []), kit.loadDoc(env, "drafts", [])]);
+  return { draft, made, posts, queue, handoffs, shelf };
 }
 // Where a made reel is now: "made" (only in Made, not posted), "queue", "handoff", "posting" or "posted".
 function placeOf(m, all, now) {
@@ -86,7 +131,9 @@ async function listing(env, kit) {
     current: draftAlive(all.draft, now) ? all.draft : null,
     made: s.made.slice().sort((a, b) => b.made - a.made).map((m) => ({ id: m.id, jobId: m.jobId, made: m.made, posted: m.posted || 0, postId: m.postId || "",
       keptUntil: keptUntil(m), where: placeOf(m, all, now), snap: m.snap, about: m.about || null })),
-    limits: { made: MADE_MAX, madeDays: MADE_DAYS, postedDays: POSTED_DAYS },
+    drafts: fresh(all.shelf, now).filter((d) => !all.draft || d.id !== all.draft.id)
+      .map((d) => ({ id: d.id, of: d.of || "", updated: d.updated, snap: d.snap, keptUntil: d.updated + DRAFT_DAYS * DAY })),
+    limits: { made: MADE_MAX, madeDays: MADE_DAYS, postedDays: POSTED_DAYS, drafts: DRAFTS_MAX, draftDays: DRAFT_DAYS },
   });
 }
 
@@ -151,9 +198,9 @@ export async function reelDone(env, kit, jobId) {
   let entry = made.find((m) => m.id === k.entryId);
   if (entry && entry.jobId !== jobId && placeOf(entry, all, now) === "made") {
     gone.push(entry.jobId);                      // the version it replaces, and its files, go
-    Object.assign(entry, { jobId, made: now, snap: k.snap, about: k.about });
+    Object.assign(entry, { jobId, made: now, snap: k.snap, about: k.about, draftId: k.draftId || "" });
   } else if (!entry || entry.jobId !== jobId) {
-    entry = { id: entry ? crypto.randomUUID() : k.entryId, jobId, made: now, snap: k.snap, about: k.about };
+    entry = { id: entry ? crypto.randomUUID() : k.entryId, jobId, made: now, snap: k.snap, about: k.about, draftId: k.draftId || "" };
     made.push(entry);
   }
   // At most MADE_MAX waiting: the oldest that is only in Made, not posted makes room.
@@ -166,6 +213,11 @@ export async function reelDone(env, kit, jobId) {
     gone.push(oldest.jobId);
   }
   await kit.saveDoc(env, "made", made);
+  // If she started something else while it was being made, the draft it was made from was set aside: unchanged,
+  // the reel now keeps it, so it leaves Drafts.
+  const shelf = Array.isArray(all.shelf) ? all.shelf : [];
+  const left = shelf.filter((d) => !(d.id === k.draftId && looks(d.snap) === looks(k.snap)));
+  if (left.length !== shelf.length) await kit.saveDoc(env, "drafts", left);
   if (gone.length) await env.MEDIA.delete(gone.flatMap((j) => JOB_FILES.map((n) => jobKey(j, n))));
   return entry.id;
 }
@@ -182,16 +234,18 @@ export async function keptJobs(env, kit) {
 // (after a day, so a file still on its way to a draft is left alone). About ten storage calls, the timer's included.
 export async function tidy(env, kit) {
   const now = Date.now();
-  const [draft, madeAll, posts, list] = await Promise.all([kit.loadDoc(env, "draft", null), kit.loadDoc(env, "made", []),
-    kit.loadDoc(env, "posts", []), env.MEDIA.list({ prefix: "drafts/", limit: 1000 })]);
+  const [draft, madeAll, posts, list, shelfAll] = await Promise.all([kit.loadDoc(env, "draft", null), kit.loadDoc(env, "made", []),
+    kit.loadDoc(env, "posts", []), env.MEDIA.list({ prefix: "drafts/", limit: 1000 }), kit.loadDoc(env, "drafts", [])]);
   const s = settle(madeAll, posts, now);
   if (s.changed) await kit.saveDoc(env, "made", s.made);
+  const shelf = fresh(shelfAll, now);
+  if (shelf.length !== (Array.isArray(shelfAll) ? shelfAll.length : 0)) await kit.saveDoc(env, "drafts", shelf);
   const live = draftAlive(draft, now);
-  const named = new Set([...(live ? filesOf(draft.snap) : []), ...s.made.flatMap((m) => filesOf(m.snap))].map(fileKey));
+  const named = new Set([...(live ? filesOf(draft.snap) : []), ...s.made.flatMap((m) => filesOf(m.snap)), ...shelf.flatMap((d) => filesOf(d.snap))].map(fileKey));
   const doomed = (list.objects || []).filter((o) => !named.has(o.key) && now - new Date(o.uploaded).getTime() > FILE_GRACE_MS).map((o) => o.key);
   if (draft && !live) doomed.push("data/draft.json");
   if (doomed.length) await env.MEDIA.delete(doomed.slice(0, 1000));
-  return { removed: Math.min(1000, doomed.length), entries: s.made.length, draft: live };
+  return { removed: Math.min(1000, doomed.length), entries: s.made.length, draft: live, aside: shelf.length };
 }
 
 // ---------------------------------------------------------------- routes
@@ -199,13 +253,7 @@ export async function tidy(env, kit) {
 async function drafts(request, env, parts, kit) {
   const method = request.method, what = parts[1] || "";
   if (!what && method === "GET") return listing(env, kit);
-  if (what === "current" && parts.length === 2 && method === "PUT") {
-    const b = await kit.body(request);
-    if (!UUID.test(b.id || "")) return kit.fail(400, "That draft has no name.");
-    const draft = { id: b.id, of: UUID.test(b.of || "") ? b.of : "", updated: Date.now(), snap: cleanSnap(b.snap, kit) };
-    await kit.saveDoc(env, "draft", draft);
-    return kit.json({ ok: true, updated: draft.updated });
-  }
+  if (what === "current" && parts.length === 2 && method === "PUT") return putCurrent(request, env, kit);
   if (what === "current" && parts.length === 2 && method === "DELETE") {
     await env.MEDIA.delete("data/draft.json");
     return kit.json({ ok: true });
@@ -225,6 +273,12 @@ async function drafts(request, env, parts, kit) {
     const obj = await env.MEDIA.get(jobKey(id, "thumb.jpg"));
     if (!obj) return kit.fail(404, "No picture.");
     return new Response(obj.body, { headers: { "Content-Type": "image/jpeg", "Content-Length": String(obj.size), "Cache-Control": "private, max-age=86400" } });
+  }
+  if (what === "saved" && method === "DELETE") {
+    const shelf = await kit.loadDoc(env, "drafts", []);
+    const left = (Array.isArray(shelf) ? shelf : []).filter((d) => d.id !== id);
+    if (left.length !== shelf.length) await kit.saveDoc(env, "drafts", left);    // its files go with the cleaner's next pass
+    return listing(env, kit);
   }
   if (what === "made" && method === "DELETE") {
     const all = await readAll(env, kit);

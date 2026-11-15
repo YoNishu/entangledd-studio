@@ -35,7 +35,7 @@ with sync_playwright() as p:
     print("shared:", pg.evaluate("JSON.stringify(window.__shared)"))
     print("clipboard has the caption:", pg.evaluate("navigator.clipboard.readText()") == cap.strip(), "| status:", pg.inner_text("#handoff-status"))
     pg.screenshot(path=S+"172_handoff_done.png"); pg.click("#handoff-close")
-    pg.click("#nav-posts"); pg.wait_for_timeout(2500)
+    pg.click("#nav-posts"); pg.click("#posts-part-drafts"); pg.wait_for_timeout(2500)      # the Drafts part of Posts
     print("Posts, waiting card:", pg.locator("#list-handoffs .card").first.inner_text().replace("\n"," | ")[:170], "| posted so far:", pg.locator("#list-posts .card").count())
     pg.screenshot(path=S+"173_posts_waiting.png")
     pg.locator("#list-handoffs button", has_text="Look for it now").click(); pg.wait_for_timeout(1200); print("looked too early:", pg.locator("#list-handoffs .card button").first.inner_text())
@@ -52,7 +52,7 @@ with sync_playwright() as p:
     pg.click("#make-reel"); print("second reel made:", wait(pg, "!document.getElementById('reel-result').hidden"))
     pg.click("#queue-add"); pg.wait_for_timeout(800); pg.reload(); pg.wait_for_timeout(1500)
     if pg.locator("#passcode").is_visible(): pg.fill("#passcode","letmein"); pg.click("#passcode-go"); pg.wait_for_timeout(1500)
-    pg.click("#nav-posts"); pg.wait_for_timeout(2500)
+    pg.click("#nav-posts"); pg.click("#posts-part-drafts"); pg.wait_for_timeout(2500)      # the Drafts part of Posts
     pg.locator("#list-queue button", has_text="Add a song in Instagram").click()
     print("from the waiting list: reel fetched, button ready:", wait(pg, "!document.getElementById('handoff-go').disabled", 20))
     pg.fill("#handoff-caption", "a second caption"); pg.click("#handoff-go"); pg.wait_for_timeout(1500)

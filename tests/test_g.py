@@ -78,9 +78,10 @@ with sync_playwright() as p:
     pg.click("#queue-add"); pg.wait_for_timeout(700); print("queue button:", pg.inner_text("#queue-add"))
     urllib.request.urlopen(f"{_W.URL}/__seed_posts")
     pg.click("#nav-posts"); pg.wait_for_timeout(2500)
+    pg.click("#posts-part-posted"); pg.wait_for_timeout(300)      # Posts has two parts: Posted, and Drafts (not yet on Instagram)
     print("week card:", pg.inner_text("#week-card").replace("\n"," | ")[:520])
     print("waiting:", pg.locator("#list-queue .card").count(), "|", pg.inner_text("#queue-note"), "|", pg.locator("#list-queue .card").first.inner_text().replace("\n"," | ")[:150])
-    pg.screenshot(path=S+"125_posts_week.png"); pg.locator("#queue-wrap").scroll_into_view_if_needed(); pg.screenshot(path=S+"126_posts_queue.png")
+    pg.screenshot(path=S+"125_posts_week.png"); pg.click("#posts-part-drafts"); pg.locator("#queue-wrap").scroll_into_view_if_needed(); pg.screenshot(path=S+"126_posts_queue.png")
     n_before=pg.locator("#list-posts .card").count()
     pg.locator("#list-queue .card .btn.primary").first.click(); pg.wait_for_timeout(700)
     print("post sheet:", pg.inner_text("#post-title")); pg.click("#post-write"); pg.wait_for_timeout(900); print("  caption:", pg.input_value("#post-caption")[:60].replace("\n"," "))
@@ -89,6 +90,7 @@ with sync_playwright() as p:
     print("after posting: waiting shown:", pg.evaluate("!document.getElementById('queue-wrap').hidden"), "| posts:", n_before, "->", pg.locator("#list-posts .card").count(), "| top:", pg.locator("#list-posts .card").first.inner_text().replace("\n"," | ")[:110])
 
     # --- Comments
+    pg.click("#posts-part-posted"); pg.wait_for_timeout(300)
     pg.locator("#list-posts .card .links button", has_text="Comments").first.click(); pg.wait_for_timeout(900)
     print("comments:", pg.locator("#comments-list .comment").count(), "|", pg.inner_text("#comments-note"))
     c=pg.locator("#comments-list .comment")

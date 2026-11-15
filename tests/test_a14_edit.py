@@ -89,7 +89,7 @@ with sync_playwright() as p:
 
     # ---- close the app and come back: Posts, Made, not posted ----
     pg.reload(); pg.wait_for_timeout(2500)
-    pg.click("#nav-posts")
+    pg.click("#nav-posts"); pg.click("#posts-part-drafts")      # Made, not posted is in the Drafts part of Posts
     pg.wait_for_selector("#list-made article", timeout=15000)
     card = pg.locator("#list-made article").first
     check("Made, not posted shows the reel with its first words and when it was made",
@@ -128,7 +128,7 @@ with sync_playwright() as p:
     check("the changed reel replaces it", made and len(made) == 1 and made[0]["snap"]["blocks"][0]["text"] == "the tide comes back for you", doc("made"))
 
     # ---- post it from the card ----
-    pg.click("#nav-posts")
+    pg.click("#nav-posts"); pg.click("#posts-part-drafts")      # Made, not posted is in the Drafts part of Posts
     pg.wait_for_selector("#list-made article", timeout=15000)
     pg.locator("#list-made article").first.get_by_role("button", name="Post").click()
     pg.wait_for_selector("#post-sheet:not([hidden])", timeout=10000)
@@ -139,7 +139,7 @@ with sync_playwright() as p:
     posts = doc("posts") or []
     check("the post is the changed reel", any(x.get("jobId") == job_c and x.get("state") == "published" for x in posts), posts)
     pg.click("#post-close") if pg.is_visible("#post-close") else None
-    pg.click("#nav-today"); pg.click("#nav-posts")
+    pg.click("#nav-today"); pg.click("#nav-posts"); pg.click("#posts-part-posted")
     pg.wait_for_function("document.getElementById('made-wrap').hidden && document.querySelector('#list-posts article')", timeout=15000)
     check("once posted it leaves Made, not posted", pg.is_hidden("#made-wrap"))
     ver = pg.locator("#list-posts article").first.get_by_role("button", name="Make a version of this")
