@@ -2,9 +2,14 @@
 // IMDb, Gemini with Google Search and OpenAI with web search. Loaded by server/dev.mjs; never part of the
 // real app. Every work here is made up; only the shapes of the answers are the real services' shapes.
 //
-//   GEMINI=on|429|refused|gone|memory|badkey   a Gemini key is set, and Gemini answers that way (no setting: no key;
-//                                        badkey: the key is not one Google knows, answered with 400 as Google does)
+//   GEMINI=on|429|refused|gone|memory|badkey|nosearch|nolist   a Gemini key is set, and Gemini answers that way (no
+//                                        setting: no key; badkey: the key is not one Google knows, answered with 400 as
+//                                        Google does; nosearch: the first model refuses the search tool, the next works;
+//                                        nolist: the list of models can't be read, so the built-in names are tried)
 //   OPENAI=on|429|refused|nomodel        the same for OpenAI
+//   GET /__gemini/v1beta/models, GET /__openai/v1/models   the lists of models a key may use (logged apart: /__lines_log?list=models)
+//   "The Late Thaw" is a made-up 2026 Chinese drama (春迟): asked about plainly, the pretend search brings back lines
+//   about the season; asked about with its facts, its lines, found on social posts behind Google's redirect links.
 //   SITES=ok|blocked|captcha|empty       how Goodreads and IMDb answer (default ok)
 //   WIKIQUOTE=ok|down                    Wikiquote answers, or turns everything away with 503
 //   GET /__lines_set?gemini=..&openai=..&sites=..&wikiquote=..   changes any of these while running ("off" takes a key away)
@@ -12,7 +17,7 @@
 //   GET /__lines_log                     every request these pretend services received, in order (?reset=1 empties it)
 const GEMINI_KEY = "dev-gemini-key", OPENAI_KEY = "dev-openai-key";
 const mode = { gemini: process.env.GEMINI || "off", openai: process.env.OPENAI || "off", sites: process.env.SITES || "ok", wikiquote: process.env.WIKIQUOTE || "ok", slow: "0" };
-let log = [];
+let log = [], listLog = [];
 
 export function env(PORT) {
   const at = `http://localhost:${PORT}`;
@@ -256,7 +261,12 @@ function verifyAnswer(prompt) {
     return { sites: ["quoteinvestigator.com", "wikiquote.org"], text: JSON.stringify({ author: "Ilse Varga", work: "", wording: "", misattributed: true,
       summary: "The pages say the line is really by Ilse Varga, from a 1997 interview.", pages: ["https://quoteinvestigator.com/2020/03/03/moon-minutes/"] }) };
   }
-  if (prompt.startsWith("Search the web for the ")) {
+  const titleQuestion = prompt.startsWith("Search the web for the ") && prompt.includes("that someone calls");
+  if (titleQuestion && /late thaw/i.test(titleIn(prompt))) {
+    return { sites: ["mydramalist.com", "en.wikipedia.org"], text: JSON.stringify({ title: "The Late Thaw", original: "春迟", aka: ["Late Thaw"], by: "Wen Lu", year: 2026, country: "Chinese",
+      cast: ["Lin Qiao", "Shen Mo"], kind: "series", page: "https://mydramalist.com/790001-the-late-thaw" }) };
+  }
+  if (titleQuestion) {
     const title = titleIn(prompt);
     if (unknown(title)) return { text: "{}", sites: [] };
     return { sites: ["en.wikipedia.org"], text: JSON.stringify({ title: "The Winter Ledger", by: "Hana Moll", year: 2017, kind: /^Search the web for the TV series/.test(prompt) ? "series" : /^Search the web for the film/.test(prompt) ? "film" : "book",
@@ -265,20 +275,63 @@ function verifyAnswer(prompt) {
   return null;
 }
 const unknown = (title) => /Nothing Online|Nobody Knows/.test(title);
+// The Late Thaw: a plain question finds lines about the season; one that says which work (its country or its
+// original title) finds the drama's lines, on Instagram, Pinterest and a page whose site Google does not name.
+function lateThaw(prompt) {
+  const title = titleIn(prompt);
+  if (!/late thaw/i.test(title) || !/^Search the web for (real quotes|the best lines|English quotes)/.test(prompt)) return null;
+  const knows = /Chinese|春迟/.test(prompt);
+  const lines = knows ? [
+    { text: "You don't have to bloom early to be worth the wait.", by: "Xia Lan", from: "The Late Thaw (春迟)", page: "https://www.instagram.com/p/LateThaw01/", also: "" },
+    { text: "I kept the window open all winter, in case you came back with the spring.", by: "Lu Yan", from: "The Late Thaw", page: "https://www.tumblr.com/latethaw/7001", also: "" },
+    { text: "Some people arrive like spring: late, and all at once.", by: "Xia Lan", from: "The Late Thaw", page: "https://www.instagram.com/p/LateThaw02/", also: "https://www.pinterest.com/pin/880001/" },
+    { text: "Spring is the season that forgives the winter for everything.", by: "Unknown", from: "", page: "https://www.pinterest.com/pin/880002/", also: "" },
+  ] : [
+    { text: "The late thaw is just the earth remembering how to be soft again.", by: "Unknown", from: "", page: "https://www.pinterest.com/pin/880003/", also: "" },
+    { text: "Every spring arrives late for someone who waited all winter.", by: "Anonymous", from: "Spring poems", page: "https://www.goodreads.com/quotes/tag/spring", also: "" },
+  ];
+  const text = JSON.stringify(lines);
+  const chunks = knows ? [{ web: { uri: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/IG1", title: "Instagram" } },
+    { web: { uri: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/PN1", title: "Pinterest" } },
+    { web: { uri: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/XX1", title: "Late Thaw quotes \u273f love lines" } }]
+    : [{ web: { uri: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/PN9", title: "pinterest.com" } }, { web: { uri: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/GR9", title: "goodreads.com" } }];
+  const support = (l, idx) => ({ segment: { startIndex: text.indexOf(l.text), endIndex: text.indexOf(l.text) + l.text.length, text: l.text }, groundingChunkIndices: idx });
+  const supports = knows ? [support(lines[0], [0]), support(lines[1], [2]), support(lines[2], [0, 1]), support(lines[3], [1])] : [support(lines[0], [0]), support(lines[1], [1])];
+  return { candidates: [{ content: { role: "model", parts: [{ text }] }, finishReason: "STOP", index: 0,
+    groundingMetadata: { webSearchQueries: [knows ? "The Late Thaw 2026 Chinese drama quotes" : "the late thaw quotes"], groundingChunks: chunks, groundingSupports: supports } }] };
+}
+// The lists of models each key may use, in the real shapes (with models the app must not pick among them).
+function modelList(who, req, url) {
+  listLog.push({ to: who, query: Object.fromEntries(url.searchParams) });
+  if (who === "gemini") {
+    if (req.headers["x-goog-api-key"] !== GEMINI_KEY || mode.gemini === "badkey") return [400, { error: { code: 400, message: "API key not valid. Please pass a valid API key.", status: "INVALID_ARGUMENT" } }];
+    if (mode.gemini === "nolist") return [503, { error: { code: 503, message: "The service is currently unavailable.", status: "UNAVAILABLE" } }];
+    const m = (name, methods = ["generateContent", "countTokens"]) => ({ name: "models/" + name, baseModelId: name.replace(/-\d{3}$/, ""), version: "001", displayName: name, supportedGenerationMethods: methods });
+    return [200, { models: [m("gemini-2.5-flash-preview-tts"), m("gemini-3.1-pro-preview"), m("gemini-3.5-flash-lite"), m("gemini-embedding-001", ["embedContent"]),
+      m("gemini-3.8-flash"), m("gemini-3.8-flash-image-preview"), m("imagen-5.0-generate", ["predict"]), m("gemma-4-27b-it")] }];
+  }
+  if (req.headers.authorization !== "Bearer " + OPENAI_KEY || mode.openai === "refused") return [401, { error: { message: "Incorrect API key provided.", type: "invalid_request_error", code: "invalid_api_key" } }];
+  const m = (id, created) => ({ id, object: "model", created, owned_by: "openai" });
+  return [200, { object: "list", data: [m("gpt-realtime-2.1", 1770000000), m("gpt-6-astra", 1771000000), m("gpt-image-2.6-flare", 1772000000), m("gpt-6.1-terra", 1773000000),
+    m("gpt-6-luna", 1769000000), m("gpt-6.1-sol", 1773500000), m("gpt-transcribe", 1760000000)] }];
+}
 function gemini(body, model) {
   const fail = (code, status, message) => ({ status: code, body: { error: { code, message, status } } });
   if (mode.gemini === "429") return fail(429, "RESOURCE_EXHAUSTED", "You exceeded your current quota, please check your plan and billing details.");
   if (mode.gemini === "refused") return fail(403, "PERMISSION_DENIED", "Grounding with Google Search is not available on the free tier for this project.");
   if (mode.gemini === "gone" && model === "gemini-3.8-flash") return fail(404, "NOT_FOUND", "This model models/gemini-3.8-flash is no longer available to new users. Please update your code to use a newer model.");
+  if (mode.gemini === "nosearch" && model === "gemini-3.8-flash") return fail(400, "INVALID_ARGUMENT", "Search Grounding is not supported for this model.");
   const asked = verifyAnswer(body.contents[0].parts[0].text);
+  const thaw = !asked && lateThaw(body.contents[0].parts[0].text);
+  if (thaw) return { status: 200, body: thaw };
   if (asked) return { status: 200, body: { candidates: [{ content: { role: "model", parts: [{ text: asked.text }] }, finishReason: "STOP", index: 0,
     groundingMetadata: { webSearchQueries: ["who said it"], groundingChunks: asked.sites.map((site, i) => ({ web: { uri: `https://vertexaisearch.cloud.google.com/grounding-api-redirect/V${i}`, title: site } })), groundingSupports: [] } }] } };
   const title = titleIn(body.contents[0].parts[0].text);
   const lines = unknown(title) ? [] : [
-    { text: `Google found this first line from ${title}, word for word.`, by: "Someone in it", page: "https://www.goodreads.com/work/quotes/1", also: "" },
-    { text: `Google found this second line from ${title}, on one page only.`, by: "Someone in it", page: "https://www.goodreads.com/work/quotes/1", also: "" },
-    { text: `This third line about ${title} names a page that was never read.`, by: "", page: "https://made-up.example.org/quotes", also: "" },
-    { text: `Google found this fourth line from ${title}, named on a site it read.`, by: "", page: "https://www.imdb.com/title/tt1/quotes/", also: "" }];
+    { text: `Google found this first line from ${title}, word for word.`, by: "Someone in it", from: title, page: "https://www.goodreads.com/work/quotes/1", also: "" },
+    { text: `Google found this second line from ${title}, on one page only.`, by: "Someone in it", from: title, page: "https://www.goodreads.com/work/quotes/1", also: "" },
+    { text: `This third line about ${title} names a page that was never read.`, by: "", from: title, page: "https://made-up.example.org/quotes", also: "" },
+    { text: `Google found this fourth line from ${title}, named on a site it read.`, by: "", from: title, page: "https://www.imdb.com/title/tt1/quotes/", also: "" }];
   const text = "```json\n" + JSON.stringify(lines) + "\n```";
   const answer = { candidates: [{ content: { role: "model", parts: [{ text }] }, finishReason: "STOP", index: 0 }], usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 200, totalTokenCount: 320 }, modelVersion: model };
   if (mode.gemini !== "memory") {
@@ -302,9 +355,9 @@ function openai(body) {
     { type: "message", id: "msg_2", status: "completed", role: "assistant", content: [{ type: "output_text", text: asked.text, annotations: [] }] }] } };
   const title = titleIn(body.input);
   const lines = unknown(title) ? [] : [
-    { text: `OpenAI found this first line from ${title}, on two sites.`, by: "Someone in it", page: "https://www.goodreads.com/work/quotes/2", also: "https://www.imdb.com/title/tt2/quotes/" },
-    { text: `OpenAI found this second line from ${title}, on one site.`, by: "", page: "https://www.goodreads.com/work/quotes/2", also: "" },
-    { text: `This third line about ${title} names a page that was never opened.`, by: "", page: "https://made-up.example.org/quotes", also: "" }];
+    { text: `OpenAI found this first line from ${title}, on two sites.`, by: "Someone in it", from: title, page: "https://www.goodreads.com/work/quotes/2", also: "https://www.imdb.com/title/tt2/quotes/" },
+    { text: `OpenAI found this second line from ${title}, on one site.`, by: "", from: title, page: "https://www.goodreads.com/work/quotes/2", also: "" },
+    { text: `This third line about ${title} names a page that was never opened.`, by: "", from: title, page: "https://made-up.example.org/quotes", also: "" }];
   const text = JSON.stringify(lines);
   return { status: 200, body: { id: "resp_1", object: "response", status: "completed", model: body.model, output: [
     { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: `"${title}" quotes`,
@@ -317,7 +370,9 @@ function openai(body) {
 export async function handle(req, res, url, tools) {
   const p = url.pathname;
   const send = (status, out, type = "application/json") => { res.writeHead(status, { "Content-Type": type }).end(typeof out === "string" ? out : JSON.stringify(out)); return true; };
+  if (p === "/__lines_log" && url.searchParams.get("list") === "models") { const was = listLog; if (url.searchParams.get("reset")) listLog = []; return send(200, was); }
   if (p === "/__lines_log") { const was = log; if (url.searchParams.get("reset")) log = []; return send(200, was); }
+  if (req.method === "GET" && (p === "/__gemini/v1beta/models" || p === "/__openai/v1/models")) return send(...modelList(p.includes("gemini") ? "gemini" : "openai", req, url));
   if (p === "/__lines_set") {
     for (const [k, v] of url.searchParams) if (k in mode) mode[k] = v;
     for (const [k, name, key] of [["gemini", "GEMINI_API_KEY", GEMINI_KEY], ["openai", "OPENAI_API_KEY", OPENAI_KEY]]) { if (mode[k] === "off") delete tools.env[name]; else tools.env[name] = key; }

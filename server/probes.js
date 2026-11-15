@@ -13,7 +13,7 @@
    if it stays that way for three days. */
 import { hide, dayIST, RECONNECT } from "./health.js";
 import { upkeepState } from "./upkeep.js";
-import { A_DAY, GEMINI_MODELS, OPENAI_MODELS } from "./findlines.js";
+import { A_DAY, FEATURES, listModels, sayTrail, stepsText } from "./findlines.js";
 
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
 const SLOW_MS = 15000;
@@ -300,20 +300,17 @@ function probeErrors(env, kit, ctx) {
 // The free places, as data/lookups.json names them, and the two search helpers with their settings.
 const PLACES = [["wikiquote", "Wikiquote"], ["quoteinvestigator", "Quote Investigator"], ["goodreads", "Goodreads"], ["imdb", "IMDb"],
   ["wikipedia", "Wikipedia"], ["openlibrary", "Open Library"]];
-const HELPERS = [["gemini", "Gemini", "GEMINI_API_KEY", "GEMINI_MODEL", GEMINI_MODELS, "Google AI Studio (aistudio.google.com), API keys"],
-  ["openai", "OpenAI", "OPENAI_API_KEY", "OPENAI_MODEL", OPENAI_MODELS, "platform.openai.com, API keys"]];
+const HELPERS = [["gemini", "Gemini", "GEMINI_API_KEY", "GEMINI_MODEL", "Google AI Studio (aistudio.google.com), API keys"],
+  ["openai", "OpenAI", "OPENAI_API_KEY", "OPENAI_MODEL", "platform.openai.com, API keys"]];
 const LAST = { worked: "worked", limit: "stopped at the app's daily limit", "used up": "stopped: the account's allowance was used up",
-  refused: "was refused", "no model": "found no model it may use", "no answer": "got no answer" };
+  refused: "was refused", "may not search": "was refused the search tool", "no model": "found no model it may use", "no answer": "got no answer" };
+// The features that search the web through Gemini or OpenAI, as data/lookups.json names them (findlines.js).
+const FEATURE_NAMES = { lookup: "quotes from a work", discover: "finding new lines", echo: "checking new lines", check: "\"Who said this?\"", title: "checking a title" };
+const USE_SAID = { found: "worked", answered: "answered", "all rejected": "answered, but every line was left out", "no answer": "got no answer",
+  "key refused": "was refused: the key", "may not search": "was refused the search tool", "no model": "found no model", "used up": "stopped: allowance used up",
+  limit: "stopped at the app's daily limit", resting: "rested after an earlier refusal" };
+const BAD_USE = new Set(["key refused", "may not search", "no model", "used up"]);
 const inCloudflare = (name) => `In Cloudflare: Workers & Pages, entangledd-studio, Settings, Variables and Secrets. Edit ${name}, paste the new value, then Deploy.`;
-
-// Is the key accepted, and is the model offered? Reading a model's details asks nothing and costs nothing.
-async function keyAnswer(env, who, model) {
-  const res = who === "gemini"
-    ? await fetch(`${env.GEMINI_API || "https://generativelanguage.googleapis.com"}/v1beta/models/${model}`, { headers: { "x-goog-api-key": env.GEMINI_API_KEY }, signal: AbortSignal.timeout(SLOW_MS) })
-    : await fetch(`${env.OPENAI_API || "https://api.openai.com"}/v1/models/${model}`, { headers: { Authorization: "Bearer " + env.OPENAI_API_KEY }, signal: AbortSignal.timeout(SLOW_MS) });
-  if (res.body) await res.body.cancel().catch(() => {});
-  return res.ok ? "ok" : [400, 401, 403].includes(res.status) ? "refused" : res.status === 404 ? "no model" : "unknown";
-}
 
 async function probeLookups(env, kit) {
   const title = "Looking things up";
@@ -330,25 +327,40 @@ async function probeLookups(env, kit) {
   }
   if (soon.length) fix.push("Nothing urgent: what isn't found comes from the other places, and from Nishiii's memory, clearly marked.",
     ...(soon.some((x) => /^(Goodreads|IMDb)/.test(x)) ? ["If Goodreads or IMDb keep turning the app away, stop asking them: " + inCloudflare("QUOTE_SITES").replace("paste the new value", "set it to off")] : []));
-  for (const [id, name, KEY, MODEL, DEFAULT, where] of HELPERS) {
+  for (const [id, name, KEY, MODEL, where] of HELPERS) {
     if (!env[KEY]) { said.push(`${name}: no key.`); continue; }
-    const models = String(env[MODEL] || DEFAULT).split(",").map((m) => m.trim()).filter((m) => /^[a-z0-9.-]+$/i.test(m)).slice(0, 2);
-    let answer = "unknown";
-    try { for (const m of models) { answer = await inTime(keyAnswer(env, id, m), name); if (answer !== "no model") break; } }
-    catch (e) { answer = "unknown"; }
+    // The list of models the key may use: reading it asks nothing and costs nothing.
+    let got;
+    try { got = await inTime(listModels(env, id, SLOW_MS), name); } catch (e) { got = null; }
     const l = last[id], calls = today ? (rec[id] || {}).calls || 0 : 0;
     const lastly = l && LAST[l.what] ? ` The last search ${LAST[l.what]} on ${dayIST(l.at)}.` : "";
-    if (answer === "refused") {
-      said.push(`${name} refuses its key.${lastly}`); urgent.push(`${name} refuses its key`);
+    const refused = got && [400, 401, 403].includes(got.status) && !got.list.length;
+    if (refused) {
+      said.push(`${name} refuses its key (status ${got.status}${got.said ? `: "${hide(got.said)}"` : ""}).${lastly}`); urgent.push(`${name} refuses its key`);
       fix.push(`Make a new ${name} key: ${where}.`, inCloudflare(KEY));
-    } else if (answer === "no model") {
-      said.push(`${name} no longer offers the models the app asks for (${models.join(", ")}).`); soon.push(`${name} no longer offers the app's models`);
+    } else if (got && got.status === 200 && !got.list.length && !env[MODEL]) {
+      said.push(`${name} lists no model the app can search with.`); soon.push(`${name} offers none of the app's models`);
       fix.push(`Find a current ${name} model that can search the web, then ${inCloudflare(MODEL).replace("In Cloudflare", "in Cloudflare").replace("paste the new value", "type its name")}`);
-    } else if (l && l.what === "refused") {
+    } else if (l && (l.what === "refused" || l.what === "may not search")) {
       said.push(`${name} accepts the key but refused to search.${lastly}`); soon.push(`${name} refuses to search`);
       fix.push(`In ${where.split(",")[0]}, check that the plan allows web search, or remove ${KEY} in Cloudflare.`);
-    } else said.push(`${name}: ${answer === "ok" ? "key accepted" : "couldn't be asked just now"}, ${calls} of ${A_DAY[id]} searches today.${lastly}`);
+    } else {
+      const models = env[MODEL] ? `the setting ${MODEL}: ${env[MODEL]}` : got && got.list.length ? `models it may use: ${got.list.join(", ")}` : "";
+      said.push(`${name}: ${got && got.status === 200 ? "key accepted" : "couldn't be asked just now"}${models ? `, ${models}` : ""}, ${calls} of ${A_DAY[id]} searches today.${lastly}`);
+    }
   }
+  // Each feature that searches: how its last search went.
+  const uses = rec.uses || {};
+  const perFeature = FEATURES.filter((f) => uses[f]).map((f) => {
+    const u = uses[f];
+    const bits = [u.who === "gemini" ? "Gemini" : u.who === "openai" ? "OpenAI" : u.who, u.model, u.status && `status ${u.status}`, u.why, u.said && `"${hide(u.said)}"`].filter(Boolean).join(", ");
+    if (BAD_USE.has(u.what) && !soon.some((x) => x.startsWith("A search"))) soon.push("A search was refused");
+    return `${FEATURE_NAMES[f]}: ${USE_SAID[u.what] || u.what} on ${dayIST(u.at)} (${bits})`;
+  });
+  if (perFeature.length) said.push(`Last search, by feature. ${perFeature.join("; ")}.`);
+  // The last look at a work, step by step.
+  const trail = (Array.isArray(rec.trails) ? rec.trails : []).filter((t) => t && t.type !== "discover" && t.type !== "echo" && t.type !== "check" && t.type !== "title").pop();
+  if (trail) said.push(`Last look, for "${hide(trail.title)}" on ${dayIST(trail.at)}: ${sayTrail(trail.steps, trail.n)} In full: ${hide(stepsText(trail.steps)).slice(0, 900)}`);
   const state = urgent.length ? "attention" : soon.length ? "soon" : "ok";
   const line = (state === "ok" ? "Working. " : "") + (said.length ? said.join(" ") : "Nothing has been looked up yet.");
   return { title, state, line, brief: [...urgent, ...soon].join("; "), ...(fix.length && state !== "ok" ? { fix } : {}) };

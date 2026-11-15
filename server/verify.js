@@ -127,9 +127,12 @@ async function helperEvidence(env, kit, state, quote, author, until) {
     if (!on || until - Date.now() < 2500) continue;
     const got = await search(env, kit, state, CHECK_QUESTION(quote, author), left(until, 12000));
     if (!got || !got.read.length) continue;                 // nothing read on the web: an answer from memory is not evidence
+    const who = search === F.geminiSearch ? "gemini" : "openai";
     let a;
-    try { a = kit.parseJson(got.said); } catch (e) { continue; }
-    if (!a || typeof a !== "object" || Array.isArray(a)) continue;
+    try { a = kit.parseJson(got.said); } catch (e) { a = null; }
+    if (!a || typeof a !== "object" || Array.isArray(a)) { F.noteUse(state, who, "all rejected", { model: got.model, why: "an answer that was not the asked shape" }); F.step(state, who, "no line passed", { model: got.model, why: "an answer that was not the asked shape" }); continue; }
+    F.noteUse(state, who, "found", { model: got.model, n: 1 });
+    F.step(state, who, "found", { model: got.model, n: 1, read: [...new Set(got.read.map((r) => r.site || "a page Google did not name"))].slice(0, 5) });
     const wasRead = (u) => got.read.some((r) => F.hostOf(u) === r.site || F.hostOf(u).endsWith("." + r.site));
     const named = (Array.isArray(a.pages) ? a.pages : []).map((u) => kit.foundAt(u)).filter((u) => u && wasRead(u));
     const url = named[0] || got.read[0].uri;
@@ -157,7 +160,7 @@ Reply with a JSON object only: {"verdict": "matches" | "different_author" | "alt
 
 // The verdict on one quote: { verdict, author, work, wording, note, basis: "web" | "memory", sources: [{ url, site, title }] }.
 export async function checkLine(env, kit, quote, author) {
-  const state = F.newState(env, CHECK_SECONDS), until = state.began + state.limit;
+  const state = { ...F.newState(env, CHECK_SECONDS), feature: "check", trail: [] }, until = state.began + state.limit;
   await F.openRecord(env, kit, state);
   const free = await Promise.all([
     guarded(state, "wikiquote", () => wikiquoteEvidence(env, kit, state, quote, author, until)),
@@ -165,6 +168,7 @@ export async function checkLine(env, kit, quote, author) {
   ]);
   let evidence = free.flat();
   if (!evidence.length) evidence = await helperEvidence(env, kit, state, quote, author, until);
+  if (state.trail.length) F.keepTrail(state, { title: "(check)", type: "check" }, state.trail, evidence.length);
   await F.closeRecord(env, kit, state);
   // Pages about misattribution (Wikiquote's "Misattributed" and "Disputed" sections, Quote Investigator) first.
   evidence = evidence.sort((a, b) => !!b.first - !!a.first).slice(0, 4);
@@ -196,7 +200,8 @@ function distance(a, b) {
 export function closeness(kit, typed, real) {
   const a = bare(kit, typed), b = bare(kit, real);
   if (!a || !b) return "";
-  if (a === b) return "same";
+  // "The early spring cdrama" is "The Early Spring": what people add to say what a work is does not count.
+  if (a === b || (F.coreTitle(kit, typed) && F.coreTitle(kit, typed) === F.coreTitle(kit, real))) return "same";
   if (distance(a, b) <= Math.max(1, Math.floor(Math.max(a.length, b.length) / 6))) return "close";
   if (b.startsWith(a + " ") && a.split(" ").length >= 2) return "close";
   return "";
@@ -209,6 +214,8 @@ const KIND_FITS = {
 const kindOf = (desc, allowed) => allowed.find((k) => KIND_FITS[k].test(desc)) || "";
 const yearIn = (t) => Number((/\b(1[5-9]\d\d|20\d\d)\b/.exec(String(t || "")) || [])[1]) || 0;
 const surname = (kit, name) => words(kit, name).pop() || "";
+// The country in a short description such as "2026 Chinese television series": the capitalised word before the kind.
+const countryIn = (desc) => (/\b((?:South |North )?[A-Z][a-z]+(?:ese|ian|ish|ch|an|i))\s+(?:[a-z]+\s+){0,2}(?:television|tv|film|drama|novel|series|web)\b/.exec(String(desc || "")) || [])[1] || "";
 
 // Open Library's search for a book.
 async function openLibrary(env, kit, state, item, until) {
@@ -234,25 +241,30 @@ async function wikipedia(env, kit, state, item, kind, until) {
     const desc = String(p.description || ""), k = kindOf(desc, allowed);
     if (!k || /disambiguation/i.test(desc)) return null;
     return { title: kit.oneLine(String(p.title || "").replace(/\s*\([^)]*\)\s*$/, ""), 120), by: kit.oneLine((/\bby ([^,;()]+?)\s*$/.exec(desc) || [])[1], 80),
-      year: yearIn(desc), kind: k, site: "wikipedia.org", page: "https://en.wikipedia.org/wiki/" + encodeURIComponent(String(p.title).replace(/ /g, "_")) };
+      year: yearIn(desc), kind: k, country: countryIn(desc), about: kit.oneLine(desc, 120), site: "wikipedia.org", page: "https://en.wikipedia.org/wiki/" + encodeURIComponent(String(p.title).replace(/ /g, "_")) };
   }).filter(Boolean);
 }
 // Gemini or OpenAI, when the free places found nothing.
-const TITLE_QUESTION = (item, kind) => `Search the web for the ${{ book: "book", film: "film", series: "TV series" }[kind]} that someone calls "${item.title}"${kind === "book" && item.author ? ` by ${item.author}` : ""}. The title may be misspelt.
-Reply with a JSON object only, no other text: {"title": "its proper title", "by": "the author of a book, or the director or creator", "year": the year it first came out as a number, "kind": "book" or "film" or "series", "page": "the address of a page that confirms it"}
+const TITLE_QUESTION = (item, kind) => `Search the web for the ${{ book: "book", film: "film", series: "TV series" }[kind]} that someone calls "${item.title}"${kind === "book" && item.author ? ` by ${item.author}` : ""}. Which ${{ book: "book", film: "film", series: "film or series" }[kind]} is it? The title may be misspelt, or be a common phrase that is also the name of a new work.
+Reply with a JSON object only, no other text: {"title": "its proper title in English", "original": "its title in its original language, or an empty string", "aka": ["other English titles it goes by"], "by": "the author of a book, or the director or creator", "year": the year it first came out as a number, "country": "the country it is from, as an adjective, such as Chinese", "cast": ["up to three lead actors, for a film or series"], "kind": "book" or "film" or "series", "page": "the address of a page that confirms it"}
 Reply with {} if no such work is found. Never answer from memory.`;
 async function helperTitle(env, kit, state, item, kind, until) {
   for (const [search, on] of [[F.geminiSearch, env.GEMINI_API_KEY], [F.openaiSearch, env.OPENAI_API_KEY]]) {
     if (!on || until - Date.now() < 2500) continue;
     const got = await search(env, kit, state, TITLE_QUESTION(item, kind), left(until, 10000));
     if (!got || !got.read.length) continue;
+    const who = search === F.geminiSearch ? "gemini" : "openai";
+    const rejected = (why) => { F.noteUse(state, who, "all rejected", { model: got.model, why }); F.step(state, who, "no line passed", { model: got.model, why }); };
     let a;
-    try { a = kit.parseJson(got.said); } catch (e) { continue; }
-    if (!a || !a.title) continue;
+    try { a = kit.parseJson(got.said); } catch (e) { a = null; }
+    if (!a || !a.title) { rejected("no such work in the answer"); continue; }
     const page = kit.foundAt(a.page);
     const k = ["book", "film", "series"].includes(a.kind) ? a.kind : kind;
-    if (kind === "book" ? k !== "book" : k === "book") continue;
+    if (kind === "book" ? k !== "book" : k === "book") { rejected("a work of another kind"); continue; }
+    F.noteUse(state, who, "found", { model: got.model, n: 1 });
+    const list = (v, n) => (Array.isArray(v) ? v : []).map((x) => kit.oneLine(x, 80)).filter(Boolean).slice(0, n);
     return [{ title: kit.oneLine(a.title, 120), by: kit.oneLine(a.by, 80), year: Number(a.year) || 0, kind: k,
+      original: kit.oneLine(a.original, 80), aka: list(a.aka, 4), country: kit.oneLine(a.country, 40).replace(/[^A-Za-z -]/g, ""), cast: list(a.cast, 3),
       site: page ? F.hostOf(page) : got.read[0].site, page: page && got.read.some((r) => F.hostOf(page).endsWith(r.site)) ? page : got.read[0].uri }];
   }
   return [];
@@ -260,8 +272,13 @@ async function helperTitle(env, kit, state, item, kind, until) {
 
 // What the web knows of a work she added: { titleChecked, known, maybe } to keep on the item. "known" is set
 // when the title she typed is a real one; "maybe" when a real title is close to hers (offered, never applied).
-export async function checkTitle(env, kit, item, kind) {
-  const state = F.newState(env, TITLE_SECONDS), until = state.began + state.limit;
+// "outer" is the tally of a look that is under way (findlines.js): the check then spends from it, writes its
+// outcome on that look's trail, and leaves the record for the look to save.
+export async function checkTitle(env, kit, item, kind, outer = null) {
+  const state = outer || { ...F.newState(env, TITLE_SECONDS), trail: [] };
+  const feature = state.feature;
+  state.feature = "title";
+  const until = outer ? Math.min(outer.began + outer.limit, Date.now() + TITLE_SECONDS * 1000) : state.began + state.limit;
   await F.openRecord(env, kit, state);
   const fits = (c) => !(kind === "book" && item.author && c.by && !words(kit, c.by).includes(surname(kit, item.author)));
   const pick = (list) => {
@@ -273,14 +290,25 @@ export async function checkTitle(env, kit, item, kind) {
   if (kind === "book") hit = pick(await guarded(state, "openlibrary", () => openLibrary(env, kit, state, item, until)));
   if (!hit || hit.how !== "same") hit = pick(await guarded(state, "wikipedia", () => wikipedia(env, kit, state, item, kind, until))) || hit;
   if (!hit) hit = pick(await helperTitle(env, kit, state, item, kind, until));
-  await F.closeRecord(env, kit, state);
+  state.feature = feature;
   const out = { titleChecked: Date.now(), known: null, maybe: null };
-  if (!hit) return out;
-  const found = { title: hit.c.title, by: hit.c.by, year: hit.c.year, kind: hit.c.kind, page: hit.c.page, site: hit.c.site };
-  // Her title, of her kind: kept as known. A spelling or a kind that differs from hers: offered.
-  if (hit.how === "same" && found.kind === kind) out.known = { ...found, title: item.title };
+  if (!hit) { F.step(state, "title", "unknown", { why: `no work called "${kit.oneLine(item.title, 80)}" was found` }); await closeTitle(env, kit, state, item, outer); return out; }
+  const c = hit.c;
+  const found = { title: c.title, by: c.by, year: c.year, kind: c.kind, page: c.page, site: c.site,
+    ...Object.fromEntries(["original", "aka", "country", "cast", "about"].filter((k) => c[k] && c[k].length).map((k) => [k, c[k]])) };
+  // Her title, of her kind: kept as known (with the proper title as "real"). A spelling or a kind that differs from hers: offered.
+  if (hit.how === "same" && found.kind === kind) out.known = { ...found, title: item.title, real: c.title };
   else out.maybe = found;
+  F.step(state, "title", out.known ? "known" : "close title", { why: [c.title, c.original, c.year, c.country, c.kind, (c.cast || []).join(", "), c.site && `from ${c.site}`].filter(Boolean).join(", ") });
+  await closeTitle(env, kit, state, item, outer);
   return out;
+}
+
+// A title check on its own (from the Library) keeps its trail and saves the record; inside a look, the look does.
+async function closeTitle(env, kit, state, item, outer) {
+  if (outer) return;
+  F.keepTrail(state, { title: kit.oneLine(item.title, 120), type: "title" }, state.trail, 0);
+  await F.closeRecord(env, kit, state);
 }
 
 // Her answer to "Did you mean ...?": the title she accepted takes the place of hers (and its author, when she

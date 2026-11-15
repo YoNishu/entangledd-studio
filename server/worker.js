@@ -29,6 +29,7 @@ import * as findlines from "./findlines.js";      // real lines from books, film
 import * as verify from "./verify.js";            // quotes and titles looked up on the web: who said it, which work it is
 import * as engine from "./engine.js";            // the pool of quotes from every source, and one score for all of them
 const SECTIONS = [health, scorer, lovenotes, upkeep, engine];
+SECTIONS.push(findlines);                        // GET /api/lookups: the trail of the last look-ups, for Nishith
 
 // The daily reminder to post is a section too (its routes are under /api/reminders); it also has a few
 // lines of its own at the top of scheduled(), near the end of this file.
@@ -334,6 +335,17 @@ async function libraryRoutes(request, env, parts) {
     const fresh = now[kind].find((x) => x.id === id);
     if (fresh && norm(fresh.title) === norm(work.title)) { Object.assign(fresh, learnt); await saveDoc(env, "library", now); }
     return json(now);
+  }
+  if ((kind === "books" || kind === "screen") && id && parts[3] === "look" && method === "POST") {
+    // "Look again": this work looked up now (findlines.js), with the trail of what each place answered.
+    await findlines.lookAgain(env, kit, lib, kind, id);
+    return json({ ...emptyLibrary(), ...(await loadDoc(env, "library", emptyLibrary())) });
+  }
+  if ((kind === "books" || kind === "screen") && id && parts[3] === "merge" && method === "POST") {
+    // Two entries for one work: this one folded into the one she keeps.
+    findlines.merge(kit, lib, kind, id, String((await body(request)).into || ""));
+    await saveDoc(env, "library", lib);
+    return json(lib);
   }
   if ((kind === "books" || kind === "screen") && id && parts[3] === "found" && method === "POST") {
     // "Not the right one": the lines found for this work belong to another work of the same name.
@@ -723,7 +735,8 @@ async function suggestFrom(env, b, already) {
     const got = await findlines.forWorks(env, kit, lib, named, { room: count - fresh.length, also: pages.length ? 1 : 0, about, taste, seen, ranker });
     fresh.push(...got.items);
     short = got.short;
-    searchedFor = { works: named.map((x) => x.title), paid: false };
+    searchedFor = { works: named.map((x) => x.title), paid: false,
+      trail: short.map((x) => x.found && x.found.trail && x.found.trail.said).find(Boolean) || "" };
   }
   const want = count - fresh.length;
   const more = short.length + pages.length > 0 || !!about && !withText.length && !named.length;
@@ -745,10 +758,10 @@ async function suggestFrom(env, b, already) {
     let answer;
     if (works.length && env.CLAUDE_WEB_SEARCH === "on") {
       const got = await claudeSearching(env, { ...request, system: SUGGEST_SYSTEM + SEARCH_RULES, uses: Math.min(6, 2 + works.length) });
-      searchedFor = { works, paid: !got.off };
+      searchedFor = { ...searchedFor, works, paid: !got.off };
       answer = parseJson(got.text.trim() ? got.text : "[]");
     } else {
-      if (works.length) searchedFor = { works, paid: false };
+      if (works.length) searchedFor = { ...searchedFor, works, paid: false };
       answer = parseJson(await claude(env, { ...request, system: SUGGEST_SYSTEM }));
     }
     // On a subject alone: real lines on it already found on the web (the engine's bank) join what Nishiii offers.
@@ -767,7 +780,7 @@ async function suggestFrom(env, b, already) {
     if (searchedFor) {
       // Nothing anywhere: said plainly, with the one thing that always works.
       const names = searchedFor.works.slice(0, 3).join(", ");
-      throw new UserError(502, `Nishiii looked${searchedFor.paid ? " on the web too" : ""}, but found no real lines from ${names} yet. New books and series often have few quotes online at first. Add lines you love from it in the Library, with its title under "Where it's from", and Nishiii will use them.`);
+      throw new UserError(502, `Nishiii looked${searchedFor.paid ? " on the web too" : ""}, but found no real lines from ${names} yet.${searchedFor.trail ? " " + searchedFor.trail : ""} New books and series often have few quotes online at first. Add lines you love from it in the Library, with its title under "Where it's from", and Nishiii will use them.`);
     }
     throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
   }
