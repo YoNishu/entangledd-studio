@@ -23,7 +23,7 @@
     set: (v) => { try { localStorage.setItem(MEMO, JSON.stringify(v)); } catch (e) { /* no storage: asked afresh next time */ } },
     clear: () => { try { localStorage.removeItem(MEMO); } catch (e) { /* nothing to remove */ } },
   };
-  const state = { on: !!memo.get().on, time: memo.get().time || DEFAULT_TIME, busy: false, message: "" };
+  const state = { on: !!memo.get().on, time: memo.get().time || DEFAULT_TIME, missed: false, busy: false, message: "" };
 
   // ---------- what this phone can do ----------
   const isIphone = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -67,6 +67,7 @@
   });
   function settle(out) {
     state.on = !!out.on;
+    state.missed = !!out.on && !!out.missed;          // the last reminder for this phone never got through
     if (out.on) { state.time = out.time; memo.set({ on: true, time: out.time, looked: today() }); }
     else memo.clear();
   }
@@ -103,9 +104,9 @@
     if (document.activeElement !== $("remind-time")) $("remind-time").value = state.time;
     $("remind-test").hidden = !on;
     $("remind-test").disabled = state.busy;
-    $("remind-note").textContent = state.message || no || (on
-      ? `Every day at ${niceTime(state.time)}${inIndia() ? "" : " India time"}, unless you've already posted.`
-      : "One nudge a day. None on days you've already posted.");
+    $("remind-note").textContent = state.message || no || (!on ? "One nudge a day. None on days you've already posted."
+      : state.missed ? "The last reminder didn't get through. Tap Send a test to check."
+        : `Every day at ${niceTime(state.time)}${inIndia() ? "" : " India time"}, unless you've already posted.`);
   }
 
   // Runs one change: the switch and the test button wait meanwhile, and what went wrong is said in plain words.

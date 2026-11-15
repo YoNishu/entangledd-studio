@@ -346,7 +346,9 @@ export async function tick(env, kit, now = Date.now()) {
 
 // ---------------------------------------------------------------- the addresses the app calls
 
-const answer = (doc, sub) => ({ on: !!sub, time: sub ? sub.time : DEFAULT_TIME, phones: doc.subs.length });
+// A phone whose reminder failed on every try of its day. One miss that is still being tried again doesn't count.
+const missed = (sub) => sub.lastWhy === "failed" && (sub.tries || 0) >= TRIES_A_DAY;
+const answer = (doc, sub) => ({ on: !!sub, time: sub ? sub.time : DEFAULT_TIME, phones: doc.subs.length, ...(sub && missed(sub) ? { missed: true } : {}) });
 
 // Turning it on, or changing the time. "since" is when the time now kept was chosen (see dueDay).
 async function turnOn(request, env, kit, b) {
@@ -379,6 +381,7 @@ async function sendTest(env, kit, endpoint) {
     if (gone(result)) latest.subs = latest.subs.filter((s) => s.endpoint !== endpoint);
     const mine = latest.subs.find((s) => s.endpoint === endpoint);
     if (mine) mine.lastTest = now;
+    if (mine && delivered(result) && mine.lastWhy === "failed") mine.lastWhy = "tested";      // it gets through again
   });
   if (gone(result)) throw new kit.UserError(410, "This phone's reminder had lapsed. Turn it on again.");
   if (!delivered(result)) throw new kit.UserError(502, "The test couldn't be sent just now. Try again in a minute.");
@@ -391,10 +394,12 @@ export const routes = {
   // POST /api/reminders/state    { endpoint }            is it on for this phone, and for when?
   // POST /api/reminders/off      { endpoint }            turn it off for this phone
   // POST /api/reminders/test     { endpoint }            send this phone a test now
+  // GET  /api/reminders/health   how many phones, and how the last reminder went (the line healthCheck() makes)
   reminders: async (request, env, parts, kit) => {
     const what = parts[1] || "";
     if (parts.length > 2) return kit.fail(404, "Not found.");
     if (request.method === "GET" && !what) return kit.json({ key: (await keysFor(env, kit)).publicKey, time: DEFAULT_TIME, max: MAX_PHONES });
+    if (request.method === "GET" && what === "health") return kit.json(await healthCheck(env, kit));
     if (request.method !== "POST") return kit.fail(404, "Not found.");
     const b = await kit.body(request);
     if (!what) return kit.json(await turnOn(request, env, kit, b && typeof b === "object" ? b : {}));
@@ -416,8 +421,9 @@ export const routes = {
 
 // ---------------------------------------------------------------- for the health record
 
-// One line for "Check everything" in Settings: how many phones, and how the last reminder went.
-// Reads one small document and calls nothing outside.
+// One line about the reminders, in the shape the checks in health.js give ({ title, state, line, brief, fix }):
+// how many phones, and how the last reminder went. Reads one small document and calls nothing outside.
+// It is answered at /api/reminders/health; it is not yet one of the lines under "Check everything".
 export async function healthCheck(env, kit) {
   const title = "Daily reminder";
   const doc = await load(env, kit);
@@ -425,8 +431,7 @@ export async function healthCheck(env, kit) {
   if (!n) return { title, state: "off", brief: "", line: "No phone has the daily reminder on. It is turned on in Settings, under Daily reminder." };
   const phones = n === 1 ? "On for 1 phone" : `On for ${n} phones`;
   const times = [...new Set(doc.subs.map((s) => niceTime(s.time)))].join(", ");
-  // A phone whose reminder failed on every try of its day. One miss that is still being tried again is not raised.
-  const failing = doc.subs.filter((s) => s.lastWhy === "failed" && (s.tries || 0) >= TRIES_A_DAY);
+  const failing = doc.subs.filter(missed);
   if (failing.length) {
     const who = n === 1 ? "" : failing.length === n ? " to any of them" : ` to ${failing.length} of them`;
     return { title, state: "attention", brief: "the last daily reminder couldn't be sent",
