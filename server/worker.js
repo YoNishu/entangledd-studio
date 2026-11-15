@@ -600,7 +600,7 @@ async function generateSuggestions(env, count) {
   const pool = eng.gather(seen);
   const want = count;
   if (want > 0) {
-    const ask = pool.length >= 15 ? 5 : 8;      // Nishiii from memory: fewer when the other sources already offer plenty
+    const ask = pool.length >= 15 ? 5 : pool.length >= 6 ? 8 : 10;      // Nishiii from memory: fewer when the other sources offer plenty
     const brief = {
       count: ask,
       books: (lib.books || []).map((b) => ({ title: b.title, author: b.author })),

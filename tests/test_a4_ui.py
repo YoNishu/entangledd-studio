@@ -1,5 +1,6 @@
-"""Agent 4: what she sees of the scorer. One line in the Nishiii section, a thin progress line while learning,
-a quiet "Something different" tag on the wildcard once live, and the count back to 0 after Forget everything.
+"""Agent 4: what she sees of the scorer. One line in the Nishiii section (now written by the engine, Agent 9: what
+it has learnt, with no count to fifty and no progress line), a quiet "Something different" tag on the wildcard,
+and the count back to nothing after Forget everything.
 Run: python3 tests/test_a4_ui.py"""
 import where as _W
 import os
@@ -34,11 +35,10 @@ with sync_playwright() as p:
     serve(); put_log(history(20, 1, likes_calm_short, seed=3)); run_job()
     b, pg, errs = open_app(p)
     nishiii(pg)
-    check("the line reads 20 of 50", pg.text_content("#scorer-line") == "Learning from your picks: 20 of 50.", pg.text_content("#scorer-line"))
-    w = pg.evaluate("document.getElementById('scorer-fill').style.width")
-    check("the progress line is 40% full", w == "40%", w)
-    whole = pg.evaluate("document.getElementById('scorer-slot').textContent")
-    check("nothing else is written there while learning", whole == "Learning from your picks: 20 of 50.", repr(whole))
+    line = pg.text_content("#scorer-line")
+    print("     line:", line)
+    check("the line says what it learns from, from the first picks", line.startswith("Learning from 20 picks") and "50" not in line, line)
+    check("no progress line any more", pg.locator("#scorer-bar").count() == 0)
     pg.locator("#scorer-slot").scroll_into_view_if_needed()
     pg.screenshot(path=S + "a4_learning.png")
     check("no page errors", not errs, str(errs))
@@ -58,10 +58,9 @@ with sync_playwright() as p:
     pg.screenshot(path=S + "a4_wildcard.png")
     nishiii(pg)
     line = pg.text_content("#scorer-line")
-    check("the line says it is ranking", line.startswith("Now ranking your daily quotes by what you pick. Lately: "), line)
-    check("no progress line when live", pg.locator("#scorer-bar").count() == 0)
-    whole = pg.evaluate("document.getElementById('scorer-slot').textContent")
-    check("nothing else is written there when live", whole == line, repr(whole))
+    print("     line:", line)
+    check("the line says what it learnt, and that it is fairly sure", line.startswith("Learning from 60 picks") and "So far: you pick" in line and "Fairly sure now." in line, line)
+    check("no progress line", pg.locator("#scorer-bar").count() == 0)
     pg.locator("#scorer-slot").scroll_into_view_if_needed()
     pg.screenshot(path=S + "a4_live.png")
 
@@ -69,9 +68,8 @@ with sync_playwright() as p:
     unfold(pg)
     pg.click("#forget-all"); pg.wait_for_timeout(500)
     pg.click("#confirm-yes")
-    pg.wait_for_function("document.getElementById('scorer-line').textContent.includes('0 of 50')", timeout=15000)
-    check("after forgetting, the count starts again", pg.text_content("#scorer-line") == "Learning from your picks: 0 of 50.")
-    check("the progress line is empty again", pg.evaluate("document.getElementById('scorer-fill').style.width") == "0%")
+    pg.wait_for_function("document.getElementById('scorer-line').textContent.includes('first picks')", timeout=15000)
+    check("after forgetting, it starts again", pg.text_content("#scorer-line") == "Learning from your first picks.", pg.text_content("#scorer-line"))
     pg.locator("#scorer-slot").scroll_into_view_if_needed()
     pg.screenshot(path=S + "a4_forgot.png")
     log, m = doc("scorer/log"), doc("scorer/model")
@@ -95,14 +93,14 @@ with sync_playwright() as p:
     pg.click("#confirm-yes")
     pg.wait_for_function("document.getElementById('taste-note').textContent.startsWith('The profile was erased')", timeout=15000)
     pg.wait_for_timeout(1200)
-    check("after Forget the profile the count is as it was", pg.text_content("#scorer-line") == "Learning from your picks: 20 of 50.", pg.text_content("#scorer-line"))
+    check("after Forget the profile the count is as it was", pg.text_content("#scorer-line").startswith("Learning from 20 picks"), pg.text_content("#scorer-line"))
     check("and the stored record still holds her picks", sum(1 for r in doc("scorer/log")["rows"] if r["s"] == 1) == 20)
     unfold(pg); pg.click("#forget-all"); pg.wait_for_selector("#confirm-yes", state="visible", timeout=10000)
     said = pg.text_content("#confirm-body")
     check("the Forget everything pop-up names the record of picks", "the record of every quote you picked, skipped or reworded" in said, said)
     pg.screenshot(path=S + "a4_forget_all_popup.png")
     pg.click("#confirm-no"); pg.wait_for_timeout(800)
-    check("Cancel erases nothing", pg.text_content("#scorer-line") == "Learning from your picks: 20 of 50." and doc("scorer/model")["picks"] == 20)
+    check("Cancel erases nothing", pg.text_content("#scorer-line").startswith("Learning from 20 picks") and doc("scorer/model")["picks"] == 20)
     check("no page errors", not errs, str(errs))
     b.close()
 finish("scorer as she sees it")

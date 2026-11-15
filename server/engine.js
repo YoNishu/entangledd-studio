@@ -200,7 +200,7 @@ export function build(sig, now = Date.now()) {
   const taste = tasteOf(sig.tasteDoc), own = ownOf(lib, sig.rewords, sig.tagsDoc), pages = pagesOf(sig.insp, sig.tagsDoc, now);
   const aud = audienceOf(sig.posts, sig.tagsDoc), recent = recentOf(sig.history, sig.day, sig.posts, now);
   const ev = { picks: pickE, taste: taste.n / (taste.n + 2), own: own.n / (own.n + 5), pages: pages.n / (pages.n + 6), audience: aud.n / (aud.n + 10), trust: 1, fresh: 1 };
-  return { pick, pickN, pickState: state || "", lately: (m && m.lately) || "", taste, own, pages, aud, recent, ev, tagsDoc: sig.tagsDoc };
+  return { pick, pickN, picks: m ? Number(m.picks) || 0 : 0, pickState: state || "", lately: (m && m.lately) || "", taste, own, pages, aud, recent, ev, tagsDoc: sig.tagsDoc };
 }
 
 // ---------------------------------------------------------------- the parts: each gives { x, why }
@@ -308,23 +308,27 @@ export function choose(P, pool, want, already = [], { wild = true, mix = true } 
   const bump = (map, v) => v && map.set(v, (map.get(v) || 0) + 1);
   const note = (f) => { bump(count.theme, f.th); bump(count.author, f.a); bump(count.src, f.src); };
   for (const a of already) note(factsOf(a, P.tagsDoc));
-  const fits = (e) => (!e.f.th || (count.theme.get(e.f.th) || 0) < CAP.theme) && (!e.f.a || (count.author.get(e.f.a) || 0) < CAP.author)
-    && (count.src.get(e.f.src) || 0) < (e.f.src === "own" ? CAP.own : CAP.src);
+  // level 0: every cap; level 1: any number from one source (when one source is all there is), but still at most
+  // two per theme and per author; level 2: no caps (a batch from a single book, say).
+  const fits = (e, level = 0) => level >= 2 || ((!e.f.th || (count.theme.get(e.f.th) || 0) < CAP.theme) && (!e.f.a || (count.author.get(e.f.a) || 0) < CAP.author)
+    && (level >= 1 || (count.src.get(e.f.src) || 0) < (e.f.src === "own" ? CAP.own : CAP.src)));
   const buried = (e) => e.parts.taste <= BURIED * P.ev.taste * 0.999 && e.parts.taste < 0;
   const chosen = [];
   const take = (e) => { chosen.push(e); note(e.f); };
   const ownFirst = mix && !already.some((a) => factsOf(a, P.tagsDoc).src === "own") ? byScore.find((e) => e.f.src === "own" && !buried(e)) : null;
   if (ownFirst) take(ownFirst);
   const room = wild && want >= 3 ? want - 1 : want;
-  for (const e of byScore) { if (chosen.length >= room) break; if (!chosen.includes(e) && !buried(e) && fits(e)) take(e); }
+  for (const level of [0, 1]) for (const e of byScore) { if (chosen.length >= room) break; if (!chosen.includes(e) && !buried(e) && fits(e, level)) take(e); }
   let w = null;
   if (wild && want >= 3) {
     const themes = new Set(chosen.map((e) => e.f.th));
-    w = byScore.find((e) => !chosen.includes(e) && !buried(e) && e.parts.trust >= 0 && e.f.th && !themes.has(e.f.th) && fits(e))
-      || byScore.find((e) => !chosen.includes(e) && !buried(e) && fits(e)) || null;
+    for (const level of [0, 1]) {
+      w = w || byScore.find((e) => !chosen.includes(e) && !buried(e) && e.parts.trust >= 0 && e.f.th && !themes.has(e.f.th) && fits(e, level)) || null;
+    }
+    w = w || byScore.find((e) => !chosen.includes(e) && !buried(e) && fits(e, 1)) || null;
     if (w) take(w);
   }
-  for (const e of byScore) { if (chosen.length >= want) break; if (!chosen.includes(e) && !buried(e)) take(e); }
+  for (const level of [1, 2]) for (const e of byScore) { if (chosen.length >= want) break; if (!chosen.includes(e) && !buried(e) && fits(e, level)) take(e); }
   for (const e of byScore) { if (chosen.length >= want) break; if (!chosen.includes(e)) take(e); }
   const out = chosen.map((e) => ({ ...e.item, src: e.f.src, why: e.why, score: round(e.s), ...(e === w ? { wild: true } : {}) }));
   return mix ? shuffle(out) : out;
@@ -382,7 +386,7 @@ export function status(P, sig) {
   const found = findlines.keptPool({ norm: (t) => low(t, 400) }, sig.lib || {}, new Set(), 10000).length;
   const sources = { own: ((sig.lib || {}).quotes || []).length, found, discover: bank.lines.filter((l) => l.from === "discover").length, echo: bank.lines.filter((l) => l.from === "echo").length };
   const from = [];
-  if (P.pickN) from.push(`${P.pickN} pick${P.pickN === 1 ? "" : "s"} and skips`);
+  if (P.picks) from.push(`${P.picks} pick${P.picks === 1 ? "" : "s"}`);
   if (P.taste.n) from.push("what you told Nishiii");
   if (P.pages.n) from.push(`${P.pages.n} post${P.pages.n === 1 ? "" : "s"} from pages you follow`);
   if (P.aud.n) from.push(`${P.aud.n} of your posts`);
@@ -398,7 +402,7 @@ export function status(P, sig) {
   const line = [from.length ? `Learning from ${from.slice(0, -1).join(", ")}${from.length > 1 ? " and " : ""}${from[from.length - 1]}.` : "Learning from your first picks.",
     learnt.length ? `So far: ${learnt.slice(0, 2).join("; ")}.` : "", sure].filter(Boolean).join(" ");
   const parts = PARTS.map(([id, w]) => ({ id, name: PART_NAME[id], weight: round(w * P.ev[id]) }));
-  return { line, learnt, sources, parts, picks: P.pickN, state: P.pickState || "learning" };
+  return { line, learnt, sources, parts, picks: P.picks, state: P.pickState || "learning" };
 }
 
 // ---------------------------------------------------------------- timed jobs (one per tick; each well under 20 outside calls)

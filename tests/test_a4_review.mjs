@@ -179,7 +179,7 @@ console.log("4. A record that fails to load is left alone, and the status still 
   env.MEDIA.set("history", [{ text: "A line she just picked", action: "used", at: Date.now() }]);
   env.MEDIA.fail("get", "scorer/log", 5);
   const s = await status(env, kit);
-  check("the status still answers, from what was stored", s.status === 200 && s.data.picks === 30 && s.data.line === "Learning from your picks: 30 of 50.", JSON.stringify(s.data));
+  check("the status still answers, from what was stored", s.status === 200 && s.data.picks === 30 && s.data.line.startsWith("Learning from your picks: 30 so far"), JSON.stringify(s.data));
   check("and the record is still exactly as it was", env.MEDIA.raw("scorer/log") === kept);
   env.MEDIA.failing.length = 0;
 
@@ -369,7 +369,7 @@ console.log("6. Forget everything wins, even over a count that had already start
     check("the count under way saves nothing", cleared(env) && env.MEDIA.doc("scorer/model") === null, JSON.stringify(env.MEDIA.doc("scorer/model"))?.slice(0, 80));
     check("and reports an empty start", (out.picks || 0) === 0 && out.state !== "live", JSON.stringify(out).slice(0, 80));
     const s = await status(env, kit);
-    check("the line starts again from nothing", s.data.line === "Learning from your picks: 0 of 50.", s.data.line);
+    check("the line starts again from nothing", s.data.line === "Learning from your picks: none yet.", s.data.line);
   }
   {
     // the narrowest case: she forgets in the instant between that last look and the writing
@@ -384,7 +384,7 @@ console.log("6. Forget everything wins, even over a count that had already start
     const next = await job.run(env, kit);
     check("even then the next run puts it right", next.picks === 0 && cleared(env), `${next.picks} rows ${env.MEDIA.doc("scorer/log").rows.length}`);
     const s = await status(env, kit);
-    check("and the line reads 0 of 50", s.data.line === "Learning from your picks: 0 of 50.", s.data.line);
+    check("and the line says none yet", s.data.line === "Learning from your picks: none yet.", s.data.line);
   }
   {
     // forgetting when part of it fails: the error is passed on (so she is told), and a second tap finishes it

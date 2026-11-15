@@ -108,7 +108,7 @@ ask(T, [film], 2)
 keptTexts = {l["text"] for l in kept(film)}
 s, today, _ = http("GET", "/api/suggestions", token=T)
 mine = [i for i in today["items"] if i["text"] in keptTexts]
-check("today's five include a line found earlier", s == 200 and len(mine) == 1, texts(today["items"]) if s == 200 else today)
+check("today's five include a line found earlier (up to two: the engine takes at most two from one source)", s == 200 and 1 <= len(mine) <= 2, texts(today["items"]) if s == 200 else today)
 if mine: check("it carries its page and speaker, and needs no checking", mine[0]["source"].get("site") == "wikiquote.org" and mine[0]["verify"] is False and mine[0]["author"] in ("Mara", "Captain Ilves") and mine[0]["source"]["title"] == "The Long Tide", mine[0])
 
 # ---- Wikiquote itself cannot be reached: nothing breaks, it is noted, and it is left alone until tomorrow
