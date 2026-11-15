@@ -375,6 +375,34 @@ async function claudeRaw(env, { system, messages, maxTokens = 2000, tools }) {
   await health.saw(env, kit, "claude-ok");
   return res.json();
 }
+// ---------- looking lines up on the web ----------
+// For quotes from a particular book, film or series, Nishiii may search the web (Anthropic's web search tool),
+// so a new series or a modern book it knows little about still gives real, attributed lines.
+// Web search has to be switched on for the Anthropic account (Console, Settings, Privacy). Until it is, the
+// request is answered from memory alone, as it always was, and the answer says so.
+const SEARCH_TOOL = { type: "web_search_20250305", name: "web_search" };
+async function claudeSearching(env, { system, messages, maxTokens, uses = 4 }) {
+  let turn = messages, data;
+  try {
+    // A long search can come back as "pause_turn": hand the reply back and let it carry on (twice at most).
+    for (let round = 0; round < 3; round++) {
+      data = await claudeRaw(env, { system, messages: turn, maxTokens, tools: [{ ...SEARCH_TOOL, max_uses: uses }] });
+      if (data.stop_reason !== "pause_turn") break;
+      turn = [...messages, { role: "assistant", content: data.content }];
+    }
+  } catch (e) {
+    // A refusal of the request itself (400) almost always means web search is off for the account.
+    if (!(e instanceof UserError) || !/status 400\b/.test(e.message)) throw e;
+    console.error("web search refused, answering from memory");
+    return { text: await claude(env, { system, messages, maxTokens }), searched: false, off: true };
+  }
+  const blocks = data.content || [];
+  // The answer is the text after the last search result; anything before it is Claude thinking aloud.
+  const last = blocks.map((b) => b.type).lastIndexOf("web_search_tool_result");
+  const text = blocks.slice(last + 1).filter((b) => b.type === "text").map((b) => b.text).join("");
+  return { text, searched: blocks.some((b) => b.type === "server_tool_use"), off: false };
+}
+
 // Claude is asked for JSON only; this copes with stray text or code fences around it.
 function parseJson(text) {
   const t = String(text).replace(/```(?:json)?/gi, "");
@@ -495,6 +523,17 @@ Rules:
 - Do not repeat anything in the "avoid" list.
 - Order the array with the strongest match for her first.`;
 
+// Added to SUGGEST_SYSTEM when she asks for quotes from particular works, with web search available.
+const SEARCH_RULES = `
+
+Web search:
+- You can search the web. For every work in the "only" list whose exact lines you do not know well, search for them: quote pages (Goodreads, Wikiquote, fan wikis), transcripts, subtitles, reviews and articles that quote the work. Always search for a work you do not recognise; it may be new.
+- Keep a line only when a page you read gives its wording and says it is from that work. Copy the wording exactly as that page has it. Never fill gaps from memory or guess.
+- Add "found": the address of the page you took it from.
+- Set "verify" to false only when two separate pages give the same wording for the same work; otherwise true.
+- If nothing real can be found for a work, leave that work out. If nothing can be found at all, reply with [].
+- Your final reply is the JSON array only, with no other text.`;
+
 function shuffle(a) {
   for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
   return a;
@@ -555,8 +594,13 @@ async function generateSuggestions(env, count) {
 function cleanSuggestion(s, text) {
   const t = s.source && s.source.type;
   const type = ["book", "film", "series"].includes(t) ? t : "classic";
-  return { text, author: oneLine(s.author, 80), source: { type, title: oneLine(s.source && s.source.title, 120) },
+  return { text, author: oneLine(s.author, 80), source: { type, title: oneLine(s.source && s.source.title, 120), url: foundAt(s.found) || undefined },
     theme: oneLine(s.theme, 30), tone: oneLine(s.tone, 20), verify: s.verify !== false };
+}
+// The page a quote was found on, when it is a plain https address.
+function foundAt(v) {
+  try { const u = new URL(String(v || "").trim()); return u.protocol === "https:" && u.hostname.includes(".") ? u.href.slice(0, 300) : ""; }
+  catch (e) { return ""; }
 }
 
 // Quotes on request, from sources she picks: any mix of her books, films, series, pages she loves,
@@ -581,6 +625,7 @@ async function suggestFrom(env, b, already) {
   const seen = new Set([...history, ...day, ...already].map((x) => norm(x.text)));
   const fresh = [];
   const fromWorks = books.length + screen.length + pages.length > 0 || !!about;
+  let searchedFor = null;      // set when particular works were looked up (or would have been, with web search off)
 
   if (wantOwn) {
     const mine = shuffle((lib.quotes || []).filter((q) => !seen.has(norm(q.text)))).slice(0, fromWorks ? 2 : count);
@@ -611,8 +656,15 @@ async function suggestFrom(env, b, already) {
       avoid: [...history, ...day, ...already].slice(-120).map((x) => x.text),
       taste: taste || undefined,
     };
-    const answer = parseJson(await claude(env, { system: SUGGEST_SYSTEM, maxTokens: ranker ? 4000 : 2500,
-      messages: [{ role: "user", content: `Suggest ${ask} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] }));
+    // Particular books, films or series: Nishiii may look their lines up on the web (see claudeSearching).
+    const works = [...others, ...fallback].map((x) => x.title).concat(screen.map((x) => x.title));
+    const request = { maxTokens: ranker ? 4000 : 2500, messages: [{ role: "user", content: `Suggest ${ask} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] };
+    let answer;
+    if (works.length) {
+      const got = await claudeSearching(env, { ...request, system: SUGGEST_SYSTEM + SEARCH_RULES, uses: Math.min(6, 2 + works.length) });
+      searchedFor = { works, off: got.off };
+      answer = parseJson(got.text.trim() ? got.text : "[]");
+    } else answer = parseJson(await claude(env, { ...request, system: SUGGEST_SYSTEM }));
     const pool = [];
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
@@ -623,7 +675,15 @@ async function suggestFrom(env, b, already) {
     }
     fresh.push(...(ranker ? ranker.choose(pool, want, fresh) : pool));
   }
-  if (!fresh.length) throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
+  if (!fresh.length) {
+    if (searchedFor) {
+      const names = searchedFor.works.slice(0, 3).join(", ");
+      throw new UserError(502, searchedFor.off
+        ? `Nishiii doesn't know real lines from ${names} by heart, and looking them up on the web is switched off. Ask Nishith to switch on web search for the Anthropic account (Settings, Check everything, shows how). Meanwhile, add lines you love from it in the Library.`
+        : `Nishiii looked on the web too, but found no real lines from ${names} yet. New books and series often have few quotes online at first. Try again in a while, or add lines you love from it in the Library.`);
+    }
+    throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
+  }
   const now = Date.now();
   return fresh.map((f) => ({ id: crypto.randomUUID(), state: "new", askedFor: label, askedAt: now, ...f }));
 }

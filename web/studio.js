@@ -100,6 +100,15 @@
     return s.title ? `Well-known line, from ${s.title}` : "Well-known line";
   };
 
+  // Where Nishiii found a line on the web, as a link to that page (only for quotes looked up on the web).
+  function foundLink(source) {
+    let u;
+    try { u = new URL(source && source.url); } catch (e) { return null; }
+    if (u.protocol !== "https:") return null;
+    return el("a", { className: "src found", href: u.href, target: "_blank", rel: "noopener noreferrer",
+      textContent: "Found on " + u.hostname.replace(/^www\./, "") });
+  }
+
   // What actually happened to a suggestion, so "used" is never mistaken for "posted".
   function fateLine(item) {
     if (item.posted === "posted") return chip("ok", "Posted to Instagram");
@@ -118,6 +127,7 @@
       el("p", { className: "q", textContent: item.text }),
       item.author ? el("p", { className: "by", textContent: "— " + item.author }) : null,
       el("p", { className: "src", textContent: sourceLine(item.source) }),
+      foundLink(item.source),
       item.askedFor ? chip("info", `From: ${item.askedFor}`) : null,
       item.wild ? Object.assign(chip("info", "Something different"), { id: "wild-" + item.id }) : null,   // the scorer's wildcard (server/scorer.js)
       item.fromText ? chip("ok", "Copied word for word from the book's text")
