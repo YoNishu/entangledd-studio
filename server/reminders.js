@@ -314,23 +314,34 @@ export async function tick(env, kit, now = Date.now()) {
   const todo = owed.filter((o) => o.day);
   if (!todo.length) return { sent: 0 };
 
-  const words = new Map();                               // day -> what to say, or null: she has posted
-  for (const day of new Set(todo.map((o) => o.day))) words.set(day, await wordsFor(env, kit, day));
+  // Whatever goes wrong from here on (storage, the signing key), every phone still gets an outcome,
+  // so a day that was marked above is never left marked with nothing sent.
   const fresh = {};
-  if (todo.some((o) => words.get(o.day) !== null)) {
-    const keys = await keysFor(env, kit);
-    await Promise.all(todo.map(async (o) => {
-      const body = words.get(o.day), sub = before.subs.find((s) => s.endpoint === o.endpoint);
-      if (body !== null) o.result = await push(keys, before.tokens, fresh, sub, notice(sub, body, "daily-reminder"), { ttl: REMINDER_TTL, topic: "daily-reminder" }, now);
-    }));
+  try {
+    const words = new Map();                             // day -> what to say, or null: she has posted
+    for (const day of new Set(todo.map((o) => o.day))) words.set(day, await wordsFor(env, kit, day));
+    for (const o of todo) o.posted = words.get(o.day) === null;
+    const sending = todo.filter((o) => !o.posted);
+    if (sending.length) {
+      const keys = await keysFor(env, kit);
+      const subOf = (o) => before.subs.find((s) => s.endpoint === o.endpoint);
+      // One signed note per push service, made before the phones are served side by side.
+      for (const audience of new Set(sending.map((o) => new URL(o.endpoint).origin))) await tokenFor(keys, before.tokens, fresh, audience, now);
+      await Promise.all(sending.map(async (o) => {
+        o.result = await push(keys, before.tokens, fresh, subOf(o), notice(subOf(o), words.get(o.day), "daily-reminder"), { ttl: REMINDER_TTL, topic: "daily-reminder" }, now);
+      }));
+    }
+  } catch (e) {
+    console.error("reminders could not be prepared", e && e.message);
   }
+  for (const o of todo) if (!o.posted && !o.result) o.result = { status: 0, reason: "" };
 
   const count = { sent: 0, failed: 0, gone: 0, posted: 0 };
   await update(env, kit, (doc) => {
     Object.assign(doc.tokens, fresh);
     for (const o of todo) {
       const sub = doc.subs.find((s) => s.endpoint === o.endpoint);
-      if (!o.result) { count.posted++; if (sub) sub.lastWhy = "posted"; continue; }
+      if (o.posted) { count.posted++; if (sub) sub.lastWhy = "posted"; continue; }
       if (delivered(o.result)) { count.sent++; if (sub) { sub.lastWhy = "sent"; sub.lastSent = now; } continue; }
       if (gone(o.result)) { count.gone++; doc.subs = doc.subs.filter((s) => s.endpoint !== o.endpoint); continue; }
       count.failed++;
