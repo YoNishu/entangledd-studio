@@ -388,6 +388,14 @@ export async function extractPages(env, kit, state, urls) {
       if (!r || typeof r.raw_content !== "string" || !r.raw_content.trim()) continue;
       const md = r.raw_content.slice(0, PAGE_BYTES);
       out.set(addressKey(r.url), { text: mdText(md), links: md });
+      // (The proving run alone keeps a look at what came back: its size, how many quotation marks and "Name:"
+      // lines it holds, and three short pieces around quotation marks.)
+      if (Array.isArray(state.keepPages)) {
+        const t = mdText(md), spots = [...t.matchAll(/[“"]/g)].map((m) => m.index).filter((i) => i > 1200);
+        const at = [spots[0], spots[Math.floor(spots.length / 2)], spots[spots.length - 2]].filter((i) => i !== undefined);
+        state.keepPages.push({ url: String(r.url).slice(0, 120), chars: md.length, marks: (t.match(/[“”"]/g) || []).length, named: (t.match(/^[A-Z][A-Za-z .'-]{1,24}:\s+\S/gm) || []).length,
+          pages: lastPage(md), head: t.slice(0, 160), bits: [...new Set(at)].map((i) => t.slice(Math.max(0, i - 120), i + 220)) });
+      }
     }
     const failed = Array.isArray(data.failed_results) ? data.failed_results.length : 0;
     cap.extract = (cap.extract || 0) + out.size;            // only pages that were read count (and cost)

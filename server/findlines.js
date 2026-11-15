@@ -1369,9 +1369,9 @@ export const runClean = cleanJob;                // for the tests
 // without her phone. Bounded: PROOF_ROUNDS rounds a title for each PROOF_V, whoever calls, and never two within
 // 15 seconds; after that it only reads back what it has. It holds nothing of hers: the titles are fixed, the works
 // are kept apart from the Library (data/proof.json), and no taste or note is used.
-export const PROOF_V = 1;
+export const PROOF_V = 2;
 const PROOF_ROUNDS = 3;
-const PROOF_WORKS = [["The early spring", "series"], ["True beauty", "series"], ["Twisted love", "book"]];
+const PROOF_WORKS = [["The early spring", "series"], ["True beauty", "series"]];
 function proofView(rec, note) {
   return { v: rec.v, note, works: rec.works.map((w) => ({ title: w.title, type: w.type, rounds: w.rounds, done: !!w.done,
     known: w.item && w.item.known ? { real: w.item.known.real || "", year: w.item.known.year || 0, country: w.item.known.country || "", characters: (w.item.known.characters || []).length } : null,
@@ -1388,6 +1388,7 @@ async function proofRound(env, kit) {
   await kit.saveDoc(env, "proof", rec);                    // stamped first, so two calls at once do not both run a round
   const state = newState(env);
   state.keepRefused = [];                                  // (the proving run alone keeps what the judge refused, to be read here)
+  state.keepPages = [];                                    // (and a look at the pages that came back through Extract)
   const item = w.item || { id: w.id, title: w.title, type: w.type };
   const before = kept(item).length, began = Date.now();
   const entry = { round: w.rounds + 1 };
@@ -1399,6 +1400,7 @@ async function proofRound(env, kit) {
   try { await closeRecord(env, kit, state); } catch (e) { /* the record of look-ups is not what is being proven */ }
   entry.calls = state.spent; entry.ms = Date.now() - began;
   entry.refused = state.keepRefused.slice(0, 40);
+  entry.pages = state.keepPages.slice(0, 12);
   entry.gateRefused = state.refused || {};
   w.item = item; w.rounds += 1; w.log.push(entry);
   w.left = !!(item.found && item.found.more && O.leftToRead(env, withKnown(kit, item), item.found.more));
