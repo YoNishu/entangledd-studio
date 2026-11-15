@@ -10,7 +10,7 @@ with sync_playwright() as p:
     pg.goto(f"{_W.URL}/"); pg.wait_for_timeout(1000)
     pg.fill("#passcode","letmein"); pg.click("#passcode-go"); pg.wait_for_timeout(1800)
     pg.screenshot(path=S+"100_header.png", clip={"x":0,"y":0,"width":390,"height":140})
-    pg.click("#chat-open"); pg.wait_for_timeout(300)
+    pg.click("#nav-nishiii"); pg.wait_for_timeout(300)   # the chat is the Nishiii tab's first part
     def say(t, wait=1500):
         pg.fill("#chat-input", t); pg.click("#chat-send"); pg.wait_for_timeout(wait)
         return pg.locator("#chat-log p").last.inner_text().replace("\n"," / ")
@@ -23,8 +23,8 @@ with sync_playwright() as p:
     print("6:", say("hello"))
     pg.screenshot(path=S+"101_chat.png")
     pg.locator("#chat-log .act").first.click(); pg.wait_for_timeout(400)
-    print("create open:", pg.evaluate("!document.getElementById('view-create').hidden"), "| chat closed:", pg.evaluate("document.getElementById('chat').hidden"))
-    pg.click("#nav-nishiii"); pg.wait_for_timeout(1000)
+    print("create open:", pg.evaluate("!document.getElementById('view-create').hidden"), "| Nishiii hidden:", pg.evaluate("document.getElementById('view-nishiii').hidden"))
+    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_timeout(1000)
     print("asked list:", pg.locator("#asked-list .card").count(), "| notes:", pg.inner_text("#list-notes").replace("\n"," "))
     pg.click("#nav-library"); pg.wait_for_timeout(800); print("library films:", pg.inner_text("#list-screen").replace("\n"," "))
     print("errors:", errs); b.close()

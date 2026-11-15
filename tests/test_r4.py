@@ -14,7 +14,7 @@ with sync_playwright() as p:
     print("lock: faceid button hidden:", pg.evaluate("document.getElementById('faceid-unlock').hidden"))
     pg.fill("#passcode","letmein"); pg.click("#passcode-go"); pg.wait_for_timeout(1500)
     # ---- ask for quotes
-    pg.click("#nav-nishiii"); pg.wait_for_timeout(400)   # "Ask for quotes" lives in the Nishiii section
+    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_timeout(400)   # "Ask for quotes" lives in the Nishiii section
     pg.click("#ask-open"); pg.wait_for_timeout(600)
     print("ask empty:", pg.inner_text("#ask-groups")[:60])
     pg.fill("#ask-new","Meditations"); pg.select_option("#ask-new-kind","book"); pg.click("#ask-add button[type=submit]"); pg.wait_for_timeout(500)
@@ -40,7 +40,7 @@ with sync_playwright() as p:
     # ---- library shows the film and series
     pg.click("#nav-library"); pg.wait_for_timeout(700); print("screen list:", pg.inner_text("#list-screen").replace("\n"," | "))
     # ---- nothing to forget
-    pg.click("#nav-nishiii"); pg.wait_for_timeout(600)
+    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_timeout(600)
     pg.click("#forget-profile"); pg.wait_for_timeout(300)
     print("forget profile, none:", pg.inner_text("#taste-note"), "| dialog shown:", pg.evaluate("!document.getElementById('confirm').hidden"))
     # (picks exist now, so "forget everything" does have something)

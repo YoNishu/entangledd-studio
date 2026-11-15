@@ -17,11 +17,11 @@ with sync_playwright() as p:
     pg.fill("#passcode","letmein"); pg.click("#passcode-go"); pg.wait_for_timeout(2500); scan(pg,"today"); pg.screenshot(path=S+"140_today.png")
     pg.click("#nav-library"); pg.wait_for_timeout(700); scan(pg,"library"); pg.screenshot(path=S+"141_library.png", full_page=False)
     pg.click("#nav-posts"); pg.wait_for_timeout(2500); scan(pg,"posts")
-    pg.click("#nav-nishiii"); pg.wait_for_timeout(2500); scan(pg,"nishiii")
+    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_timeout(2500); scan(pg,"nishiii")
     pg.locator("#taste-card").scroll_into_view_if_needed(); pg.wait_for_timeout(200); pg.screenshot(path=S+"142_taste.png")
     print("taste card:", pg.inner_text("#taste-card").replace("\n"," | ")[:330])
     pg.click("#ask-open"); pg.wait_for_timeout(500); scan(pg,"ask sheet"); pg.click("#ask-close")
-    pg.click("#chat-open"); pg.wait_for_timeout(400); scan(pg,"chat"); pg.screenshot(path=S+"143_chat.png"); pg.click("#chat-close")
+    pg.click("#nishiii-part-chat"); pg.wait_for_timeout(400); scan(pg,"chat"); pg.screenshot(path=S+"143_chat.png"); pg.click("#nishiii-part-knows")
     pg.click("#settings-open"); pg.wait_for_timeout(600); scan(pg,"settings"); pg.click("#settings-close")
     pg.click("#nav-create"); pg.wait_for_timeout(300)
     for tab in ["bg","text","style","save"]:

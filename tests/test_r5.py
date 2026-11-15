@@ -17,7 +17,7 @@ with sync_playwright() as p:
     pg.click("#nav-create"); pg.click("#nav-today"); pg.wait_for_timeout(900)
     print("after skip + reopen:", pg.locator("#suggestions .card").count())
     # Nishiii: ask
-    pg.click("#nav-nishiii"); pg.wait_for_timeout(700)
+    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_timeout(700)
     pg.click("#ask-open"); pg.wait_for_timeout(500)
     pg.fill("#ask-new","Interstellar"); pg.select_option("#ask-new-kind","film"); pg.click("#ask-add button[type=submit]"); pg.wait_for_timeout(500)
     pg.click("#ask-go"); pg.wait_for_timeout(1500)
@@ -28,7 +28,7 @@ with sync_playwright() as p:
     pg.locator("#asked-list .card").first.locator("text=Skip").click(); pg.wait_for_timeout(300)
     pg.locator("#asked-list .card").first.locator("text=Use this").click(); pg.wait_for_timeout(400)
     print("create shown:", pg.evaluate("!document.getElementById('view-create').hidden"))
-    pg.click("#nav-nishiii"); pg.wait_for_timeout(800)
+    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_timeout(800)
     print("asked after skip+use:", pg.locator("#asked-list .card").count(), "| amber chips:", pg.locator("#asked-list .chip.wait").count())
     pg.click("#nav-today"); pg.wait_for_timeout(900)
     print("today still:", pg.locator("#suggestions .card").count(), "| asked chips in Today:", pg.locator("#suggestions .chip.info").count())

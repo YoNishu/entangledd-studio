@@ -64,7 +64,7 @@ try {
   var typing = function () { var e = document.activeElement; return !!e && /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName); };
   var heal = function () {
     if (typing() || tallest - window.innerHeight <= 4 || !document.body) return;
-    var kept = [].map.call(document.querySelectorAll(".page, .sheet-body, .pane"), function (el) { return [el, el.scrollTop]; });
+    var kept = [].map.call(document.querySelectorAll(".page, .sheet-body, .pane, .chat-scroll"), function (el) { return [el, el.scrollTop]; });
     document.body.style.display = "none";
     void document.body.offsetHeight;                     // measured with nothing shown, before anything is painted
     document.body.style.display = "";
@@ -85,7 +85,6 @@ try {
   <div class="top">
     <h1 class="wordmark" id="wordmark"><svg viewBox="0 0 206.21 34.48" role="img" aria-label="D's Studio"><use href="#wm"/><path class="wm-heart" d="M32.54 15.90C33.15 12.46 29.44 9.01 30.14 5.07C30.64 2.24 32.69 0.70 34.78 1.07C36.26 1.33 37.21 2.38 37.44 3.95C38.24 2.31 39.79 1.44 41.39 1.72C43.48 2.09 44.51 4.18 44.03 6.89C43.27 11.19 36.61 11.54 32.54 15.90Z"/></svg></h1>
     <div class="top-actions">
-      <button class="iconbtn ic ic-chat" id="chat-open" aria-label="Chat with Nishiii" hidden>Chat</button>
       <button class="iconbtn ic ic-settings" id="settings-open" aria-label="Settings">Settings</button>
     </div>
   </div>
@@ -265,11 +264,10 @@ try {
   </div>
 </section>
 
-<section class="page" id="view-nishiii" aria-label="Nishiii" hidden>
+<section class="page" id="view-nishiii" aria-label="Nishiii" data-part="chat" hidden>
   <h2>Ask Nishiii for quotes</h2>
   <p class="note">Five quotes right now, from any book, film, series or page you choose.</p>
   <button class="btn primary ic ic-sparkle" id="ask-open">Ask for quotes</button>
-  <button class="btn ic ic-chat" id="nishiii-chat" type="button" hidden>Chat with Nishiii</button>
   <p class="note" id="asked-note" role="status" hidden></p>
   <div class="cards" id="asked-list"></div>
 
@@ -300,6 +298,29 @@ try {
       <button class="btn quiet" id="forget-all">Forget everything and start fresh</button>
     </div>
   </details>
+
+  <!-- Two parts: Chat (first) and What Nishiii knows (everything above). Shown first by the stylesheet. -->
+  <div class="seg two" id="nishiii-parts" role="group" aria-label="Show">
+    <button type="button" id="nishiii-part-chat" aria-controls="nishiii-chat-part" aria-pressed="true">Chat</button>
+    <button type="button" id="nishiii-part-knows" aria-pressed="false">What Nishiii knows</button>
+  </div>
+  <div class="chatpart" id="nishiii-chat-part">
+    <div class="chat-scroll" id="chat-scroll">
+      <button class="btn small quiet ic ic-refresh" type="button" id="chat-new" hidden>Start a new chat</button>
+      <p class="note" id="chat-intro">Ask me for quotes, have one placed in Create, or ask how your posts are doing. I never post for you: that always waits for your tap.</p>
+      <p class="note" id="chat-off" hidden>Chat with Nishiii isn't switched on yet. Nishith can turn it on.</p>
+      <div class="log" id="chat-log" aria-live="polite"></div>
+      <div class="chips" id="chat-chips">
+        <button type="button">What should I post today?</button>
+        <button type="button">Find me quotes about letting go</button>
+        <button type="button">How did my last posts do?</button>
+      </div>
+    </div>
+    <form class="ask" id="chat-form">
+      <label class="stack"><span class="vh">Message</span><input id="chat-input" type="text" autocomplete="off" enterkeyhint="send" placeholder="Message Nishiii" required></label>
+      <button class="btn primary ic ic-send" type="submit" id="chat-send">Send</button>
+    </form>
+  </div>
 </section>
 
 <main class="work" id="view-create">
@@ -593,26 +614,6 @@ try {
 
     <h3 class="ic ic-leave">This device</h3>
     <button class="btn" id="sign-out">Sign out on this device</button>
-  </div>
-</div>
-
-<div class="sheet" id="chat" role="dialog" aria-modal="true" aria-labelledby="chat-title" hidden>
-  <div class="sheet-body">
-    <header class="sheet-head">
-      <h2 id="chat-title">Chat with Nishiii</h2>
-      <button class="iconbtn close ic ic-close" id="chat-close" aria-label="Close">Close</button>
-    </header>
-    <p class="note" id="chat-intro">Ask me for quotes, have one placed in Create, or ask how your posts are doing. I never post for you: that always waits for your tap.</p>
-    <div class="log" id="chat-log" aria-live="polite"></div>
-    <div class="chips" id="chat-chips">
-      <button type="button">What should I post today?</button>
-      <button type="button">Find me quotes about letting go</button>
-      <button type="button">How did my last posts do?</button>
-    </div>
-    <form class="ask" id="chat-form">
-      <label class="stack"><span class="vh">Message</span><input id="chat-input" type="text" autocomplete="off" placeholder="Message Nishiii" required></label>
-      <button class="btn primary ic ic-send" type="submit" id="chat-send">Send</button>
-    </form>
   </div>
 </div>
 

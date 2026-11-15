@@ -53,7 +53,7 @@ with sync_playwright() as p:
     pg.screenshot(path=S + "a9_today_reasons.png")
 
     # ---- Nishiii: what has been learnt, and where the lines come from
-    pg.click("#nav-nishiii")
+    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows")
     pg.wait_for_selector("#scorer-line", timeout=15000); pg.wait_for_timeout(500)
     line = pg.text_content("#scorer-line"); src = pg.text_content("#engine-sources") if pg.locator("#engine-sources").count() else ""
     print("     line:", line); print("     sources:", src)
