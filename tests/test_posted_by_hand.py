@@ -24,4 +24,28 @@ s, b, _ = http("POST", "/api/queue/nope/posted", {}, T)
 check("an unknown reel is refused", s == 404, s)
 s, b, _ = http("POST", "/api/queue/q1/posted", {})
 check("signed out is refused", s == 401, s)
+
+# ---- no tap at all: a reel only waiting in the app, posted from Instagram, is found by itself when Posts opens
+serve()
+T = login(); connect(T)
+putdoc("queue", [{"id": "q2", "jobId": "22222222-2222-4222-8222-222222222222", "created": int(time.time() * 1000) - 3600000, "quote": "Happiness can be found even in the darkest of times.", "author": "", "theme": "hope", "tone": "warm", "source": "film", "suggestionId": "", "made": {}}])
+s, b, _ = http("GET", "/api/queue", None, T)
+check("the app says it can see Instagram, so no tap is asked for", s == 200 and b["sees"] is True and len(b["queue"]) == 1, b)
+http("GET", "/__posted_in_instagram?caption=" + urllib.parse.quote("some caption of her own, no quote in it") + "&ago=120&type=REELS")
+s, b, _ = http("GET", "/api/posts", None, T)
+mine = [p for p in b["posts"] if p["quote"].startswith("Happiness can be found")]
+check("opening Posts finds the reel and moves it to Posted, linked", s == 200 and len(mine) == 1 and mine[0]["state"] == "published" and mine[0]["permalink"] and not mine[0]["unlinked"], b)
+check("and it has left the waiting list", http("GET", "/api/queue", None, T)[1]["queue"] == [])
+# two reels waiting and a reel on the page with neither quote in its caption: not guessed
+serve()
+T = login(); connect(T)
+putdoc("queue", [{"id": "a", "jobId": "33333333-3333-4333-8333-333333333333", "created": int(time.time() * 1000) - 3600000, "quote": "First waiting line of some length here.", "author": "", "theme": "", "tone": "", "source": "", "suggestionId": "", "made": {}},
+                 {"id": "b", "jobId": "44444444-4444-4444-8444-444444444444", "created": int(time.time() * 1000) - 3000000, "quote": "Second waiting line, also long enough.", "author": "", "theme": "", "tone": "", "source": "", "suggestionId": "", "made": {}}])
+http("GET", "/__posted_in_instagram?caption=" + urllib.parse.quote("nothing to go by") + "&ago=60&type=REELS")
+http("GET", "/api/posts", None, T)
+check("two waiting and nothing to tell them apart: neither is guessed", len(http("GET", "/api/queue", None, T)[1]["queue"]) == 2)
+http("GET", "/__posted_in_instagram?caption=" + urllib.parse.quote("Second waiting line, also long enough. #quotes") + "&ago=30&type=REELS")
+http("GET", "/api/posts", None, T)
+q = http("GET", "/api/queue", None, T)[1]["queue"]
+check("with the quote in the caption, the right one is linked", [x["id"] for x in q] == ["a"], q)
 finish()

@@ -972,6 +972,7 @@
     });
     return b;
   }
+  let igSees = true;      // can the app see the Instagram page right now? (the server says, with the lists)
   function queueCard(q) {
     const go = el("button", { className: "btn primary ic ic-send", type: "button", textContent: "Post this now" });
     go.addEventListener("click", () => openPost("reel", q));
@@ -983,7 +984,9 @@
     song.addEventListener("click", () => openHandoff(q));
     return el("article", { className: "card" }, el("p", { className: "q", textContent: q.quote || "A reel" }), chip("wait", "Made, not posted"),
       el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that you'd need to create it again.` }),
-      el("div", { className: "acts tall" }, go, song, postedByHand("queue/" + q.id, "posted-queue-" + q.id), drop));
+      // When the app can see the Instagram page, a reel posted there is found by itself (as Posts opens, and hourly).
+      el("p", { className: "src", id: "auto-" + q.id, textContent: igSees ? "Posted it from Instagram yourself? It moves to Posted by itself." : "Instagram isn't answering the app right now, so it can't see what you post there." }),
+      el("div", { className: "acts tall" }, go, song, igSees ? null : postedByHand("queue/" + q.id, "posted-queue-" + q.id), drop));
   }
   const showPostedHead = () => { $("posted-head").hidden = $("queue-wrap").hidden && $("handoff-wrap").hidden; };
   function renderQueue(queue) {
@@ -1012,7 +1015,7 @@
       try { renderHandoffs((await send("handoffs/" + h.id, "DELETE")).handoffs); } catch (e) { $("posts-note").textContent = friendly(e); }
     });
     return el("article", { className: "card" }, el("p", { className: "q", textContent: h.quote || "A reel" }), chip("info", "Waiting for you to post it in Instagram"),
-      el("p", { className: "src", textContent: `The app keeps looking for it until ${day(h.until)}.` }), el("div", { className: "acts tall" }, look, postedByHand("handoffs/" + h.id, "posted-handoff-" + h.id), drop));
+      el("p", { className: "src", textContent: `The app keeps looking for it until ${day(h.until)}.` }), el("div", { className: "acts tall" }, igSees ? look : null, igSees ? null : postedByHand("handoffs/" + h.id, "posted-handoff-" + h.id), drop));
   }
   function renderHandoffs(list) {
     $("handoff-wrap").hidden = !list.length;
@@ -1178,8 +1181,8 @@
       $("list-posts").replaceChildren(...posts.map(postCard));
       // After the list, so the week's numbers include what was just refreshed from Instagram.
       getJson("report").then(renderWeek).catch(() => { $("week-card").hidden = true; });
-      getJson("queue").then((r) => renderQueue(r.queue)).catch(() => {});
-      getJson("handoffs").then((r) => renderHandoffs(r.handoffs)).catch(() => {});
+      getJson("queue").then((r) => { igSees = r.sees !== false; renderQueue(r.queue); }).catch(() => {});
+      getJson("handoffs").then((r) => { igSees = r.sees !== false; renderHandoffs(r.handoffs); }).catch(() => {});
       $("posts-note").textContent = !(ig && ig.connected) ? "Instagram isn't connected. Connect it in Settings, at the top right."
         : posts.length ? "Posts you delete on Instagram leave this list too." : "Nothing posted from the app yet.";
     } catch (e) { $("posts-note").textContent = friendly(e); }
