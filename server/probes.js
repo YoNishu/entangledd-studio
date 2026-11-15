@@ -47,7 +47,7 @@ async function probeBooks(env, kit) {
   const allowed = !!target && (target.protocol === "https:" || local) && kit.textHostAllowed(env, target.hostname);
   let res = null;
   if (allowed) {
-    try { res = await fetch(target, { headers: { Range: "bytes=0-2047" }, signal: AbortSignal.timeout(SLOW_MS) }); }
+    try { res = await fetch(target, { headers: { Range: "bytes=0-2047", "User-Agent": "DsStudio/1.0 (personal quotes app; health check)" }, signal: AbortSignal.timeout(SLOW_MS) }); }
     catch (e) { throw new Error("the book's text couldn't be reached just now"); }
     if (res.body) await res.body.cancel().catch(() => {});            // only the headers matter here
   }

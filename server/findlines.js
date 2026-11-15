@@ -26,6 +26,7 @@
    one plain sentence of it, Nishith all of it (GET /api/lookups and the health line "Looking things up"). */
 
 import * as V from "./verify.js";
+import * as O from "./opensearch.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 export const KEEP = 30;                 // lines kept for one work
@@ -69,10 +70,11 @@ export function noteUse(state, who, what, more = {}) {
 // shaped like a key or an address for mail (the same rule as health.js's hide()).
 export function tidy(text, env = {}, max = 160) {
   let out = String(text ?? "").replace(/\s+/g, " ").trim();
-  for (const v of [env.GEMINI_API_KEY, env.OPENAI_API_KEY, env.ANTHROPIC_API_KEY]) if (v && String(v).length >= 8) out = out.split(String(v)).join("[hidden]");
+  for (const v of [env.GEMINI_API_KEY, env.OPENAI_API_KEY, env.ANTHROPIC_API_KEY, env.TAVILY_API_KEY, env.SERPER_API_KEY]) if (v && String(v).length >= 8) out = out.split(String(v)).join("[hidden]");
   return out.replace(/[A-Za-z0-9_|%-]{24,}/g, "[hidden]").replace(/\S+@\S+\.\S+/g, "[hidden]").slice(0, max);
 }
-const PLACE_NAME = { wikiquote: "Wikiquote", goodreads: "Goodreads", imdb: "IMDb", gemini: "Google", openai: "OpenAI" };
+const PLACE_NAME = { wikiquote: "Wikiquote", goodreads: "Goodreads", imdb: "IMDb", gemini: "Google", openai: "OpenAI",
+  web: "pages on the web", duckduckgo: "DuckDuckGo", bing: "Bing", tavily: "Tavily", serper: "Serper" };
 const TRIED = new Set(["found", "no page", "wrong work", "no line passed"]);
 const andList = (a) => (a.length < 2 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}`);
 // The trail in one plain sentence for her: "Looked on Wikiquote, IMDb and Google: nothing yet."
@@ -204,11 +206,16 @@ export function noteSite(state, site, why, blocked = false) {
   const s = (state.rec.sites[site] = state.rec.sites[site] || {});
   if (why) step(state, site, blocked ? "blocked" : /without quotes/.test(why) ? "no line passed" : "no answer", { why: String(why).slice(0, 80) });
   if (why) { s.failed = Date.now(); s.why = String(why).slice(0, 80); state.dirty = true; }
-  else if (!s.ok || s.why) { s.ok = Date.now(); delete s.why; delete s.failed; state.dirty = true; }
+  else if (!s.ok || s.why) { s.ok = Date.now(); delete s.why; delete s.failed; delete s.blocked; delete s.until; state.dirty = true; }
 }
-// A site that turned the app away is left alone until tomorrow.
-export const resting = (state, site) => { const s = state.rec.sites[site]; return !!(s && s.blocked && Date.now() - s.failed < DAY); };
-export function noteBlocked(state, site, why) { noteSite(state, site, why, true); state.rec.sites[site].blocked = true; }
+// A site that turned the app away is left alone until tomorrow (or, for "days", that long).
+export const resting = (state, site) => { const s = state.rec.sites[site]; return !!(s && s.blocked && Date.now() < (s.until || (s.failed || 0) + DAY)); };
+export function noteBlocked(state, site, why, days = 1) {
+  noteSite(state, site, days > 1 ? `${why}; not asked again for ${days} days` : why, true);
+  Object.assign(state.rec.sites[site], { blocked: true, until: Date.now() + days * DAY });
+}
+// IMDb's quotes page answers 202 with a challenge for robots: it is not asked again for a week.
+const IMDB_REST_DAYS = 7;
 export async function page(state, url, accept, ms = 8000) {
   state.spent += 1;
   return fetch(url, { headers: { "User-Agent": UA, Accept: accept, "Accept-Language": "en" }, signal: AbortSignal.timeout(ms) });
@@ -383,7 +390,7 @@ async function imdbPage(env, kit, work, state) {
   const hit = work.year && !typedYear ? near[0] : near[0] || same[0];
   if (!hit) { if (same.length) step(state, "imdb", "wrong work", { why: `only titles of other years (${same.map((t) => t.y).join(", ")})` }); return null; }
   res = await page(state, `${env.IMDB_SITE || "https://www.imdb.com"}/title/${hit.id}/quotes/`, "text/html");
-  if (res.status !== 200) return void noteBlocked(state, "imdb", "quotes page answered " + res.status);
+  if (res.status !== 200) return void noteBlocked(state, "imdb", "quotes page answered " + res.status, res.status === 202 || res.status === 403 ? IMDB_REST_DAYS : 1);
   const html = (await res.text()).slice(0, 3_000_000);
   if (wall(html)) return void noteBlocked(state, "imdb", "asked for proof of a person");
   const quotes = [];
@@ -531,13 +538,19 @@ function webLines(kit, said, read, behind, have, work = null) {
 
 // ---------------------------------------------------------------- which models to ask
 
-// The newest flash models a Gemini key may use for generateContent, newest first (flash before flash-lite).
+// The flash models a Gemini key may use for generateContent, in the order to try them. Google's price list (checked
+// 15 Nov 2026) gives Search grounding on the free tier only to gemini-2.5-flash-lite and gemini-2.5-flash (500 a day,
+// shared); every Gemini 3 and newer model has none there (a 429 with "limit: 0"). So those two come first, then the
+// other flash-lite models, newest first, then the flash models, newest first. Up to five, so a key on the free tier
+// still reaches one that may search.
+export const FREE_GROUNDING = ["gemini-2.5-flash-lite", "gemini-2.5-flash"];
 const versionOf = (name) => Number((/-(\d+(?:\.\d+)?)-/.exec(name) || [])[1]) || 0;
 export function pickGemini(models) {
   const names = (Array.isArray(models) ? models : []).filter((m) => m && (m.supportedGenerationMethods || []).includes("generateContent"))
     .flatMap((m) => [m.baseModelId, String(m.name || "").replace(/^models\//, "")]).map((n) => String(n || ""))
     .filter((n) => /^gemini-\d+(\.\d+)?-flash(-lite)?$/.test(n));
-  return [...new Set(names)].sort((a, b) => versionOf(b) - versionOf(a) || a.endsWith("-lite") - b.endsWith("-lite")).slice(0, 3);
+  const free = (n) => (FREE_GROUNDING.includes(n) ? FREE_GROUNDING.indexOf(n) : 9);
+  return [...new Set(names)].sort((a, b) => free(a) - free(b) || b.endsWith("-lite") - a.endsWith("-lite") || versionOf(b) - versionOf(a)).slice(0, 5);
 }
 // OpenAI: the models it offers, in the app's order of preference (cheapest that can search first); failing
 // those, the newest general GPT models it lists.
@@ -551,7 +564,7 @@ export function pickOpenAI(models) {
   return [...liked, ...other].slice(0, 3);
 }
 const SETTING = { gemini: "GEMINI_MODEL", openai: "OPENAI_MODEL" };
-const names = (v) => String(v || "").split(",").map((m) => m.trim()).filter((m) => /^[a-z0-9.-]+$/i.test(m)).slice(0, 3);
+const names = (v) => String(v || "").split(",").map((m) => m.trim()).filter((m) => /^[a-z0-9.-]+$/i.test(m)).slice(0, 5);
 // Reads the list of models a key may use. Costs nothing and asks nothing. { list, status, said }.
 export async function listModels(env, who, ms = 8000) {
   const res = who === "gemini"
@@ -597,7 +610,7 @@ function serviceSaid(text, env) {
 // "no answer" (the service is unwell).
 function classify(who, status, said) {
   const s = String(said || "");
-  if (status === 429) return "used up";
+  if (status === 429) return /insufficient_quota|billing/i.test(s) && who === "openai" ? "no credit" : "used up";
   if (status === 401 || (status === 400 && /api[ _]?key/i.test(s))) return "key refused";
   if ((status === 403 || status === 400) && /search|ground|tool/i.test(s)) return "may not search";
   if (status === 403) return "key refused";
@@ -605,7 +618,33 @@ function classify(who, status, said) {
   if (status === 400) return "may not search";
   return "no answer";
 }
-const OFF = { "used up": "used up", "key refused": "refused", "may not search": "may not search", "no model": "no model" };
+const OFF = { "used up": "used up", "key refused": "refused", "may not search": "may not search", "no model": "no model", "no allowance": "no allowance", "no credit": "no credit" };
+// What a 429 means, from its body (and headers): { how, wait }.
+//   "no allowance"  Gemini: this model has no allowance at all on this key ("limit: 0", the free tier): the next model.
+//   "used up"       Gemini: this model's allowance for the day is spent (a per-day quota): the next model.
+//   "no credit"     OpenAI: the account has no credit (insufficient_quota): nothing more today, whatever the model.
+//   "busy"          a passing rate limit (per minute, or a short "retry in"): wait "wait" ms and ask once more.
+export function refusalOf(who, status, text, headers = null) {
+  let err = {};
+  try { err = (JSON.parse(text) || {}).error || {}; } catch (e) { err = {}; }
+  const msg = String(err.message || text || ""), code = `${err.code || ""} ${err.type || ""} ${err.status || ""}`;
+  const secs = (v) => { const m = /([\d.]+)\s*(ms|s)\b/.exec(String(v || "")); return m ? Number(m[1]) * (m[2] === "ms" ? 1 : 1000) : NaN; };
+  let wait = NaN;
+  if (who === "openai") {
+    if (/insufficient_quota/.test(code) || /insufficient_quota|exceeded your current quota/i.test(msg)) return { how: "no credit" };
+    wait = Number(headers && headers.get && headers.get("retry-after-ms")) || secs((/try again in ([\d.]+\s*m?s)/i.exec(msg) || [])[1]) || Number(headers && headers.get && headers.get("retry-after")) * 1000;
+    return { how: "busy", wait: Number.isFinite(wait) && wait > 0 ? wait : 1500 };
+  }
+  const details = Array.isArray(err.details) ? err.details : [];
+  const quota = details.flatMap((d) => (d && d.violations) || []).map((v) => `${v.quotaId || ""} ${v.quotaMetric || ""}`).join(" ");
+  const retry = details.find((d) => d && /RetryInfo/.test(d["@type"] || ""));
+  wait = secs(retry && retry.retryDelay) || secs((/retry in ([\d.]+\s*m?s)/i.exec(msg) || [])[1]);
+  if (/limit:\s*0\b/.test(msg) || /FreeTier/i.test(quota) && /limit:\s*0\b/.test(msg)) return { how: "no allowance" };
+  if (/PerDay/i.test(quota) || /per day/i.test(msg)) return { how: "used up" };
+  if (/PerMinute/i.test(quota) || Number.isFinite(wait)) return { how: "busy", wait: Number.isFinite(wait) ? wait : 1500 };
+  return { how: "used up" };
+}
+const MAX_WAIT = 4000;                  // a passing rate limit is waited out only this long; longer, the next model
 // Asks one of the two, trying its models in order. Counts every question against the day's limit first.
 // A refusal (the allowance is used up, the key is not accepted, no model may search) means "not today":
 // nothing more is asked of it until tomorrow. Every answer and refusal goes on the trail; how the last
@@ -619,34 +658,51 @@ async function ask(env, kit, state, who, fallback, send, read) {
   const models = await modelsFor(env, kit, state, who, fallback);
   if (models.refused) { use.off = "refused"; outcome("refused"); noteUse(state, who, "key refused", { status: models.status, said: models.said }); return null; }
   let last = "";
-  for (const model of models.list) {
-    if (use.calls >= A_DAY[who]) return limit();
-    use.calls += 1;
-    await saveRecord(env, kit, state);               // counted before asking, so a question that never returns still counts
-    let res;
-    state.spent += 1;
-    try { res = await send(model); }
-    catch (e) {
-      const why = e && e.name === "TimeoutError" ? "no answer in time" : "could not be reached";
-      outcome("no answer"); step(state, who, "no answer", { model, why }); noteUse(state, who, "no answer", { model, why }); return null;
+  use.skip = Array.isArray(use.skip) ? use.skip : [];
+  const list = models.list.filter((m) => !use.skip.includes(m));
+  if (!list.length && models.list.length) { use.off = "no allowance"; outcome(use.off); step(state, who, "not asked", { why: "no model it may use has an allowance today" }); return null; }
+  for (const model of list) {
+    for (let again = 0; again < 2; again++) {
+      if (use.calls >= A_DAY[who]) return limit();
+      use.calls += 1;
+      await saveRecord(env, kit, state);               // counted before asking, so a question that never returns still counts
+      let res;
+      state.spent += 1;
+      try { res = await send(model); }
+      catch (e) {
+        const why = e && e.name === "TimeoutError" ? "no answer in time" : "could not be reached";
+        outcome("no answer"); step(state, who, "no answer", { model, why }); noteUse(state, who, "no answer", { model, why }); return null;
+      }
+      if (res.ok) {
+        try {
+          const got = read(await res.json());
+          outcome("worked");
+          use.answered = (use.answered || 0) + 1;
+          const m = (rec.models || {})[who];
+          if (m && m.worked !== model) { m.worked = model; state.dirty = true; }
+          rec.last[who].model = model;
+          noteUse(state, who, got.read.length ? "answered" : "all rejected", { model, ...(got.read.length ? {} : { why: "it read no page" }) });
+          return { ...got, model };
+        } catch (e) { outcome("no answer"); step(state, who, "no answer", { model, status: res.status, why: "an answer that could not be read" }); noteUse(state, who, "no answer", { model, why: "an answer that could not be read" }); return null; }
+      }
+      const body = await res.text().catch(() => "");
+      const said = serviceSaid(body, env);
+      const r = res.status === 429 ? refusalOf(who, 429, body, res.headers) : { how: classify(who, res.status, said) };
+      const how = r.how;
+      if (how !== "no answer") use.refused = (use.refused || 0) + 1;
+      step(state, who, how, { model, status: res.status, said, ...(how === "busy" ? { why: again ? "still busy after a wait" : `asked again after ${Math.round(Math.min(r.wait, MAX_WAIT) / 100) / 10} s` } : {}) });
+      noteUse(state, who, how, { model, status: res.status, said });
+      if (how === "busy") {
+        // A passing rate limit: waited out once (when short), never a reason to stop for the day.
+        if (!again && r.wait <= MAX_WAIT) { await new Promise((done) => setTimeout(done, r.wait)); continue; }
+        outcome("busy"); state.dirty = true; return null;
+      }
+      if (how === "no answer") { outcome("no answer"); return null; }
+      if (how === "no credit" || how === "key refused") { use.off = OFF[how]; outcome(use.off); return null; }
+      if (how === "no allowance" || how === "used up") { use.skip.push(model); state.dirty = true; }
+      last = how;                                     // this model has no allowance, may not search, or is not offered: the next one
+      break;
     }
-    if (res.ok) {
-      try {
-        const got = read(await res.json());
-        outcome("worked");
-        const m = (rec.models || {})[who];
-        if (m && m.worked !== model) { m.worked = model; state.dirty = true; }
-        noteUse(state, who, got.read.length ? "answered" : "all rejected", { model, ...(got.read.length ? {} : { why: "it read no page" }) });
-        return { ...got, model };
-      } catch (e) { outcome("no answer"); step(state, who, "no answer", { model, status: res.status, why: "an answer that could not be read" }); noteUse(state, who, "no answer", { model, why: "an answer that could not be read" }); return null; }
-    }
-    const said = serviceSaid(await res.text().catch(() => ""), env);
-    const how = classify(who, res.status, said);
-    step(state, who, how, { model, status: res.status, said });
-    noteUse(state, who, how, { model, status: res.status, said });
-    if (how === "no answer") { outcome("no answer"); return null; }
-    if (how === "used up" || how === "key refused") { use.off = OFF[how]; outcome(use.off); return null; }
-    last = how;                                       // this model may not search, or is not offered: the next one
   }
   if (last && use.calls < A_DAY[who]) {
     use.off = OFF[last]; outcome(use.off);
@@ -658,7 +714,7 @@ async function ask(env, kit, state, who, fallback, send, read) {
 
 // Gemini with Google Search. The models are asked of Google (above); GEMINI_MODEL (one name, or up to three
 // with commas) can replace them without a change to the app, and these are tried when the list can't be read.
-export const GEMINI_MODELS = "gemini-3.8-flash,gemini-3.5-flash-lite";
+export const GEMINI_MODELS = "gemini-2.5-flash-lite,gemini-2.5-flash,gemini-3.5-flash-lite,gemini-3.8-flash";
 // One question to Gemini with Google Search: { said, read, behind, model } (the answer, the pages read, and
 // for a piece of the answer the pages behind it), or null.
 export function geminiSearch(env, kit, state, prompt, ms = 20000) {
@@ -736,7 +792,12 @@ async function lookUp(env, kit, item, need, about, taste, state) {
   // Reading a page: finds it, has Nishiii pick from it, and copes quietly when the site is unreachable.
   const read = async (site, find) => {
     await openRecord(env, kit, state);
-    if (resting(state, site)) return void step(state, site, "not asked", { why: "it turned the app away earlier today" });
+    if (resting(state, site)) {
+      // Said once a day; a rest of a week is not repeated on every look.
+      const s = state.rec.sites[site];
+      if ((s.until || 0) - (s.failed || 0) <= DAY || Date.now() - s.failed < DAY) step(state, site, "not asked", { why: (s.until || 0) - (s.failed || 0) > DAY ? `it turned the app away; resting until ${new Date(s.until).toISOString().slice(0, 10)}` : "it turned the app away earlier today" });
+      return;
+    }
     const before = state.trail.length;
     try {
       const pg = await find(env, kit, work, state);
@@ -763,6 +824,22 @@ async function lookUp(env, kit, item, need, about, taste, state) {
     { cost: 6, name: "wikiquote", look: () => read("wikiquote", wikiquotePage) },
     // Goodreads and IMDb ask that robots don't read their pages; this step can be switched off with QUOTE_SITES=off.
     { cost: 6, name: work.type === "book" ? "goodreads" : "imdb", off: env.QUOTE_SITES === "off", look: () => read(work.type === "book" ? "goodreads" : "imdb", work.type === "book" ? goodreadsPage : imdbPage) },
+    // The web with no paid allowance (opensearch.js): Tavily or Serper when their keys are set, else a public
+    // results page; then the pages it points to, read for lines word for word.
+    { cost: 10, name: "web", off: !O.providers(env).length, look: async () => {
+      await openRecord(env, kit, state);
+      try {
+        const got = await O.linesForWork(env, kit, work, state, { want: more(), have, about });
+        const why = Object.entries(got.dropped).map(([k, v]) => `${v} ${k}`).join(", ");
+        step(state, "web", got.lines.length ? "found" : got.pages.length ? "no line passed" : "no page", { n: got.lines.length,
+          read: [...new Set(got.pages.map((p) => p.site))].slice(0, 4), ...(why ? { why } : got.pages.length ? {} : { why: "no page that names this work" }) });
+        if (got.lines.length && !where) where = got.lines[0].url;
+        lines = lines.concat(got.lines);
+      } catch (e) {
+        if (e instanceof kit.UserError && e.status !== 502) throw e;
+        step(state, "web", "no answer", { why: e instanceof kit.UserError ? "Nishiii could not read the pages just now" : tidy(e && e.message, env, 80) });
+      }
+    } },
     ...asks,
   ];
   let resume;
@@ -888,9 +965,24 @@ export async function refreshOne(env, kit, lib, { budget = 14, need = 10 } = {})
 // as the look-ups above (a line is kept only with a page that was really read behind it; sure only when two
 // sites agree). "prompt" must hold nothing about her: only themes, titles, authors or a public line's words.
 // "allow" caps the questions this caller may put to each today ({ gemini, openai }), counted in "used".
-export async function searchWeb(env, kit, prompt, want, have, { allow = { gemini: 0, openai: 0 }, used = {}, feature = "discover" } = {}) {
+// "open" ({ query, ask, near }) is the same search in a few words for the web with no paid allowance (opensearch.js),
+// asked first: Tavily or Serper when their keys are set, else a public results page, and the pages it points to.
+export async function searchWeb(env, kit, prompt, want, have, { allow = { gemini: 0, openai: 0 }, used = {}, feature = "discover", open = null } = {}) {
   const state = { spent: 0, rec: null, dirty: false, began: Date.now(), limit: 60000, feature, trail: [] };
   let lines = [];
+  if (open && open.query && O.providers(env).length) {
+    await openRecord(env, kit, state);
+    try {
+      const got = await O.linesFor(env, kit, state, open.query, { want, have, ask: open.ask || "", near: open.near || [] });
+      const why = Object.entries(got.dropped || {}).map(([k, v]) => `${v} ${k}`).join(", ");
+      step(state, "web", got.lines.length ? "found" : "no line passed", { n: got.lines.length, ...(why ? { why } : {}) });
+      noteUse(state, "web", got.lines.length ? "found" : "all rejected", { n: got.lines.length, ...(why ? { why } : {}) });
+      lines = got.lines;
+    } catch (e) {
+      if (e instanceof kit.UserError && e.status !== 502) throw e;
+      step(state, "web", "no answer", { why: tidy(e && e.message, env, 80) });
+    }
+  }
   for (const [who, key, search] of [["gemini", "GEMINI_API_KEY", geminiSearch], ["openai", "OPENAI_API_KEY", openaiSearch]]) {
     if (lines.length >= want || !env[key] || (used[who] || 0) >= (allow[who] || 0)) continue;
     used[who] = (used[who] || 0) + 1;

@@ -502,6 +502,17 @@ const SAY_IT_TO_HER = '\n\nReminder: say every line to Dhruuu as "you" and "your
 const textHostAllowed = (env, host) => host === "gutenberg.org" || host.endsWith(".gutenberg.org") ||
   (!!env.STOCK_HOSTS && env.STOCK_HOSTS.split(",").includes(host));
 
+// The address of a book's plain text. The catalogue lists several (us-ascii, utf-8, old /files/ addresses that
+// Project Gutenberg no longer serves, and /ebooks/N.txt.utf-8, which only redirects): on gutenberg.org the one
+// address that is always there, /cache/epub/N/pgN.txt, is used; elsewhere the utf-8 one, else the first.
+function gutenbergText(r) {
+  const plain = Object.entries(r.formats || {}).filter(([k, v]) => k.startsWith("text/plain") && typeof v === "string" && !/\.zip$/i.test(v));
+  const url = (plain.find(([k]) => /utf-8/i.test(k)) || plain[0] || [])[1] || "";
+  let host = "";
+  try { host = new URL(url).hostname; } catch (e) { host = ""; }
+  return (host === "gutenberg.org" || host.endsWith(".gutenberg.org")) && Number(r.id) > 0 ? `https://www.gutenberg.org/cache/epub/${Number(r.id)}/pg${Number(r.id)}.txt` : url;
+}
+
 async function findBookText(env, book) {
   const base = env.GUTENDEX_API || "https://gutendex.com";
   let data;
@@ -521,7 +532,7 @@ async function findBookText(env, book) {
     return plain && byHer && (r.languages || []).includes("en") && (t === want || t.startsWith(want + " ") || (!!surname && ` ${t} `.includes(` ${want} `)));
   });
   if (!pick) return { textChecked: Date.now(), textUrl: "", textNote: "No free full text was found, which is normal for modern books. Quotes from it come from Nishiii's memory." };
-  const url = Object.entries(pick.formats).find(([k]) => k.startsWith("text/plain"))[1];
+  const url = gutenbergText(pick);
   const flip = (n) => { const m = /^([^,]+),\s*([^,]+)$/.exec(n || ""); return m ? `${m[2]} ${m[1]}` : n || ""; };
   return { textChecked: Date.now(), textUrl: url, textTitle: oneLine(pick.title, 160), textAuthor: oneLine(flip(((pick.authors || [])[0] || {}).name), 80), gutenbergId: pick.id,
     textNote: "Full text found on Project Gutenberg. Quotes from this book are copied from the text itself." };
@@ -533,7 +544,7 @@ async function loadBookText(env, book) {
   try { target = new URL(book.textUrl); } catch (e) { return ""; }
   const local = !!env.STOCK_HOSTS && target.protocol === "http:";
   if ((target.protocol !== "https:" && !local) || !textHostAllowed(env, target.hostname)) return "";
-  const res = await fetch(target);
+  const res = await fetch(target, { headers: { "User-Agent": "DsStudio/1.0 (personal quotes app; one book at a time)" } });
   if (!res.ok) return "";
   let text = (await res.text()).slice(0, 2_500_000);
   // Drop the catalogue's own notices before and after the book.
