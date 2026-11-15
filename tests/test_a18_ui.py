@@ -55,6 +55,11 @@ with sync_playwright() as p:
     check("each with Create with this, Reword and Skip", first.locator(".acts button").all_inner_texts() == ["Create with this", "Reword", "Skip"],
           first.locator(".acts button").all_inner_texts())
     check("the choosing part folds away, with Find more and Change what", pg.locator("#ask-choose").is_hidden() and pg.locator("#ask-more").is_visible() and pg.locator("#ask-change").is_visible())
+    first.locator("text=Reword").click(); pg.wait_for_timeout(500)
+    on_top = pg.evaluate("() => { const r = document.querySelector('#reword .sheet-body').getBoundingClientRect(); const e = document.elementFromPoint(r.left + r.width / 2, r.top + 30); return !!e && !!e.closest('#reword'); }")
+    check("Reword opens over the sheet, with the line in it", on_top and pg.inner_text("#reword-original").strip() == first.locator(".q").inner_text().strip())
+    pg.click("#reword-close"); pg.wait_for_timeout(300)
+    check("and closing it leaves the sheet as it was", pg.locator("#ask-sheet").is_visible() and pg.locator("#ask-results .card").count() == 10)
     texts = [t.strip() for t in pg.locator("#ask-results .card .q").all_inner_texts()]
     skipped = texts[1]
     cards.nth(1).locator("text=Skip").click(); pg.wait_for_timeout(600)

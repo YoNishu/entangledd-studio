@@ -764,3 +764,4 @@ details.lovenotes-edit .list li { background: var(--ink); }
 #ask-progress { margin: 0; }
 #ask-results .q { font-size: 21px; }
 .find-row { margin-top: 6px; }
+#reword { z-index: 9; }     /* Reword, opened from a quote in the Find quotes sheet, comes over it */
