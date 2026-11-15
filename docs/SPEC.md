@@ -247,7 +247,11 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
   looked up for her (`server/findlines.js`). The places are tried in this order, the next one
   only when those before gave too few: lines already kept for that work in the Library (found
   earlier, or saved by her with its title under "Where it's from"); Wikiquote; Goodreads for a
-  book or IMDb for a film or series, read directly; Gemini with Google Search, if
+  book or IMDb for a film or series, read directly; the web with no paid allowance
+  (`server/opensearch.js`: Tavily if `TAVILY_API_KEY` is set, Serper if `SERPER_API_KEY` is set,
+  then DuckDuckGo's plain results page or Bing's, unless `OPEN_SEARCH` is `off`; up to four result
+  pages fetched and read, lines kept only word for word on a page that names the work, or from two
+  sites' snippets marked to check); Gemini with Google Search, if
   `GEMINI_API_KEY` is set (at most 40 questions a day); OpenAI with web search, if
   `OPENAI_API_KEY` is set (at most 20 a day); Anthropic's paid web search, only if
   `CLAUDE_WEB_SEARCH` is `on`; and last Nishiii's memory, marked to check. The first three need
@@ -278,9 +282,17 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
   you are human" page, a page without quotes) has nothing that day; `data/lookups.json` notes
   when each site last worked or failed (also Quote Investigator, Wikipedia and Open Library),
   holds the day's count for Gemini and OpenAI, and in `last` how each one's last question went
-  (`worked`, `limit`, `used up`, `refused`, `may not search`, `no model`, `no answer`); `models`
-  the models chosen by reading `GET /v1beta/models` (newest `gemini-N-flash`, then `-flash-lite`,
-  that support generateContent) and `GET /v1/models` (gpt-6-luna, gpt-6.1-terra, gpt-6.1-sol,
+  (`worked` with its `model`, `limit`, `used up`, `refused`, `may not search`, `no model`,
+  `no allowance`, `no credit`, `busy`, `no answer`), and for each of the two `calls`, `answered`,
+  `refused`, `skip` (models with no allowance today) and `off`. A 429 is read from its body:
+  Gemini "limit: 0" is `no allowance` and a per-day quota `used up` on that model (the next model is
+  tried); OpenAI `insufficient_quota` is `no credit` (rests for the day); a per-minute limit or a
+  short "retry in" is `busy` (waited out once, at most 4 s, never a rest for the day). IMDb's 202
+  rests it for seven days (`sites.imdb.until`). `open` holds the day's counts of the web with no
+  paid allowance (`results`, `pages`, `tavily`, `serper`; caps 60, 120, 30, 20). `models`
+  the models chosen by reading `GET /v1beta/models` (gemini-2.5-flash-lite and gemini-2.5-flash
+  first, the only ones with free Search grounding; then `-flash-lite`, then `-flash`, newest
+  first, up to five, that support generateContent) and `GET /v1/models` (gpt-6-luna, gpt-6.1-terra, gpt-6.1-sol,
   gpt-6-astra, else the newest plain GPT model), each `{list, at, worked}`, read again after a week
   or when none worked; `uses` the last outcome per feature (`lookup`, `title`, `check`, `discover`,
   `echo`); `trails` the last ten trails. `GEMINI_MODEL` / `OPENAI_MODEL` replace the choice; the
