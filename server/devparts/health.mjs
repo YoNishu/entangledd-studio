@@ -49,7 +49,7 @@ const fine = () => ({
   openverse: "ok",      // ok | 401
   tracks: "ok",         // the music search itself: ok | 429 | empty | busy
   gutendex: "ok",       // the free-books catalogue: ok | busy | notext (the book is listed without plain text) | textgone (the text's address is dead)
-  selfcheck: "",        // the reel maker's self-test on GitHub: "" = there is none | pass | fail | none (never run)
+  selfcheck: "",        // the reel maker's self-test on GitHub: "" = there is none | pass | fail (once) | fail2 (twice running) | none (never run)
   selfcheckDays: 1,     // how many days ago its latest run was
   graphVersion: "",     // e.g. "v27.0": Meta answers the list of her posts as a different version from the one asked for
 });
@@ -161,8 +161,9 @@ function selfcheck(req, res, url, tools) {
     if (mode.selfcheck === "none") return send(res, 200, { total_count: 0, workflow_runs: [] });
     const at = new Date(Date.now() - Number(mode.selfcheckDays) * DAY).toISOString();
     const run = (n, conclusion, when) => ({ id: n, name: "Render check", status: "completed", conclusion, event: "schedule", head_branch: "main", created_at: when, updated_at: when });
-    return send(res, 200, { total_count: 2, workflow_runs: [run(2, mode.selfcheck === "fail" ? "failure" : "success", at),
-      run(1, "success", new Date(Date.now() - (Number(mode.selfcheckDays) + 7) * DAY).toISOString())] });
+    const failed = mode.selfcheck === "fail" || mode.selfcheck === "fail2";
+    return send(res, 200, { total_count: 2, workflow_runs: [run(2, failed ? "failure" : "success", at),
+      run(1, mode.selfcheck === "fail2" ? "failure" : "success", new Date(Date.now() - (Number(mode.selfcheckDays) + 7) * DAY).toISOString())] });
   }
   return send(res, 404, { message: "Not Found" });
 }

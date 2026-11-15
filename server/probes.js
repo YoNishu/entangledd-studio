@@ -114,25 +114,35 @@ async function probeSelfcheck(env, kit) {
   if (!res.ok) throw new Error(`GitHub answered ${res.status}`);       // the key itself is the Reel maker's key line's to report
   const runs = ((await res.json()).workflow_runs || []).filter((r) => r && typeof r === "object");
   const newest = runs[0] ? Date.parse(runs[0].created_at) || 0 : 0;
-  const judged = runs.find((r) => r.status === "completed" && ["success", "failure", "timed_out", "startup_failure"].includes(r.conclusion));
+  const verdicts = runs.filter((r) => r.status === "completed" && ["success", "failure", "timed_out", "startup_failure"].includes(r.conclusion));
+  const judged = verdicts[0];
+  const when = (r) => Date.parse(r.updated_at || r.created_at) || Date.now();
+  const failedAt = judged && judged.conclusion !== "success" ? when(judged) : 0;
   const SEE = [`On github.com open ${env.GITHUB_REPO}, then Actions, Render check, and the newest run. The step marked red says what went wrong.`,
     "Tell Claude, in the chat where the app was built, what that step says."];
 
-  // Keep it running without anyone: start a run when the last one is over eight days old.
+  // Keep it running without anyone: start a run when the last one is over eight days old. One failed run is
+  // tried again too (GitHub's machines have their off days), once the failed run is an hour old and nothing
+  // newer has started; only a second failure in a row, or a failure nothing has followed for days, is raised.
   let asked = false;
-  if (Date.now() - newest > 8 * DAY) {
+  const again = failedAt && runs[0] === judged && Date.now() - failedAt > 60 * 60 * 1000;
+  if (Date.now() - newest > 8 * DAY || again) {
     const post = (path, body) => fetch(`${api}/${path}`, { method: path === "enable" ? "PUT" : "POST", headers: { ...headers, "Content-Type": "application/json" },
       body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(SLOW_MS) }).catch(() => null);
     await post("enable");                                   // harmless when it is already on
     const started = await post("dispatches", { ref: "main" });
     asked = !!started && started.status === 204;
   }
-  if (judged && judged.conclusion !== "success") {
-    const at = Date.parse(judged.updated_at || judged.created_at) || Date.now();
+  if (failedAt) {
+    const twice = verdicts[1] && verdicts[1].conclusion !== "success";
+    if (!twice && Date.now() - failedAt < 5 * DAY) {
+      return { title, state: "unknown", brief: "",
+        line: `The self-test failed once, on ${dayIST(failedAt)}. ${asked ? "The app has asked for another run" : "Another run is awaited"}; its result is read tomorrow.` };
+    }
     return { title, state: "attention", fix: SEE, brief: "the reel maker's self-test failed",
-      line: `The reel maker's self-test failed on ${dayIST(at)}, so reels may not come out right until it is looked at.` };
+      line: `The reel maker's self-test failed on ${dayIST(failedAt)}${twice ? ", twice running" : ""}, so reels may not come out right until it is looked at.` };
   }
-  const passed = judged ? Date.parse(judged.updated_at || judged.created_at) || 0 : 0;
+  const passed = judged ? when(judged) : 0;
   if (!passed) {
     return { title, state: "unknown", brief: "", line: asked ? "The self-test has been started for the first time. Its result is read tomorrow." : "The self-test hasn't finished a run yet." };
   }
