@@ -37,6 +37,8 @@ const SECONDS = 22;                     // no new place is started after this lo
 const PICK = 12;                        // lines Nishiii may pick from one page
 const UA = "DsStudio/1.0 (personal quotes app; one search and one page per title)";
 const HOUR = 60 * 60 * 1000;
+// Raised whenever the way of looking changes, so that works looked up the old way are looked up afresh.
+const LOOK_VERSION = 5;
 const RETRY_HOURS = [2, 12, 48];        // a look that found nothing is tried again after this long, then after 30 days
 const MODEL_DAYS = 7;                   // the models a key may use are asked again after this long
 const QUESTIONS = 3;                    // questions to Gemini and OpenAI together for one look at one work
@@ -172,8 +174,10 @@ function due(work, have, share, now) {
   if (!f || !f.at) return true;
   if (now - f.at > LOOK_AGAIN_DAYS * DAY) return true;
   if (have >= share) return false;
-  // A look that found nothing at all is tried again soon, a few times, before it waits the 30 days.
-  if (!kept(work).length) return typeof f.resume === "number" || now >= retryAt(f);
+  // She is asking for this work now and there is nothing kept for it: look, whatever went before. (An earlier
+  // look that found nothing must never stand in the way of her own request; only a tap twice within two minutes
+  // is spared. The waits of 2, 12 and 48 hours are for the timed job, which goes by retryAt below.)
+  if (!kept(work).length) return typeof f.resume === "number" || f.v !== LOOK_VERSION || now - f.at > 2 * 60 * 1000;
   // Running short: look again at once if the last look had to stop early or still turned up something new,
   // otherwise tomorrow.
   return typeof f.resume === "number" || f.added > 0 || now - f.at > DAY;
@@ -912,7 +916,7 @@ async function lookUp(env, kit, item, need, about, taste, state) {
   }
   const all = [...kept(work), ...lines].slice(-KEEP);
   const steps = state.trail.slice();
-  const out = { ...prior, at: Date.now(), added: lines.length, resume, page: where || prior.page || "", lines: all,
+  const out = { ...prior, v: LOOK_VERSION, at: Date.now(), added: lines.length, resume, page: where || prior.page || "", lines: all,
     tries: all.length ? 0 : (prior.tries || 0) + 1, trail: { at: Date.now(), said: sayTrail(steps, lines.length), steps } };
   if (resume === undefined) delete out.resume;
   keepTrail(state, work, steps, lines.length);
@@ -1034,7 +1038,7 @@ export async function refreshOne(env, kit, lib, { budget = 14, need = 10 } = {})
   const works = typed(lib).filter((w) => w.title);
   const never = works.filter((w) => !w.found || !w.found.at);
   const resumed = works.filter((w) => w.found && typeof w.found.resume === "number");
-  const retry = works.filter((w) => w.found && w.found.at && !kept(w).length && typeof w.found.resume !== "number" && now >= retryAt(w.found)).sort((a, b) => a.found.at - b.found.at);
+  const retry = works.filter((w) => w.found && w.found.at && !kept(w).length && typeof w.found.resume !== "number" && (w.found.v !== LOOK_VERSION || now >= retryAt(w.found))).sort((a, b) => a.found.at - b.found.at);
   const old = works.filter((w) => w.found && w.found.at && now - w.found.at > LOOK_AGAIN_DAYS * DAY).sort((a, b) => a.found.at - b.found.at);
   const work = never[0] || resumed[0] || retry[0] || old[0];
   if (!work) return null;
