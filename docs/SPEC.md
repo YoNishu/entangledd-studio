@@ -50,6 +50,7 @@ list at the end, "Ideas for later, only if she asks".
 | 27 | Each tab has one purpose: the week's summary lives in Insights (7 days), Find quotes in the Library, the chat in the Nishiii tab; Today is ranked 1 to 5 | Done |
 | 28 | A quote is something said in the work, never something said about it: every looked-up line passes `server/said.js` (place on the page, wording, then one batched question to Claude: said, narration, about, unsure); the trail counts what was refused and why; a one-off job (`lines-gate`, `data/linegate.json`) cleans what was already kept | Done |
 | 29 | Reel file at the top of Instagram's reel specification (see "Reel file"); what Instagram serves for each reel is measured once (`post.served`, a numbers-only line in `/api/health`); numbers re-asked after 5 minutes for posts under 3 days | Done |
+| 30 | Reading more pages: pages the app may not read itself read through Tavily's Extract; a reading list per work (its review and quotes pages, the results not read yet, the questions not asked yet), read on round by round until all is read; the judge sees the words around each line; lines ready before she asks; Find quotes goes on until she has the number she asked for (see "Reading more pages") | Done |
 
 ## How the app is laid out
 
@@ -355,7 +356,7 @@ After a post, the server asks Instagram once for the served file's size and keep
   row with "Look again" (`POST .../<id>/look`, at most once a minute) and in the message when
   nothing was found. A look that found nothing is due again after 2, 12, 48 hours, then 30 days
   (`found.tries`); the timed look-up retries such works too.
-- What is found is kept on the work in the Library (`found`: at most 30 lines, each with its
+- What is found is kept on the work in the Library (`found`: at most 80 lines, each with its
   page), so a title is looked up once: again when the kept lines run short, or after 30 days.
   Today's five may use kept lines too. The Library shows "12 real lines found" on the work, with
   "Not the right one" to drop them and never use that page for it again.
@@ -424,6 +425,46 @@ After a post, the server asks Instagram once for the served file's size and keep
   public-domain sources and her own writing.
 - Secrets (Instagram token, Anthropic key and the others) live in Cloudflare and GitHub, never
   in the repository.
+
+## Reading more pages
+
+What: for a named work, more of the pages that hold its lines are read, a round at a time (`server/opensearch.js`
+`readOn`, `server/findlines.js` `lookUp`), so asking for ten brings ten while lines exist.
+
+- Tavily's Extract (`POST https://api.tavily.com/extract`, Bearer `TAVILY_API_KEY`, `{ urls: 1..20, extract_depth:
+  "basic", format: "markdown" }`; markdown so a page's links, its "?page=N", stay readable) reads a page whenever
+  the key is set and (a) the site refuses the app (403, 202, 429, a "prove you are human" page) or rests as blocked
+  for the day, or (b) a search result came without its text. One call for up to 20 addresses, 8 s, 400 KB a page
+  kept. Nothing else ever gets round a site's refusal: no other route, no browser pretence, no retries.
+- Its limits: `OPEN_A_DAY.extract` = 150 pages a day (30 credits; only pages read count). 401: rests a day; 429:
+  rests for its Retry-After (1 to 60 minutes); 432/433 (allowance used up): rests until tomorrow (India time). The
+  trail says "Read through Tavily: 5 pages"; the health line "Looking things up" says "Tavily's page reader: n of
+  150 pages read today", and when it rests, until when.
+- The reading list, kept on the work with its lines (`found.more`): `{ pages: [{ url, site, title, read, got }],
+  mdl: { path, next, last, quiet, done }, gr: { id, next, last, quiet, done }, asked: [question] }`. MyDramaList's
+  address comes from a Tavily result on mydramalist.com that names the work, or its search page (read through
+  Extract when refused); its last review page from the "?page=N" links of a page read. A Goodreads work's quotes
+  pages the same way. Each round reads up to 5 pages: the next review or quotes pages, then the results not read
+  yet (best first); when none is left, the next question not yet asked (at most one more Tavily search a round). A
+  review list ends at its last page or after three pages in a row with nothing new.
+- When: the first look reads on after its usual places when there is room; every later ask whose kept lines run
+  short reads on at once; adding a work runs a first look (the phone asks for it right after the title check); the
+  timed look (`engine-found`) reads one more round for a work with fewer than 20 lines she has not been shown.
+- Find quotes: the phone asks in rounds of five until she has the number she asked for (at most 24 rounds, or 6
+  rounds in a row with nothing new); the answer says `left` (pages remain) and `reading` ("Reading more reviews of
+  <title>…"), shown as "Found 6 of 10. Reading more reviews of <title>…". It ends "Found 10 of 10", or says why:
+  "That's every line I could find from <title> for now" only when every known page is read and every question
+  asked; "Tavily, which reads the pages for me, has used up today's allowance. I'll read more of <title> tomorrow";
+  "I've read as many pages as I may today"; or "Stopped. Found n of 10" (her Stop button, `#ask-stop`, or closing
+  the sheet). While a work has pages left, Nishiii's memory is not asked for it.
+- The judge (`server/said.js`) sees, for each line, up to 120 characters before and after it on its page, who it
+  is credited to and where it was found; a reviewer's own words in quotation marks are "about", a line a reviewer
+  quotes from the work is "said". "Unsure" lines stay (marked to check) only with the page's structural proof and
+  one of the work's characters named for them. Review and quotes pages read on are not picked by Claude: every
+  quoted line on them goes to the gate.
+- Limits measured on the stand-in: a round costs 15 to 33 outside calls (storage included), under 50; the computing
+  of a round of 5 review pages of 52 KB is about 10 to 12 ms, less than a first look's 4 pages of that size (13 to 14
+  ms). `KEEP` is 80 lines a work (about 32 KB) plus its reading list (at most 40 pages, about 8 KB).
 
 ## Ideas for later, only if she asks
 

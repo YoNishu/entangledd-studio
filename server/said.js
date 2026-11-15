@@ -11,7 +11,10 @@
       line on its page, the part of the page it sat in, and the kind of place it came from.
    2. judge(env, kit, work, lines, opts): what is left goes to Claude in one question for the whole look-up:
       for each numbered line "said" (a character says it), "narration" (the work's own words: a sentence of the
-      book, a voice-over), "about" (anyone describing the work) or "unsure". Only "said" and "narration" stay.
+      book, a voice-over), "about" (anyone describing the work) or "unsure". Only "said" and "narration" stay, and
+      an "unsure" line with the page's own proof and one of the work's characters named for it (marked to check).
+      Each line goes with the words just before and after it on its page (up to 120 characters each), who it is
+      credited to and where it was found, so a reviewer's own remark in quotation marks is told from a line quoted.
       Nothing about her is sent: only the work's public title and kind, and the lines.
       When Claude cannot be asked, only lines with strong proof in the page's own structure stay: a quotes
       page's own list item (Wikiquote, Goodreads, IMDb quotes), a line quoted in a review on the work's own
@@ -153,10 +156,11 @@ export function count(tally, why) { if (tally && why) tally[why] = (tally[why] |
 // ---------------------------------------------------------------- 2. Claude's judgement
 
 export const JUDGE_SYSTEM = `You sort lines found on the web for a quotes page. The lines were found for one book, film or series (or, when no work is named, each is credited to a person).
+Each line comes with the words just before and after it on its page, who the page credits it to, and where it was found. Read them as a reader of the page would.
 For each numbered line say what it is:
-- "said": a character in the work says it, or the person it is credited to said or wrote it.
+- "said": a character in the work says it, or the person it is credited to said or wrote it. A line a reviewer quotes FROM the work is "said": the words around it show it is the work's (a character's name next to it, "my favourite line", "when she tells him", "this scene where he says").
 - "narration": the work's own words that no character says: a sentence of the book, a voice-over, words shown on screen.
-- "about": anyone describing or discussing the work from outside: a headline or article title, a review or rating, a summary of the plot, a tagline, a title, an episode or chapter name, news, trivia, words about its actors or its making.
+- "about": anyone describing or discussing the work from outside: a headline or article title, a review or rating, a summary of the plot, a tagline, a title, an episode or chapter name, news, trivia, words about its actors or its making. A reviewer's OWN words in quotation marks are "about" too: their reaction while watching (an exclamation that something will be good, surprise that something already happened), their verdict on the acting or the writing, a phrase they put in quotes for emphasis.
 - "unsure": you cannot tell.
 Reply with a JSON array only, one item for every line: [{"n": 1, "is": "said"}]`;
 const MAX_JUDGED = 40;                          // lines in one question; more are left to the page's structure
@@ -168,6 +172,14 @@ function workLine(work) {
   return `Work: the ${[work.year || "", work.country || "", kind].filter(Boolean).join(" ")} "${work.real || work.title}"${work.type === "book" && work.author ? ` by ${work.author}` : ""}`;
 }
 
+// One line of the question: the line, who it is credited to and where it was found; under it, what came just
+// before and after it on its page (up to WIDE characters each), as a reader of the page sees it.
+const flatWords = (t) => String(t || "").replace(/\s+/g, " ").replace(/"/g, "'");
+export function questionLine(l, i) {
+  const c = l.ctx || {}, b = flatWords(c.wb ?? c.before).slice(-WIDE), a = flatWords(c.wa ?? c.after).slice(0, WIDE);
+  return `${i + 1}. "${String(l.text).replace(/\s+/g, " ")}" (${[l.by && `credited to ${l.by}`, `found ${WHERE[c.place] || "on a web page"}`].filter(Boolean).join("; ")})`
+    + (b.trim() ? `\n   before: "${b}"` : "") + (a.trim() ? `\n   after: "${a}"` : "");
+}
 // The lines that passed isSaid, judged together. "lines" are { text, by, ctx }. Returns { kept, refused, how }:
 // the kept lines (each with "is" set, "ctx" taken off), a tally of the rest by reason, and how they were judged
 // ("claude", "structure" or "" when there was nothing to judge). "state" (a look-up's) is charged for the call.
@@ -180,7 +192,7 @@ export async function judge(env, kit, work, lines, { state = null, ask = true } 
     try {
       if (state) state.spent += 2;              // the question, and the day's count of questions to Claude
       answer = kit.parseJson(await kit.claude(env, { system: JUDGE_SYSTEM, maxTokens: 1200, messages: [{ role: "user", content:
-        `${workLine(work)}\n\n${asked.map((l, i) => `${i + 1}. "${String(l.text).replace(/\s+/g, " ")}" (${[l.by && `credited to ${l.by}`, `found ${WHERE[(l.ctx || {}).place] || "on a web page"}`].filter(Boolean).join("; ")})`).join("\n")}` }] }));
+        `${workLine(work)}\n\n${asked.map((l, i) => questionLine(l, i)).join("\n")}` }] }));
     } catch (e) { answer = null; }
   }
   const verdicts = new Map();
@@ -195,6 +207,8 @@ export async function judge(env, kit, work, lines, { state = null, ask = true } 
     delete out.ctx;
     if (is === "said" || is === "narration") kept.push({ ...out, is });
     else if (is === "about") count(refused, "judged about the work");
+    // Unsure, but the page itself shows it is a line and names one of the work's characters for it: kept, to check.
+    else if (is === "unsure" && isCharacter(work, l.by) && isSaid(l, work, l.ctx || {}).proof) kept.push({ ...out, is: "unsure", verify: true });
     else if (is === "unsure") count(refused, "judged unsure");
     // Not judged (Claude could not be asked, or said nothing of it): only the page's own structure decides.
     else if (isSaid(l, work, l.ctx || {}).proof) kept.push({ ...out, is: "structure" });
@@ -238,8 +252,11 @@ export function around(text, parts, at, end = at) {
   const t = String(text);
   const start = t.lastIndexOf("\n", at - 1) + 1, stop = t.indexOf("\n", end) < 0 ? t.length : t.indexOf("\n", end);
   const line = t.slice(start, stop);
-  return { before: t.slice(Math.max(start, at - 120), at), after: t.slice(end, Math.min(stop, end + 140)), part: partAt(parts, at), heading: /^\s*(={2,6}|#{1,6}\s)/.test(line) };
+  return { before: t.slice(Math.max(start, at - 120), at), after: t.slice(end, Math.min(stop, end + 140)), part: partAt(parts, at), heading: /^\s*(={2,6}|#{1,6}\s)/.test(line), ...wide(t, at, end) };
 }
+// What a reader sees around a piece of text, across lines: up to WIDE characters before and after it (for the judge).
+export const WIDE = 120;
+export const wide = (text, at, end = at) => { const t = String(text); return { wb: t.slice(Math.max(0, at - WIDE), at), wa: t.slice(end, end + WIDE) }; };
 // Where a line picked from a page (by Claude, so with no position of its own) sits on it, found by its first or
 // last words: { before, after, part, heading, place, quoted }. Only "place" when it cannot be found.
 export function contextOf(pg, text, place) {

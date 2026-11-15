@@ -7,7 +7,7 @@
      2. the big quote sites, read directly (free, no key): Goodreads for books, IMDb for films and series
      3. Gemini with Google Search, only when the setting GEMINI_API_KEY is there (at most 40 questions a day)
      4. OpenAI with web search, only when the setting OPENAI_API_KEY is there (at most 20 questions a day)
-   What is found is kept on the work in the Library as "found": at most 30 lines, each with the page it came
+   What is found is kept on the work in the Library as "found": at most 80 lines, each with the page it came
    from. So a title is looked up once, and again only when its kept lines run short or after 30 days.
    After these come Anthropic's paid search (only when switched on) and Nishiii's memory, both in worker.js.
 
@@ -30,7 +30,7 @@ import * as O from "./opensearch.js";
 import * as S from "./said.js";
 
 const DAY = 24 * 60 * 60 * 1000;
-export const KEEP = 30;                 // lines kept for one work
+export const KEEP = 80;                 // lines kept for one work (with its reading list: about 45 KB at most)
 export const LOOK_AGAIN_DAYS = 30;      // kept lines are refreshed after this long
 export const A_DAY = { gemini: 40, openai: 20 };   // so a key can never run up a bill, whatever is attached to it
 const BUDGET = 26;                      // outside calls one request may spend on looking up (it has about 50 in all)
@@ -39,7 +39,7 @@ const PICK = 12;                        // lines Nishiii may pick from one page
 const UA = "DsStudio/1.0 (personal quotes app; one search and one page per title)";
 const HOUR = 60 * 60 * 1000;
 // Raised whenever the way of looking changes, so that works looked up the old way are looked up afresh.
-const LOOK_VERSION = 6;                // 6: every line through the gate (said.js)
+const LOOK_VERSION = 7;                // 6: every line through the gate (said.js); 7: a reading list, read on round by round
 const RETRY_HOURS = [2, 12, 48];        // a look that found nothing is tried again after this long, then after 30 days
 const MODEL_DAYS = 7;                   // the models a key may use are asked again after this long
 const QUESTIONS = 3;                    // questions to Gemini and OpenAI together for one look at one work
@@ -77,7 +77,7 @@ export function tidy(text, env = {}, max = 160) {
   return out.replace(/[A-Za-z0-9_|%-]{24,}/g, "[hidden]").replace(/\S+@\S+\.\S+/g, "[hidden]").slice(0, max);
 }
 const PLACE_NAME = { wikiquote: "Wikiquote", goodreads: "Goodreads", imdb: "IMDb", gemini: "Google", openai: "OpenAI",
-  web: "pages on the web", duckduckgo: "DuckDuckGo", bing: "Bing", tavily: "Tavily", serper: "Serper" };
+  web: "pages on the web", duckduckgo: "DuckDuckGo", bing: "Bing", tavily: "Tavily", serper: "Serper", more: "more pages about it" };
 const TRIED = new Set(["found", "no page", "wrong work", "no line passed"]);
 const andList = (a) => (a.length < 2 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}`);
 // The trail in one plain sentence for her: "Looked on Wikiquote, IMDb and Google: nothing yet."
@@ -96,8 +96,9 @@ export function sayTrail(steps, n = 0) {
 // The trail in full, for Nishith: every step, with the service's own words.
 export function stepsText(steps) {
   return (steps || []).map((s) => {
-    const name = { ...PLACE_NAME, gemini: "Gemini", title: "Title check" }[s.where] || s.where;
-    const bits = [s.q && `asked for ${s.q}`, s.model, s.status && `status ${s.status}`, Number.isFinite(s.n) && s.what === "found" && `${s.n} lines`,
+    if (s.where === "extract" && s.what === "read") return `Read through Tavily: ${s.n} ${s.n === 1 ? "page" : "pages"}${s.why ? ` (${s.why})` : ""}.`;
+    const name = { ...PLACE_NAME, gemini: "Gemini", title: "Title check", extract: "Tavily's page reader", more: "Reading on" }[s.where] || s.where;
+    const bits = [s.q && `asked for ${s.q}`, s.model, s.status && `status ${s.status}`, Number.isFinite(s.n) && s.what === "found" && `${s.n} lines`, Number.isFinite(s.pages) && `${s.pages} pages read`,
       s.list && s.list.join(", "), s.read && s.read.length && `read ${s.read.join(", ")}`, s.why, s.said && `"${s.said}"`].filter(Boolean);
     return `${name}: ${s.what}${bits.length ? ` (${bits.join("; ")})` : ""}.`;
   }).join(" ");
@@ -171,20 +172,29 @@ function asQuote(work, line) {
     source: { type: work.type, title: work.title, url: line.url || undefined, site: line.site || undefined },
     theme: line.theme || "", tone: line.tone || "", verify: !!line.verify, found: true, ...(line.is ? { is: line.is } : {}) };
 }
-// Is it time to look this work up (again)?
-function due(work, have, share, now) {
+// Is it time to look this work up (again)? "more" is true when its reading list still has pages to read now.
+function due(work, have, share, now, more = false) {
   const f = work.found;
   if (!f || !f.at) return true;
-  if (now - f.at > LOOK_AGAIN_DAYS * DAY) return true;
+  if (now - (f.first || f.at) > LOOK_AGAIN_DAYS * DAY) return true;
   if (have >= share) return false;
   // She is asking for this work now and there is nothing kept for it: look, whatever went before. (An earlier
   // look that found nothing must never stand in the way of her own request; only a tap twice within two minutes
   // is spared. The waits of 2, 12 and 48 hours are for the timed job, which goes by retryAt below.)
-  if (!kept(work).length) return typeof f.resume === "number" || f.v !== LOOK_VERSION || now - f.at > 2 * 60 * 1000;
-  // Running short (she has been shown the kept lines): look again at once for more, unless a look a moment ago
-  // found nothing new, which means every line there is to find has been found for now.
-  return typeof f.resume === "number" || f.added > 0 || f.v !== LOOK_VERSION || now - f.at > AGAIN_AFTER;
+  if (!kept(work).length) return more || typeof f.resume === "number" || f.v !== LOOK_VERSION || now - f.at > 2 * 60 * 1000;
+  // Running short (she has been shown the kept lines): read on at once while there is anything left to read; else
+  // look again, unless a look a moment ago found nothing new, which means every line there is to find has been found.
+  return more || typeof f.resume === "number" || f.added > 0 || f.v !== LOOK_VERSION || now - f.at > AGAIN_AFTER;
 }
+// Is there more to read for this work now? Pages or questions left on its reading list, and not waiting for a
+// service that rests (Tavily's Extract after "allowance used up").
+export function canReadOn(env, kit, work, now = Date.now()) {
+  const f = work.found;
+  if (!f || f.v !== LOOK_VERSION || !f.more) return false;
+  if (f.wait && now < (f.wait.until || 0)) return false;
+  return O.leftToRead(env, withKnown(kit, work), f.more);
+}
+export const waitingFor = (work, now = Date.now()) => (work.found && work.found.wait && now < (work.found.wait.until || 0) ? work.found.wait : null);
 const AGAIN_AFTER = 10 * 60 * 1000;     // a look that found nothing new is not repeated for her within ten minutes
 
 // When a look that found nothing may be tried again: after 2 hours, then 12, then 48, then the 30 days.
@@ -351,15 +361,29 @@ async function wikiquotePage(env, kit, work, state) {
 const mdlFits = (work) => (work.type === "series" || work.type === "film") && (EAST.test(work.country || "") || (!work.country && work.type === "series"));
 async function mdlPage(env, kit, work, state) {
   const site = env.MDL_SITE || "https://mydramalist.com";
-  const found = await O.fetchCapped(env, state, `${site}/search?q=${encodeURIComponent(work.real || work.title)}`);
-  if (found.status !== 200) throw Object.assign(new Error("answered " + found.status), { blocked: "answered " + found.status });
-  const list = O.readMdlSearch(found.text), hit = O.mdlPick(kit, work, list);
-  O.say(env, "mydramalist search", { n: list.length, first: list.slice(0, 5).map((r) => `${r.path} ${r.title} ${r.year}`), hit: hit && hit.path });
-  if (!hit) return null;
-  const pg = await O.fetchCapped(env, state, `${site}${hit.path}/reviews`);
-  if (pg.status !== 200) return null;
-  const text = O.pageText(pg.text).slice(0, 300000);
-  return text.length < 200 ? null : { name: hit.title, url: `https://mydramalist.com${hit.path}/reviews`, site: "mydramalist.com", text, web: true };
+  const own = (u) => site + new URL(u).pathname + new URL(u).search;          // the address the app itself fetches
+  const more = state.more;
+  let name = "";
+  if (!more.mdl) {
+    // Its own search page: by the app while the site lets it, else through Tavily's Extract.
+    const addr = `https://mydramalist.com/search?q=${encodeURIComponent(work.real || work.title)}`;
+    const found = (await O.readSite(env, kit, state, "mydramalist", [addr], own)).get(O.addressKey(addr));
+    if (!found) return null;
+    const list = O.readMdlSearch(found.links), hit = O.mdlPick(kit, work, list);
+    O.say(env, "mydramalist search", { n: list.length, first: list.slice(0, 5).map((r) => `${r.path} ${r.title} ${r.year}`), hit: hit && hit.path, how: found.how });
+    if (!hit) return null;
+    more.mdl = { path: hit.path, next: 1, last: 0, quiet: 0 };
+    name = hit.title;
+  }
+  if (more.mdl.next > 1) return null;                         // its first page was read already: later rounds read on
+  const url = O.mdlReviews(more.mdl.path, 1);
+  const pg = (await O.readSite(env, kit, state, "mydramalist", [url], own)).get(O.addressKey(url));
+  if (!pg) return null;
+  more.mdl.next = 2;
+  more.mdl.last = O.lastPage(pg.links) || 1;                  // no list of pages: it is the only one
+  const text = pg.text.slice(0, 300000);
+  // Reviews: every quoted line goes to the gate, whose judge sees the words around it (no picking by Claude).
+  return text.length < 200 ? null : { name: name || more.mdl.path, url, site: "mydramalist.com", text, web: true, extractor: true, via: pg.how };
 }
 
 // ---------------------------------------------------------------- 2. Goodreads (books) and IMDb (films and series)
@@ -379,10 +403,13 @@ async function goodreadsPage(env, kit, work, state) {
     && (!surname || kit.norm((b.author || {}).name).split(" ").includes(surname)) && !not.includes("goodreads:" + b.workId));
   if (!book) return null;                                   // no such book there: nothing wrong with the site
   const id = String(book.workId).replace(/\D/g, "");
+  // Its quotes pages go on the reading list: page 1 now, the others in later rounds (through Extract if need be).
+  if (!state.more.gr) state.more.gr = { id, next: 1, last: 0, quiet: 0 };
   res = await page(state, `${base}/work/quotes/${id}`, "text/html");
   if (!res.ok) return void noteBlocked(state, "goodreads", "quotes page answered " + res.status);
   const html = (await res.text()).slice(0, 1_500_000);
   if (wall(html)) return void noteBlocked(state, "goodreads", "asked for proof of a person");
+  if (state.more.gr.id === id && state.more.gr.next <= 1) Object.assign(state.more.gr, { next: 2, last: O.lastPage(html) || 1 });   // no list of pages: it is the only one
   const quotes = [];
   for (let at = 0, n = 0; n < 40; n++) {
     const start = html.indexOf('class="quoteText"', at);
@@ -467,7 +494,7 @@ function passagesOf(text) {
 async function pickFrom(env, kit, work, pg, about, taste, have, state) {
   const passages = passagesOf(have.had ? withoutHad(kit, pg.text, have.had) : pg.text);
   let answer = null;
-  try {
+  if (!pg.extractor) try {
     state.spent += 4;                                // the question itself, and the counting that goes with every question to Claude
     answer = kit.parseJson(await kit.claude(env, { system: PICK_SYSTEM, maxTokens: 2500, messages: [{ role: "user", content:
       `Work: ${work.title} (${work.type})${work.author ? ` by ${work.author}` : ""}\nPick up to ${PICK} lines.\n${about ? `about: ${about}\n` : ""}${taste ? `taste: ${JSON.stringify({ loves: taste.loves, avoids: taste.avoids, herNotes: taste.herNotes })}\n` : ""}\nPassages:\n${passages.map((p, i) => `--- ${i + 1} ---\n${p}`).join("\n")}` }] }));
@@ -496,7 +523,7 @@ async function pickFrom(env, kit, work, pg, about, taste, have, state) {
   pick(answer, O.sameWords(flat));
   // Claude could not answer, picked nothing, or none of what it picked is on the page: the page's own lines,
   // found without it. (Picks that were all already kept are Claude's judgement that the page has no more.)
-  if (!lines.length && (!Array.isArray(answer) || !answer.length || answer.every((q) => !O.onPage(O.sameWords(flat), kit.flatten(q && q.text))))) {
+  if (!lines.length && (pg.extractor || !Array.isArray(answer) || !answer.length || answer.every((q) => !O.onPage(O.sameWords(flat), kit.flatten(q && q.text))))) {
     const got = O.extractLines(pg.text, { names: [...(work.cast || []), ...(work.characters || [])], list: pg.site === "wikiquote.org" });
     O.say(env, "candidates", { site: pg.site, url: pg.url, n: got.length, how: "without Claude" });
     pick(got.filter((q) => !q.other), O.sameWords(pg.text));
@@ -868,11 +895,17 @@ async function lookUp(env, kit, item, need, about, taste, state) {
   if (item.had) have.had = item.had;
   have.kept = new Map();                           // the lines of this look, so a second site that agrees makes one sure
   const prior = work.found || {};
-  let lines = [], where = "";
-  // Reading a page: finds it, has Nishiii pick from it, and copes quietly when the site is unreachable.
-  const read = async (site, find) => {
+  // Its reading list (opensearch.js): where its lines are written down and how far it has been read.
+  const fresh = !(prior.v === LOOK_VERSION && prior.at && Date.now() - (prior.first || prior.at) < LOOK_AGAIN_DAYS * DAY);
+  state.more = O.newMore(fresh ? null : prior.more);
+  // A work looked up already, with pages left to read: this round reads on, and asks the other places nothing.
+  const readingOn = !fresh && typeof prior.resume !== "number" && !!prior.more && O.leftToRead(env, work, state.more);
+  let lines = [], where = "", waiting = null;
+  // Reading a page: finds it, has Nishiii pick from it, and copes quietly when the site is unreachable. A site
+  // that turned the app away is still read when "viaTavily" and Tavily's Extract can read its pages.
+  const read = async (site, find, viaTavily = false) => {
     await openRecord(env, kit, state);
-    if (resting(state, site)) {
+    if (resting(state, site) && !(viaTavily && O.canExtract(env, state))) {
       // Said once a day; a rest of a week is not repeated on every look.
       const s = state.rec.sites[site];
       if ((s.until || 0) - (s.failed || 0) <= DAY || Date.now() - s.failed < DAY) step(state, site, "not asked", { why: (s.until || 0) - (s.failed || 0) > DAY ? `it turned the app away; resting until ${new Date(s.until).toISOString().slice(0, 10)}` : "it turned the app away earlier today" });
@@ -883,7 +916,7 @@ async function lookUp(env, kit, item, need, about, taste, state) {
       const pg = await find(env, kit, work, state);
       if (!pg) { if (state.trail.length === before) step(state, site, "no page", { why: `no page for ${work.real || work.title}` }); return; }
       const got = await pickFrom(env, kit, work, pg, about, taste, have, state);
-      if (got.length) noteSite(state, site, "");
+      if (got.length && pg.via !== "read through Tavily") noteSite(state, site, "");     // (read through Extract: the site itself still says no)
       if (got.length && !where) where = pg.name;
       step(state, site, got.length ? "found" : "no line passed", { n: got.length, ...(got.length ? {} : { why: "no line on the page was picked" }) });
       lines = lines.concat(got);
@@ -902,7 +935,7 @@ async function lookUp(env, kit, item, need, about, taste, state) {
   const asks = shapes.flatMap((shape) => helpers.map((who) => helper(who, shape))).slice(0, QUESTIONS);
   const places = [
     { cost: 6, name: "wikiquote", look: () => read("wikiquote", wikiquotePage) },
-    { cost: 6, name: "mydramalist", off: !mdlFits(work), look: () => read("mydramalist", mdlPage) },
+    { cost: 6, name: "mydramalist", off: !mdlFits(work), look: () => read("mydramalist", mdlPage, true) },
     // Goodreads and IMDb ask that robots don't read their pages; this step can be switched off with QUOTE_SITES=off.
     { cost: 6, name: work.type === "book" ? "goodreads" : "imdb", off: env.QUOTE_SITES === "off", look: () => read(work.type === "book" ? "goodreads" : "imdb", work.type === "book" ? goodreadsPage : imdbPage) },
     // The web with no paid allowance (opensearch.js): Tavily or Serper when their keys are set, else a public
@@ -924,11 +957,28 @@ async function lookUp(env, kit, item, need, about, taste, state) {
     } },
     ...asks,
   ];
+  // Reading on (opensearch.js readOn): the next review or quotes pages, the results not read yet, or one more
+  // question. Last in a first look (when there is room), alone in the rounds after it.
+  const readMore = { cost: 7, name: "more", get off() { return !O.leftToRead(env, work, state.more); }, look: async () => {
+    try {
+      const got = await O.readOn(env, kit, work, state, { want: 30, have, about });
+      if (got.waiting) { waiting = got.waiting; step(state, "more", "not asked", { why: got.waiting.why === "limit" ? "the app's daily limit of pages read through Tavily" : "Tavily's page reader is resting" }); return; }
+      step(state, "more", got.lines.length ? "found" : got.read ? "no line passed" : "no page", { n: got.lines.length, pages: got.read });
+      if (got.lines.length && !where) where = got.lines[0].url;
+      lines = lines.concat(got.lines);
+    } catch (e) {
+      if (e instanceof kit.UserError && e.status !== 502) throw e;
+      step(state, "more", "no answer", { why: tidy(e && e.message, env, 80) });
+    }
+  } };
+  if (readingOn) places.length = 0;
+  places.push(readMore);
   let resume;
-  for (let i = typeof prior.resume === "number" && Date.now() - prior.at < DAY ? prior.resume : 0; i < places.length && lines.length < need; i++) {
+  for (let i = !readingOn && typeof prior.resume === "number" && Date.now() - prior.at < DAY ? prior.resume : 0; i < places.length && lines.length < need; i++) {
     if (places[i].off) continue;
     const late = Date.now() - state.began > state.limit;
     if (late || state.spent + places[i].cost > (state.budget || BUDGET)) {
+      if (readingOn || places[i] === readMore) break;       // reading on simply waits for the next round
       resume = i;
       step(state, places[i].name, "not asked", { why: late ? "out of time for now: the next look carries on here" : "out of calls for now: the next look carries on here" });
       break;
@@ -942,9 +992,11 @@ async function lookUp(env, kit, item, need, about, taste, state) {
   const gate = gateNote(state, judged, lines.length);
   const all = [...kept(work), ...lines].slice(-KEEP);
   const steps = state.trail.slice();
-  const out = { ...prior, v: LOOK_VERSION, at: Date.now(), added: lines.length, resume, page: where || prior.page || "", lines: all,
-    tries: all.length ? 0 : (prior.tries || 0) + 1, trail: { at: Date.now(), said: sayTrail(steps, lines.length), steps, ...(gate ? { gate } : {}) } };
+  const out = { ...prior, v: LOOK_VERSION, at: Date.now(), first: fresh ? Date.now() : prior.first || prior.at, added: lines.length, resume, page: where || prior.page || "", lines: all,
+    tries: all.length ? 0 : (prior.tries || 0) + 1, trail: { at: Date.now(), said: sayTrail(steps, lines.length), steps, ...(gate ? { gate } : {}) },
+    more: state.more, ...(waiting ? { wait: { why: waiting.why, until: waiting.until } } : {}) };
   if (resume === undefined) delete out.resume;
+  if (!waiting) delete out.wait;
   keepTrail(state, work, steps, lines.length);
   keepCoarse(state, item, steps, lines.length);
   return out;
@@ -1005,15 +1057,17 @@ export function keepTrail(state, work, steps, n) {
 // "room" is how many quotes are still wanted and "also" how many other sources share that room.
 // Returns { items, short, dry }: the quotes, the works that did not get as many as their share, and of those the
 // ones with nothing new left to find for now (looked up just now, or a moment ago, and still nothing new).
+// "reading": of the short ones, those with pages still to read (the next round reads on); "waiting": those whose
+// pages wait for a service that rests until tomorrow (Tavily's Extract), each { work, wait }.
 export async function forWorks(env, kit, lib, works, { room, also = 0, about = "", taste = null, seen, ranker = null }) {
-  const items = [], short = [], looked = [], dry = [];
+  const items = [], short = [], looked = [], dry = [], reading = [], waiting = [];
   const state = newState(env);
   const words = kit.norm(about).split(" ").filter((w) => w.length > 3);
   for (let i = 0; i < works.length && room > 0; i++) {
     const work = works[i];
     const share = Math.ceil(room / (works.length - i + also));
     let have = unused(kit, lib, work, seen);
-    const isDue = due(work, have.n, share, Date.now());
+    const isDue = due(work, have.n, share, Date.now(), canReadOn(env, kit, work));
     let lookedNow = false;
     if (state.spent + 6 <= BUDGET && Date.now() - state.began <= state.limit && isDue) {
       work.had = seen;                                   // the look picks only lines she has not been shown
@@ -1024,7 +1078,11 @@ export async function forWorks(env, kit, lib, works, { room, also = 0, about = "
       have = unused(kit, lib, work, seen);
     }
     // (A look that had to stop early, out of time or calls, carries on next time: that is not "nothing left".)
-    if (have.n < share && ((lookedNow && typeof work.found.resume !== "number") || !isDue)) dry.push(work);
+    // Not "nothing left" either while its reading list has pages to read, or waits for a service resting until tomorrow.
+    const wait = have.n < share ? waitingFor(work) : null;
+    if (wait) waiting.push({ work, wait });
+    else if (have.n < share && canReadOn(env, kit, work)) reading.push(work);
+    else if (have.n < share && ((lookedNow && typeof work.found.resume !== "number") || !isDue)) dry.push(work);
     // Her own lines from this title first; then found lines: those on her subject, or as the scorer ranks them.
     let pool = shuffle(have.found);
     if (words.length) pool.sort((a, b) => words.filter((w) => kit.norm(b.text).includes(w)).length - words.filter((w) => kit.norm(a.text).includes(w)).length);
@@ -1037,7 +1095,7 @@ export async function forWorks(env, kit, lib, works, { room, also = 0, about = "
   }
   await closeRecord(env, kit, state);
   if (looked.length) await keep(env, kit, lib, looked);
-  return { items, short, dry };
+  return { items, short, dry, reading, waiting, said: reading.length ? O.readingWhat(withKnown(kit, reading[0]), reading[0].found.more) : "" };
 }
 // Writes what was found onto the works in the Library. The Library is read afresh first, so anything she
 // changed while the search ran is not lost.
@@ -1085,6 +1143,7 @@ export function keptPool(kit, lib, seen, max = 14) {
 }
 // The timed look-up: one work of her Library that has never been looked up, or whose lines are due again, is
 // looked up within a smaller budget (a timed run may spend about 20 outside calls). Null when none is due.
+export const READY = 20;                 // unseen lines a work should have ready before she asks
 export async function refreshOne(env, kit, lib, { budget = 14, need = 10 } = {}) {
   const now = Date.now();
   const works = typed(lib).filter((w) => w.title);
@@ -1094,9 +1153,21 @@ export async function refreshOne(env, kit, lib, { budget = 14, need = 10 } = {})
   const old = works.filter((w) => w.found && w.found.at && now - w.found.at > LOOK_AGAIN_DAYS * DAY).sort((a, b) => a.found.at - b.found.at);
   // Looked up the older way, before every line passed the gate (said.js): looked at again, one a run.
   const before = works.filter((w) => w.found && w.found.at && (w.found.v || 0) < LOOK_VERSION).sort((a, b) => a.found.at - b.found.at);
-  const work = never[0] || resumed[0] || retry[0] || old[0] || before[0];
+  let work = never[0] || resumed[0] || retry[0] || old[0] || before[0], spent = 2;
+  // Else a work with fewer than READY lines she has not been shown, and pages left to read: one more round, so
+  // that her next ask is answered at once.
+  if (!work) {
+    const ready = works.filter((w) => canReadOn(env, kit, w, now));
+    if (ready.length) {
+      const shownDoc = (await kit.loadDoc(env, "asked-shown", null)) || {};
+      spent += 1;
+      const unseen = (w) => { const had = new Set(((shownDoc.works || {})[w.id] || {}).t || []); return kept(w).filter((l) => !had.has(kit.norm(l.text).slice(0, 160))).length; };
+      work = ready.map((w) => [w, unseen(w)]).filter(([, n]) => n < READY).sort((a, b) => a[1] - b[1]).map(([w]) => w)[0];
+      if (work) need = READY;
+    }
+  }
   if (!work) return null;
-  const state = { spent: 2, rec: null, dirty: false, began: now, limit: (Number(env.LOOKUP_SECONDS) || SECONDS) * 1000, budget };
+  const state = { spent, rec: null, dirty: false, began: now, limit: (Number(env.LOOKUP_SECONDS) || SECONDS) * 1000, budget };
   work.found = await lookUp(env, kit, work, need, "", null, state);
   if (state.dirty) await saveRecord(env, kit, state);
   await keep(env, kit, lib, [work]);
@@ -1164,7 +1235,8 @@ export async function lookAgain(env, kit, lib, kind, id) {
   const work = { ...item, type: kind === "books" ? "book" : item.kind };
   if (work.found) { delete work.found.resume; work.found.at = 0; }
   const state = newState(env);
-  work.found = await lookUp(env, kit, work, 10, "", null, state);
+  // (Also run by the phone just after she adds a work: its first pages are read, so her first ask is answered at once.)
+  work.found = await lookUp(env, kit, work, READY, "", null, state);
   await closeRecord(env, kit, state);
   await keep(env, kit, lib, [work]);
   return work.found;

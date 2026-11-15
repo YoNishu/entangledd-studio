@@ -367,6 +367,12 @@ async function probeLookups(env, kit) {
   const keyed = [["TAVILY_API_KEY", "Tavily", "tavily"], ["SERPER_API_KEY", "Serper", "serper"]].filter(([k]) => env[k]).map(([, n, id]) => `${n} ${open[id] || 0} of ${OPEN_A_DAY[id]}`);
   said.push(env.OPEN_SEARCH === "off" && !keyed.length ? "The web without a key: switched off (OPEN_SEARCH)." :
     `The web without a key${env.OPEN_SEARCH === "off" ? " (results pages switched off)" : ""}: ${open.results || 0} results pages and ${open.pages || 0} pages read today${keyed.length ? `; ${keyed.join(", ")} searches` : ""}.`);
+  // Tavily's page reader (Extract): pages it read today for the app, and whether it rests.
+  if (env.TAVILY_API_KEY) {
+    const x = sites.extract || {}, rests = !!(x.blocked && (x.failed || 0) > (x.ok || 0) && Date.now() < (x.until || (x.failed || 0) + 24 * 3600 * 1000));
+    said.push(`Tavily's page reader: ${open.extract || 0} of ${OPEN_A_DAY.extract} pages read today${rests ? `; resting until ${dayIST(x.until || (x.failed || 0) + 24 * 3600 * 1000)}${x.why ? ` (${x.why})` : ""}` : x.ok ? `; worked on ${dayIST(x.ok)}` : ""}.`);
+    if (rests) soon.push(x.used ? "Tavily's allowance is used up until tomorrow" : "Tavily's page reader rests");
+  }
   // Each feature that searches: how its last search went.
   const uses = rec.uses || {};
   const perFeature = FEATURES.filter((f) => uses[f]).map((f) => {

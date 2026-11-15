@@ -84,7 +84,9 @@ for picks in ("none", "offpage"):
     s, got = ask(T, [w], 3)
     asked = [e for e in olog() if e["to"] == "claude"]
     texts = [l["text"] for l in kept(w)]
-    check(f"Claude asked first ({picks}), then the lines come from the page itself", s == 200 and asked and "I kept every letter, even the ones I never sent." in texts
+    # (Since Agent 21, a review page's quoted lines all go to the gate, whose judge sees the words around each: Claude is
+    # not asked to pick from it. The lines come from the page itself.)
+    check(f"Claude's picks ({picks}) are not needed: the lines come from the page itself", s == 200 and "I kept every letter, even the ones I never sent." in texts
           and not any("made up whole" in t for t in texts), (s, len(asked), texts))
 
 finish()
