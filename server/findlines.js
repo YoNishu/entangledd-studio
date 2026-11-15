@@ -442,7 +442,8 @@ async function lookUp(env, kit, work, need, about, taste, state) {
   const more = () => Math.min(PICK, need - lines.length + 3);
   const places = [
     { cost: 6, look: () => read("wikiquote", wikiquotePage) },
-    { cost: 6, look: () => read(work.type === "book" ? "goodreads" : "imdb", work.type === "book" ? goodreadsPage : imdbPage) },
+    // Goodreads and IMDb ask that robots don't read their pages; this step can be switched off with QUOTE_SITES=off.
+    { cost: 6, off: env.QUOTE_SITES === "off", look: () => read(work.type === "book" ? "goodreads" : "imdb", work.type === "book" ? goodreadsPage : imdbPage) },
     { cost: 3, off: !env.GEMINI_API_KEY, look: async () => { lines = lines.concat(await fromGemini(env, kit, work, more(), have, state)); } },
     { cost: 3, off: !env.OPENAI_API_KEY, look: async () => { lines = lines.concat(await fromOpenAI(env, kit, work, more(), have, state)); } },
   ];

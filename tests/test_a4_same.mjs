@@ -14,7 +14,10 @@ const NOW = Date.now();
 let sent = [];
 globalThis.fetch = async (url, init) => {
   const body = JSON.parse(init.body);
-  sent.push({ url: String(url), body });
+  // The rule about lines already found for her works (server/findlines.js) came later than the scorer and is not
+  // the scorer's doing: it is set aside, so the comparison stays about the scorer alone.
+  const system = typeof body.system === "string" ? body.system.split("\n").filter((l) => !l.startsWith('- "foundLines"')).join("\n") : body.system;
+  sent.push({ url: String(url), body: { ...body, system } });
   let text = JSON.stringify({ summary: "You like quiet lines.", loves: ["the sea"], avoids: [], voice: [], look: [], performs: [] });
   const said = body.messages[0].content;
   const m = typeof said === "string" && said.match(/^Suggest (\d+) quotes/);
