@@ -1407,14 +1407,28 @@ async function postRoutes(request, env, parts) {
   const [ig, posts] = await Promise.all([loadIg(env), loadDoc(env, "posts", [])]);
 
   if (parts.length === 1 && method === "GET") {
-    // Opening the list is when numbers are refreshed and posts deleted on Instagram are noticed.
+    // Opening the list is when it is checked against Instagram: reels still being processed move on, reels
+    // she posted in Instagram from here are linked, posts deleted on Instagram leave, and each card's numbers
+    // are asked for again once past their age rule (numbersKeep), stalest first, ten at most per opening.
+    const force = new URL(request.url).searchParams.get("force") === "1";      // her Refresh
+    let instagram = { ok: true, paused: false }, checkedAt = Date.now();
     if (ig) {
-      const linked = await adoptFromInstagram(env, ig, posts);
-      const removed = await checkRemoved(env, ig, posts);
-      const updated = await refreshInsights(env, ig, posts, { max: 6 });
-      if (linked || removed || updated) await saveDoc(env, "posts", posts.slice(-500));
+      const seen = {};
+      let changed = 0;
+      try {
+        for (const post of posts.filter((p) => p.state === "processing").slice(-2)) if (await advancePost(env, ig, post)) changed += 1;
+        changed += await adoptFromInstagram(env, ig, posts);
+        if (await checkRemoved(env, ig, posts, null, seen)) changed += 1;
+        if (!seen.failed && (await refreshInsights(env, ig, posts, { max: 10, force, seen, served: true }))) changed += 1;
+      } catch (e) { console.error("checking the posts list", e && e.message); seen.failed = e; }
+      if (changed) await saveDoc(env, "posts", posts.slice(-500));
+      instagram = { ok: !seen.failed, paused: !!(seen.failed && seen.failed.blocked) };
+      const stamp = await loadDoc(env, "postscheck", { at: 0 });
+      if (instagram.ok) await saveDoc(env, "postscheck", { at: checkedAt });
+      else checkedAt = stamp.at || null;
     }
-    return json({ posts: posts.filter((p) => p.state !== "removed").slice(-50).reverse().map(publicPost) });
+    const behind = ig && instagram.ok ? withNumbers(posts).filter((p) => numbersDue(p, Date.now())).length : 0;
+    return json({ posts: posts.filter((p) => p.state !== "removed").slice(-50).reverse().map(publicPost), checkedAt, instagram, behind });
   }
 
   if (parts.length === 1 && method === "POST") {
@@ -1523,17 +1537,28 @@ const metricLists = (post) => (post.kind === "carousel"
   ? [[...INSIGHT_METRICS, "total_interactions", "follows", "profile_visits"], INSIGHT_METRICS, ["reach", "likes", "comments", "saved", "shares"]]
   : [[...INSIGHT_METRICS, "total_interactions", "ig_reels_avg_watch_time", "ig_reels_video_view_total_time", "reels_skip_rate", "reposts"],
     [...INSIGHT_METRICS, "total_interactions", "ig_reels_avg_watch_time", "ig_reels_video_view_total_time"], INSIGHT_METRICS, ["reach", "likes", "comments", "saved", "shares"]]);
-async function refreshInsights(env, ig, posts, { force = false, max = 15 } = {}) {
-  let changed = false, done = 0, knownChanged = false;
+// How old a post's numbers may be before they are asked for again: a post's numbers change fastest in
+// its first days, so a post under 3 days old is asked again after 5 minutes, up to 30 days after an hour,
+// older ones after a day.
+function numbersKeep(post, now) {
+  const age = now - (post.published || post.created);
+  return age < 3 * DAY_MS ? 5 * 60 * 1000 : age < 30 * DAY_MS ? 3600 * 1000 : DAY_MS;
+}
+const numbersDue = (post, now) => !post.insightsAt || now - post.insightsAt >= numbersKeep(post, now);
+const withNumbers = (posts) => posts.filter((p) => p.state === "published" && p.mediaId).slice(-60);
+
+// Asks Instagram for the numbers of the posts that are due (all of them with force), stalest first, at most
+// "max" in one go. "seen", when given, is told when Instagram could not be reached or is paused ({ failed }).
+// "served": also measure, for one reel at most, how Instagram serves it (see measureServed).
+async function refreshInsights(env, ig, posts, { force = false, max = 15, seen = null, served = false } = {}) {
+  let changed = false, knownChanged = false, servedLeft = served ? 1 : 0;
   let known = await loadDoc(env, "metriclists", {});
   if (known.at && Date.now() - known.at > 7 * 24 * 3600 * 1000) known = {};       // try the fullest list again each week
-  const recent = posts.filter((p) => p.state === "published" && p.mediaId).slice(-60).reverse();
-  for (const post of recent) {
-    if (done >= max) break;
-    const age = Date.now() - (post.published || post.created);
-    const every = age < 3 * 24 * 3600 * 1000 ? 2 * 3600 * 1000 : 24 * 3600 * 1000;   // fresh posts change fastest
-    if (!force && post.insightsAt && Date.now() - post.insightsAt < every) continue;
-    done += 1;
+  const now = Date.now();
+  const due = withNumbers(posts).filter((p) => force || numbersDue(p, now))
+    .sort((a, b) => (a.insightsAt || 0) - (b.insightsAt || 0)).slice(0, max);
+  for (const post of due) {
+    if (seen && seen.failed) break;                 // Instagram isn't answering: don't spend more calls on it
     try {
       // Not every kind of post, or every account, has every number. Ask for the fullest list first and step
       // down until Instagram accepts one. The step that worked is remembered for a week, for all posts of that kind.
@@ -1561,13 +1586,19 @@ async function refreshInsights(env, ig, posts, { force = false, max = 15 } = {})
       }
       post.metrics = { ...(post.metrics || {}), ...m };
       post.insightsAt = Date.now(); changed = true;
+      if (servedLeft && !post.served && post.kind !== "carousel" && (post.servedTries || 0) < 3) {
+        servedLeft = 0;
+        if (await measureServed(env, ig, post).catch(() => false)) changed = true;
+      }
     } catch (e) {
-      if (!(e instanceof UserError)) throw e;
+      if (!(e instanceof UserError)) { if (!seen) throw e; seen.failed = e; break; }
+      if (e.blocked) { if (seen) seen.failed = e; break; }
       // Numbers unavailable: find out whether the post still exists on Instagram.
       try { await graphAny(env, ig, "GET", `/${post.mediaId}`, { fields: "id" }); post.insightsAt = Date.now(); changed = true; }
       catch (e2) {
-        if (!(e2 instanceof UserError)) throw e2;
+        if (!(e2 instanceof UserError)) { if (!seen) throw e2; seen.failed = e2; break; }
         if (e2.gone) { post.state = "removed"; post.removedAt = Date.now(); changed = true; }
+        else if (seen) { seen.failed = e2; break; }
       }
     }
   }
@@ -1575,12 +1606,36 @@ async function refreshInsights(env, ig, posts, { force = false, max = 15 } = {})
   return changed;
 }
 
+// How Instagram serves a reel: the size of the file it plays, as kilobits a second over the reel's length.
+// Kept as post.served = { kbps, at } (never the address), and the last three in data/served.json for the
+// open health record, so the picture quality Instagram settles on can be compared after a post.
+async function measureServed(env, ig, post) {
+  post.servedTries = (post.servedTries || 0) + 1;
+  const secs = Number((post.made || {}).seconds) || Number(((post.jobId && (await readJob(env, post.jobId))) || {}).length) || 0;
+  if (!(secs > 0)) { post.servedTries = 3; return true; }          // its length is no longer known: not measured
+  const { media_url: url } = await graphAny(env, ig, "GET", `/${post.mediaId}`, { fields: "media_url" });
+  if (!/^https?:\/\//.test(url || "")) return true;
+  const res = await fetch(url, { headers: { Range: "bytes=0-0" } });
+  const total = Number((res.headers.get("content-range") || "").split("/")[1]) || (res.status === 200 ? Number(res.headers.get("content-length")) || 0 : 0);
+  if (res.body) await res.body.cancel().catch(() => {});
+  if (!(total > 0)) return true;
+  post.served = { kbps: Math.round((total * 8) / secs / 1000), at: Date.now() };
+  const list = (await loadDoc(env, "served", [])).filter((x) => x && x.id !== post.id);
+  await saveDoc(env, "served", [...list, { id: post.id, via: post.via === "instagram" ? "instagram" : "app", kbps: post.served.kbps, at: post.served.at }].slice(-3));
+  return true;
+}
+
 // Notices posts she has deleted on Instagram, so the app's list matches. Checked every time the list opens.
-async function checkRemoved(env, ig, posts, only) {
+// "seen", when given, is told when Instagram could not be reached or is paused.
+async function checkRemoved(env, ig, posts, only, seen = null) {
   const latest = (only || posts).filter((p) => p.state === "published" && p.mediaId).slice(-8);
   const gone = await Promise.all(latest.map(async (post) => {
     try { await graphAny(env, ig, "GET", `/${post.mediaId}`, { fields: "id" }); return false; }
-    catch (e) { if (!(e instanceof UserError)) throw e; return !!e.gone; }
+    catch (e) {
+      if (!(e instanceof UserError)) { if (!seen) throw e; seen.failed = e; return false; }
+      if (!e.gone && seen) seen.failed = e;
+      return !!e.gone;
+    }
   }));
   latest.forEach((post, i) => { if (gone[i]) { post.state = "removed"; post.removedAt = Date.now(); } });
   return gone.some(Boolean);
@@ -1805,25 +1860,25 @@ function buildInsights(allPosts, range, now) {
 
 // The account's own numbers: followers each day (kept by the app), and what Instagram reports for the page as a whole.
 // "acct" may be handed in by a caller that has just fetched the record itself.
-async function snapshotAccount(env, ig, { force = false, acct = null } = {}) {
+async function snapshotAccount(env, ig, { force = false, acct = null, keep = 6 * 3600 * 1000, seen = null } = {}) {
   if (!acct) acct = await loadDoc(env, "account", { days: [] });
   const today = todayIST();
   const have = acct.days.find((d) => d.d === today);
-  if (have && !force && Date.now() - (have.at || 0) < 6 * 3600 * 1000) return acct;
+  if (have && !force && Date.now() - (have.at || 0) < keep) return acct;
   try {
     const me = await graphAny(env, ig, "GET", `/${ig.igId}`, { fields: "followers_count,media_count" });
     const row = { d: today, at: Date.now(), followers: Number(me.followers_count) || 0, media: Number(me.media_count) || 0 };
     acct.days = [...acct.days.filter((d) => d.d !== today), row].slice(-800);
     await saveDoc(env, "account", acct);
-  } catch (e) { if (!(e instanceof UserError)) throw e; }
+  } catch (e) { if (!(e instanceof UserError)) { if (!seen) throw e; } if (seen) seen.failed = e; }
   return acct;
 }
 
 const valueOf = (row) => (row && row.total_value ? row.total_value : null);
-async function accountNumbers(env, ig, days, followers) {
-  // Instagram answers for at most 30 days at a time, and its numbers lag, so this is kept for a few hours.
+async function accountNumbers(env, ig, days, followers, { keep = 10 * 60 * 1000 } = {}) {
+  // Instagram answers for at most 30 days at a time. Kept 10 minutes, so opening Insights again soon is quick.
   const cache = await loadDoc(env, `insightcache/account-${days}`, null);
-  if (cache && Date.now() - cache.at < 4 * 3600 * 1000) return cache.data;
+  if (cache && Date.now() - cache.at < keep) return cache.data;
   const until = Math.floor(Date.now() / 1000), since = until - Math.min(days, 30) * 24 * 3600 + 3600;
   const ask = async (params) => {
     try { return (await graphAny(env, ig, "GET", `/${ig.igId}/insights`, { period: "day", metric_type: "total_value", since: String(since), until: String(until), ...params })).data || []; }
@@ -1898,28 +1953,42 @@ async function insightRoutes(request, env, parts) {
   const asked = new URL(request.url).searchParams.get("range");
   const range = Object.prototype.hasOwnProperty.call(RANGE_DAYS, asked) ? asked : "all";
   if (parts[1] === "advice") return json(await insightAdvice(env, range));
+  // ?force=1 is her Refresh: everything shown is asked for again, whatever its age.
+  const force = new URL(request.url).searchParams.get("force") === "1";
   const loaded = await Promise.all([loadDoc(env, "posts", []), igReady(env) ? loadIg(env) : null, loadDoc(env, "account", { days: [] })]);
   const posts = loaded[0], ig = loaded[1];
   let acct = loaded[2], page = null, people = null;
+  const seen = {};
   if (ig) {
-    // Bring the numbers up to date first, so everything below agrees with Instagram.
+    // Bring the numbers up to date first, so everything below agrees with Instagram. Each post's numbers
+    // are asked for again once they pass their age rule (numbersKeep), stalest first, ten at most per
+    // opening; the screen asks again by itself while some are still due ("behind").
     // (Posts that were deleted on Instagram are noticed when the Posts section opens.)
-    const linked = await adoptFromInstagram(env, ig, posts);
-    if ((await refreshInsights(env, ig, posts, { max: 8 })) || linked) await saveDoc(env, "posts", posts.slice(-500));
-    acct = await snapshotAccount(env, ig, { acct });
-    const followers = acct.days.length ? acct.days[acct.days.length - 1].followers : 0;
-    [page, people] = await Promise.all([
-      range === "7" || range === "30" ? accountNumbers(env, ig, Number(range), followers) : null,
-      audience(env, ig, followers),
-    ]);
+    try {
+      const linked = await adoptFromInstagram(env, ig, posts);
+      if ((await refreshInsights(env, ig, posts, { max: 10, force, seen, served: true })) || linked) await saveDoc(env, "posts", posts.slice(-500));
+      if (!seen.failed) acct = await snapshotAccount(env, ig, { acct, force, keep: 10 * 60 * 1000, seen });
+      const followers = acct.days.length ? acct.days[acct.days.length - 1].followers : 0;
+      if (!seen.failed) {
+        [page, people] = await Promise.all([
+          range === "7" || range === "30" ? accountNumbers(env, ig, Number(range), followers, { keep: force ? 0 : 10 * 60 * 1000 }) : null,
+          audience(env, ig, followers),
+        ]);
+      }
+    } catch (e) { console.error("refreshing Insights", e && e.message); seen.failed = e; }
   }
   const out = buildInsights(posts, range, Date.now());
+  // When the numbers on screen were last brought up to date: now, or, if Instagram could not be asked, the last time it was.
+  const lastAsked = Math.max(0, ...posts.map((p) => p.insightsAt || 0), ...acct.days.map((d) => d.at || 0)) || null;
+  const behind = ig && !seen.failed ? withNumbers(posts).filter((p) => numbersDue(p, Date.now())).length : 0;
   const latest = acct.days[acct.days.length - 1] || null;
   // Follower change over the range, from the app's own daily record (it starts the day Insights first ran).
   const start = RANGE_DAYS[range] ? acct.days.find((d) => d.at >= out.from) : acct.days[0];
   const followers = latest ? { now: latest.followers, change: start && start !== latest ? latest.followers - start.followers : null, since: start ? start.d : null,
     series: acct.days.slice(-120).map((d) => ({ d: d.d, followers: d.followers })) } : null;
-  return json({ ...out, connected: !!ig, followers, page, audience: people });
+  return json({ ...out, connected: !!ig, followers, page, audience: people,
+    updatedAt: ig && !seen.failed ? Date.now() : lastAsked, behind,
+    instagram: { ok: !seen.failed, paused: !!(seen.failed && seen.failed.blocked) } });
 }
 
 // ---------- looks she has saved (font, size, colour and placement, by name) ----------
