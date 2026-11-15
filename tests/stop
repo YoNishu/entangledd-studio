@@ -1,0 +1,8 @@
+#!/bin/bash
+# Stops the stand-in server started by tests/serve.
+port="${STUDIO_PORT:-$(sed -nE 's#.*:([0-9]+)/?$#\1#p' <<< "${STUDIO_URL:-}")}"; port="${port:-8787}"
+out="${STUDIO_OUT:-/tmp/studio-tests}"
+[ -f "$out/server.pid" ] && kill "$(cat "$out/server.pid")" 2>/dev/null
+command -v fuser > /dev/null && fuser -k "$port/tcp" > /dev/null 2>&1
+for i in $(seq 1 25); do curl -s -o /dev/null --max-time 1 "http://localhost:$port/api/status" || break; sleep 0.2; done
+rm -f "$out/server.pid"; echo stopped

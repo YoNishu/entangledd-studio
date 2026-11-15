@@ -1,0 +1,16 @@
+#!/bin/bash
+# Starts the stand-in server afresh: empty storage, the code as it is now, pretend versions of every outside
+# service. Nothing here touches the real app, Instagram or any key.
+#   usage: tests/serve [NAME=VALUE ...]     (settings for the stand-in, such as PHOTOS=plain or R2_DELAY=30)
+# Reads STUDIO_PORT, STUDIO_URL, STUDIO_OUT and STUDIO_MEDIA (see tests/where.py).
+root="$(cd "$(dirname "$0")/.." && pwd)"
+port="${STUDIO_PORT:-$(sed -nE 's#.*:([0-9]+)/?$#\1#p' <<< "${STUDIO_URL:-}")}"; port="${port:-8787}"
+out="${STUDIO_OUT:-/tmp/studio-tests}"; media="${STUDIO_MEDIA:-$out/media}"
+mkdir -p "$out"
+"$root/tests/stop" > /dev/null 2>&1
+cd "$root" || exit 1
+env "$@" PORT="$port" DEV_MEDIA="$media" nohup node server/dev.mjs > "$out/dev.log" 2>&1 &
+echo $! > "$out/server.pid"
+for i in $(seq 1 40); do curl -s -o /dev/null "http://localhost:$port/api/status" && break; sleep 0.2; done
+if curl -s -o /dev/null "http://localhost:$port/api/status"; then echo "stand-in server on http://localhost:$port (pid $(cat "$out/server.pid"), fresh storage)"
+else echo "SERVER DID NOT START. Last lines of $out/dev.log:"; tail -5 "$out/dev.log"; exit 1; fi
