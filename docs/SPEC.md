@@ -46,6 +46,7 @@ list at the end, "Ideas for later, only if she asks".
 | 23 | Real lines from a named book, film or series, found on Wikiquote, Goodreads and IMDb at no cost (and through Gemini or OpenAI web search when a key is set), kept in the Library | Done |
 | 24 | "Who said this?" and Library titles looked up on the web (Wikiquote, Quote Investigator, Wikipedia, Open Library; Gemini or OpenAI when those find nothing), with the pages shown; lookups in the health record | Done |
 | 25 | One engine for every suggestion: a pool from every source (her lines, found lines, web discovery, the real quotes behind pages she follows, Nishiii's memory) and one score over every signal, with a reason on each card; also used for Insights, advice, captions and background words | Done |
+| 26 | Drafts: every piece of work in Create is saved by itself and opens again exactly (on another phone too); made reels kept under "Made, not posted" with Edit, Post, Share and Delete; Edit on waiting and handed-over reels; "Make a version of this" on posted reels for 7 days | Done |
 
 ## How the app is laid out
 
@@ -54,7 +55,7 @@ list at the end, "Ideas for later, only if she asks".
 | Today | A little note from Nishiii, the day and date, exactly five suggestions (Use this, Reword, Skip; one may be marked "Something different"), and the previous seven days folded one row per day, still usable |
 | Create | The composer. Tabs: Background, Text (with "Check who said this"), Style (shape, styles, her saved looks), Music (her own file or a free track, start point, volume, preview), Finish (reel, picture or carousel; post now or keep for later) |
 | Library | What she feeds Nishiii: her own quotes (typed, scanned, or imported highlights), books (each marked if its full text is free to read), films and series, and reels and pages she loves |
-| Posts | The last 7 days against the week before, with Nishiii's note, the best time of day and themes so far; reels waiting to be posted; everything posted with its numbers and comments |
+| Posts | The last 7 days against the week before, with Nishiii's note, the best time of day and themes so far; reels made but not posted (Post, Edit, Share, Delete); reels waiting to be posted (with Edit); everything posted with its numbers and comments |
 | Insights | A period picker, then: people reached, the key numbers, reach of each post, best posts, a day-by-time grid, "What works" comparisons, the clearest differences with Nishiii's advice, followers over time, Instagram's totals for the whole page, who follows the page, posting rhythm, and a file of every post's numbers |
 | Nishiii | Ask for five quotes from chosen books, films, series or pages (kept here, apart from Today); what Nishiii has learned about her taste; how far the scorer has come; notes she writes for Nishiii |
 | Chat (round button, top right) | Nishiii as a chat that can act in the app |
@@ -120,6 +121,7 @@ included, of the 50 allowed.
 | `lovenotes-deliveries` | 1 h | Opens sealed deliveries of little notes (listed only while one is waiting) |
 | `upkeep-clean` | 6 h | Removes stored files that have outlived their lifetime (table below) |
 | `upkeep-backup` | 1 h look, daily copy | Copies the documents that cannot be made again to `backup/<day>/`, seven per run |
+| `upkeep-drafts` | 6 h | Drops made reels and the draft past their keeping, and removes files under `drafts/` that nothing names (after a day) |
 | `health-services` | 24 h | Probes: book texts, the music search, a photo fetched the way the app fetches it, the reel maker's self-test, looking things up |
 | `health-page` | 24 h | Probes: her posts on Instagram, post numbers, comments; then backups, tidying up, problems noticed |
 
@@ -154,11 +156,34 @@ errors to the same record. Ten or more in a day, or a burst of wrong passcodes, 
 health record.
 
 **Backups.** Documents copied: `library`, `posts`, `taste`, `looks`, `queue`, `history`,
-`rewords`, `inspirations`, `account`, `instagram`, `passkeys`, `lovenotes`, `sealkey`, and
-everything under `scorer/`. A document unchanged since its last copy is skipped. Copies older
+`rewords`, `inspirations`, `account`, `instagram`, `passkeys`, `lovenotes`, `sealkey`, `draft`, `made`
+(the settings of drafts and made reels, not their files), and everything under `scorer/`. A document unchanged since its last copy is skipped. Copies older
 than 14 days are removed, but never a document's newest copy. `GET /api/backups` lists days and
 names (never contents); `POST /api/backups/restore` with `{ day, name }` puts one back and keeps
 what it replaced under `backup/undo/`. The README has the commands.
+
+## Drafts and made reels
+
+Every piece of work in Create is a draft (`web/drafts.js`, `server/drafts.js`). The composer's whole state
+(`snapshot()` in `web/app.js`: every line with its words, font, size, colour, alignment, width, line height,
+lowercase and place; shadow, fade, sound, length, style, author, shape; the background and music as she chose
+them, with the music's start, volume, title and credit) plus where the quote came from and the caption is saved
+on the server about 2.5 seconds after a change. A background or music file is sent once (`drafts/<fileId>`)
+and a reel made from it uses that same file. When a reel is started its snapshot goes with it
+(`jobs/<id>/keep.json`), and the moment the renderer hands in the reel the server keeps it in `data/made.json`,
+so closing the app while it renders loses nothing.
+
+- On opening: this phone's own draft is completed from the server (background and music back). On a phone
+  with nothing in Create, one line offers "Carry on where you left off" with the draft's first words.
+- Edit (on a made reel, a waiting one, one handed to Instagram, the finished reel; "Make a version of this" on a
+  posted one for 7 days) puts everything back exactly and opens Text. Creating it again replaces a reel that is
+  only under "Made, not posted" (its old files go); a waiting, handed-over or posted one stays, and the new one
+  is a new reel (the app says so).
+- "Use this" on a quote and "Start a new one" begin a new draft. Two phones: the last save wins; made reels are
+  never lost to it. A file that was cleaned: the draft opens with what is left and says what is missing.
+- Same state, same reel: the drawing and export code are unchanged; reopened and made again unchanged, a reel
+  gets the same text layer and render inputs byte for byte (`tests/test_a14_edit.py`, `tests/test_a14_draft.py`).
+- Not kept: the pictures already added to a carousel's tray (the picture being made is).
 
 ## What is kept in storage, and for how long
 
@@ -168,7 +193,10 @@ lifetime and a cleaner.
 | Key or prefix | What | Limit or lifetime |
 |---|---|---|
 | `jobs/<id>/bg`, `overlay.png`, `music` | What a reel is made from | Removed an hour after the reel exists, else after 7 days |
-| `jobs/<id>/reel.mp4`, `job.json` | A finished reel | 7 days |
+| `jobs/<id>/reel.mp4`, `job.json`, `keep.json`, `thumb.jpg` | A finished reel, what it was made from, its small picture | 7 days; 30 days while it is in `data/made.json` and not posted |
+| `drafts/<fileId>` | A background or music file as she chose it, for drafts and made reels; a reel uses it as it is (`bgKey`, `music.key` in `job.json`) | While a draft or made reel names it; else removed after a day |
+| `data/draft.json` | The current draft in Create (`{ id, of, updated, snap }`; last save wins) | One; 30 days after its last change |
+| `data/made.json` | Reels made from the app and what each was made from (`{ id, jobId, made, snap, about, posted, postId }`) | 20 not posted, 30 days each; posted ones 7 days; then only the post's record |
 | `slides/<id>.jpg` | Carousel pictures | 7 days |
 | `data/stockcache/`, `data/musiccache/` | Search results | 2 days, 8 days |
 | `auth/` | Wrong-passcode counts and markers, used Face ID challenges | 1 day |
