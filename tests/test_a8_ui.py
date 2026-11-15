@@ -51,7 +51,8 @@ with sync_playwright() as p:
     pg.wait_for_function("document.getElementById('ask-status').textContent.length > 20", timeout=15000)
     said = pg.inner_text("#ask-status")
     check("nothing found anywhere: she is told plainly", "found no real lines from Nobody Knows This Book" in said and "Library" in said, said)
-    check("with nothing to do by hand on Google, and no button for it", not any(x in said.lower() for x in ("google", "screenshot")) and pg.locator("text=Find lines on Google").count() == 0 and pg.locator("text=Read my screenshot").count() == 0, said)
+    # (Google is named only in where Nishiii looked; she is never asked to search it herself)
+    check("with nothing to do by hand on Google, and no button for it", not any(x in said.lower() for x in ("search google", "google it", "screenshot")) and "Looked on Wikiquote, Goodreads and Google: nothing yet." in said and pg.locator("text=Find lines on Google").count() == 0 and pg.locator("text=Read my screenshot").count() == 0, said)
     pg.screenshot(path=f"{_W.OUT}/shots/a8_nothing.png")
     pg.click("#ask-close")
 
