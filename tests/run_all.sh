@@ -65,6 +65,8 @@ run music_silent   ""                     ""                test_music_silent.py
 run igmusic        ""                     ""                test_igmusic.py
 run handoff_api    ""                     ""                test_handoff_api.py
 run handoff_ui     ""                     ""                test_handoff_ui.py
+run bottom_gap     ""                     ""                test_bottom_gap.py
+run keyboard_band  ""                     ""                test_keyboard_band.py
 
 # The tests that judge for themselves: each asserts, prints PASS or FAIL and exits non-zero on failure.
 # Most start their own fresh server (several times, with different settings) through tests/serve.

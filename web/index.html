@@ -34,6 +34,28 @@ try {
     else document.documentElement.style.removeProperty("--app-h");
   };
   fit(); window.addEventListener("resize", fit); window.addEventListener("orientationchange", function () { setTimeout(fit, 300); });
+
+  // An iOS bug in Home Screen apps: once the keyboard has been open (the passcode, a quote, a search), the app's
+  // drawing area stays shorter by the status bar's height until the app is closed, which leaves an empty band
+  // under the section bar. Hiding and showing the page in one go makes iOS measure the screen again; nothing is
+  // drawn in between, and every list keeps its place.
+  var tallest = window.innerHeight, wide = function () { return window.innerWidth > window.innerHeight; }, was = wide();
+  window.addEventListener("resize", function () {
+    if (wide() !== was) { was = wide(); tallest = window.innerHeight; }      // turned on its side: start again
+    tallest = Math.max(tallest, window.innerHeight);
+  });
+  var typing = function () { var e = document.activeElement; return !!e && /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName); };
+  var heal = function () {
+    if (typing() || tallest - window.innerHeight <= 4 || !document.body) return;
+    var kept = [].map.call(document.querySelectorAll(".page, .sheet-body, .pane"), function (el) { return [el, el.scrollTop]; });
+    document.body.style.display = "none";
+    void document.body.offsetHeight;                     // measured with nothing shown, before anything is painted
+    document.body.style.display = "";
+    kept.forEach(function (k) { k[0].scrollTop = k[1]; });
+    fit();
+  };
+  document.addEventListener("focusout", function () { setTimeout(heal, 140); setTimeout(heal, 600); }, true);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) setTimeout(heal, 140); });
 })();
 </script>
 <link rel="stylesheet" href="app.css">
