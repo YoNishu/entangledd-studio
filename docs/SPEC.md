@@ -43,6 +43,7 @@ list at the end, "Ideas for later, only if she asks".
 | 20 | Faster opening and unlocking; Face ID asks by itself; reel tools kept between runs | Done |
 | 21 | A daily reminder on her phone at 11:11, if she turns it on | Done |
 | 22 | The test suite in the repository (`tests/`) | Done |
+| 23 | Real lines from a named book, film or series, found on Wikiquote, Goodreads and IMDb at no cost (and through Gemini or OpenAI web search when a key is set), kept in the Library | Done |
 
 ## How the app is laid out
 
