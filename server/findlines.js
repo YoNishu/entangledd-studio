@@ -39,7 +39,7 @@ const HOUR = 60 * 60 * 1000;
 const RETRY_HOURS = [2, 12, 48];        // a look that found nothing is tried again after this long, then after 30 days
 const MODEL_DAYS = 7;                   // the models a key may use are asked again after this long
 const QUESTIONS = 3;                    // questions to Gemini and OpenAI together for one look at one work
-const TRAILS = 6;                       // trails kept in data/lookups.json
+const TRAILS = 10;                      // trails kept in data/lookups.json (looks, title checks, checks, engine searches)
 
 // ---------------------------------------------------------------- the trail of one look
 

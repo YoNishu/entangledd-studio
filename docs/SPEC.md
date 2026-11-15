@@ -283,7 +283,7 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
   that support generateContent) and `GET /v1/models` (gpt-6-luna, gpt-6.1-terra, gpt-6.1-sol,
   gpt-6-astra, else the newest plain GPT model), each `{list, at, worked}`, read again after a week
   or when none worked; `uses` the last outcome per feature (`lookup`, `title`, `check`, `discover`,
-  `echo`); `trails` the last six trails. `GEMINI_MODEL` / `OPENAI_MODEL` replace the choice; the
+  `echo`); `trails` the last ten trails. `GEMINI_MODEL` / `OPENAI_MODEL` replace the choice; the
   built-in names (`gemini-3.8-flash`, `gemini-3.5-flash-lite`; `gpt-6-luna`, `gpt-6.1-terra`) are
   tried when the list can't be read. 429 rests the helper for the day; 401, 403 and a 400 naming the
   key mean the key is refused; a 400 or 403 naming search, grounding or a tool means this model may
