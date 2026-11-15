@@ -12,7 +12,7 @@
 //   GET /__gemini/v1beta/models, GET /__openai/v1/models   the lists of models a key may use (logged apart: /__lines_log?list=models)
 //   "The Late Thaw" is a made-up 2026 Chinese drama (春迟): asked about plainly, the pretend search brings back lines
 //   about the season; asked about with its facts, its lines, found on social posts behind Google's redirect links.
-//   SITES=ok|blocked|captcha|empty       how Goodreads and IMDb answer (default ok)
+//   SITES=ok|blocked|captcha|empty|challenge   how Goodreads and IMDb answer (default ok; challenge: IMDb's quotes page answers 202)
 //   WIKIQUOTE=ok|down                    Wikiquote answers, or turns everything away with 503
 //   GET /__lines_set?gemini=..&openai=..&sites=..&wikiquote=..   changes any of these while running ("off" takes a key away)
 //   GET /__lines_set?slow=700           every pretend service here waits that many milliseconds before answering
@@ -406,6 +406,7 @@ export async function handle(req, res, url, tools) {
     }
     if (p.endsWith("/book/auto_complete")) return send(200, BOOKS.filter((b) => norm(b.title).includes(norm(url.searchParams.get("q")))));
     if (mode.sites === "captcha") return send(200, CAPTCHA, "text/html");
+    if (mode.sites === "challenge" && to === "imdb") return send(202, "", "text/html");     // IMDb's answer to robots: 202 and an empty page
     const id = (/\/(?:work\/quotes|title)\/([a-z0-9]+)/.exec(p) || [])[1];
     return send(200, to === "goodreads" ? goodreadsPage(id) : imdbPage(id), "text/html");
   }

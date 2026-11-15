@@ -377,3 +377,16 @@ export async function linesFor(env, kit, state, query, { want = 8, have = new Se
   state.spent += 4;
   return pickLines(env, kit, pages, { want, have, ask, near });
 }
+
+// ---------------------------------------------------------------- an address the book texts use (worker.js)
+
+// The address of a book's plain text. The catalogue lists several (us-ascii, utf-8, old /files/ addresses that
+// Project Gutenberg no longer serves, and /ebooks/N.txt.utf-8, which only redirects): on gutenberg.org the one
+// address that is always there, /cache/epub/N/pgN.txt, is used; elsewhere the utf-8 one, else the first.
+export function gutenbergText(r) {
+  const plain = Object.entries(r.formats || {}).filter(([k, v]) => k.startsWith("text/plain") && typeof v === "string" && !/\.zip$/i.test(v));
+  const url = (plain.find(([k]) => /utf-8/i.test(k)) || plain[0] || [])[1] || "";
+  let host = "";
+  try { host = new URL(url).hostname; } catch (e) { host = ""; }
+  return (host === "gutenberg.org" || host.endsWith(".gutenberg.org")) && Number(r.id) > 0 ? `https://www.gutenberg.org/cache/epub/${Number(r.id)}/pg${Number(r.id)}.txt` : url;
+}

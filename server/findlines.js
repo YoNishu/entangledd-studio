@@ -603,6 +603,9 @@ async function modelsFor(env, kit, state, who, fallback) {
 function serviceSaid(text, env) {
   let m = "";
   try { const j = JSON.parse(text); m = (j.error && (j.error.message || j.error.status)) || j.message || ""; } catch (e) { m = String(text || "").replace(/<[^>]*>/g, " "); }
+  // Google's quota refusals say what matters on their second line: which quota, its limit and the model.
+  const q = /Quota exceeded for metric: (?:[a-z.]+\/)?([a-z_]+), (limit: \d+)(, model: [a-z0-9.-]+)?/i.exec(m);
+  if (q) m = `Quota exceeded: ${q[1].replace(/_/g, " ")}, ${q[2]}${q[3] || ""}`;
   return tidy(m, env);
 }
 // What a refusal means: "used up" (the allowance), "key refused", "may not search" (this model, or this plan,
@@ -655,6 +658,7 @@ async function ask(env, kit, state, who, fallback, send, read) {
   const limit = () => { outcome("limit"); step(state, who, "not asked", { why: `the app's limit of ${A_DAY[who]} a day` }); noteUse(state, who, "limit"); return null; };
   if (use.off) { step(state, who, "not asked", { why: `resting until tomorrow: ${use.off}` }); noteUse(state, who, "resting", { why: use.off }); return null; }
   if (use.calls >= A_DAY[who]) return limit();
+  if (state.busy && state.busy[who]) { step(state, who, "not asked", { why: "it asked the app to wait, a moment ago" }); return null; }
   const models = await modelsFor(env, kit, state, who, fallback);
   if (models.refused) { use.off = "refused"; outcome("refused"); noteUse(state, who, "key refused", { status: models.status, said: models.said }); return null; }
   let last = "";
@@ -695,7 +699,7 @@ async function ask(env, kit, state, who, fallback, send, read) {
       if (how === "busy") {
         // A passing rate limit: waited out once (when short), never a reason to stop for the day.
         if (!again && r.wait <= MAX_WAIT) { await new Promise((done) => setTimeout(done, r.wait)); continue; }
-        outcome("busy"); state.dirty = true; return null;
+        outcome("busy"); state.dirty = true; state.busy = { ...(state.busy || {}), [who]: true }; return null;
       }
       if (how === "no answer") { outcome("no answer"); return null; }
       if (how === "no credit" || how === "key refused") { use.off = OFF[how]; outcome(use.off); return null; }

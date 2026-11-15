@@ -28,6 +28,7 @@ import * as claudeuse from "./claudeuse.js";
 import * as findlines from "./findlines.js";      // real lines from books, films and series, found without a paid search
 import * as verify from "./verify.js";            // quotes and titles looked up on the web: who said it, which work it is
 import * as engine from "./engine.js";            // the pool of quotes from every source, and one score for all of them
+import { gutenbergText } from "./opensearch.js";   // the address of a free book's text
 const SECTIONS = [health, scorer, lovenotes, upkeep, engine];
 SECTIONS.push(findlines);                        // GET /api/lookups: the trail of the last look-ups, for Nishith
 
@@ -501,17 +502,6 @@ const SAY_IT_TO_HER = '\n\nReminder: say every line to Dhruuu as "you" and "your
 // For these, quotes are copied from the book's actual text and checked against it, so the wording is exact.
 const textHostAllowed = (env, host) => host === "gutenberg.org" || host.endsWith(".gutenberg.org") ||
   (!!env.STOCK_HOSTS && env.STOCK_HOSTS.split(",").includes(host));
-
-// The address of a book's plain text. The catalogue lists several (us-ascii, utf-8, old /files/ addresses that
-// Project Gutenberg no longer serves, and /ebooks/N.txt.utf-8, which only redirects): on gutenberg.org the one
-// address that is always there, /cache/epub/N/pgN.txt, is used; elsewhere the utf-8 one, else the first.
-function gutenbergText(r) {
-  const plain = Object.entries(r.formats || {}).filter(([k, v]) => k.startsWith("text/plain") && typeof v === "string" && !/\.zip$/i.test(v));
-  const url = (plain.find(([k]) => /utf-8/i.test(k)) || plain[0] || [])[1] || "";
-  let host = "";
-  try { host = new URL(url).hostname; } catch (e) { host = ""; }
-  return (host === "gutenberg.org" || host.endsWith(".gutenberg.org")) && Number(r.id) > 0 ? `https://www.gutenberg.org/cache/epub/${Number(r.id)}/pg${Number(r.id)}.txt` : url;
-}
 
 async function findBookText(env, book) {
   const base = env.GUTENDEX_API || "https://gutendex.com";
