@@ -128,6 +128,7 @@
       item.author ? el("p", { className: "by", textContent: "— " + item.author }) : null,
       el("p", { className: "src", textContent: sourceLine(item.source) }),
       foundLink(item.source),
+      item.why ? el("p", { className: "why", id: "why-" + item.id, textContent: item.why }) : null,   // why it was suggested (server/engine.js)
       item.askedFor ? chip("info", `From: ${item.askedFor}`) : null,
       item.wild ? Object.assign(chip("info", "Something different"), { id: "wild-" + item.id }) : null,   // the scorer's wildcard (server/scorer.js)
       item.fromText ? chip("ok", "Copied word for word from the book's text")

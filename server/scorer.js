@@ -648,21 +648,27 @@ export const routes = {
   // GET /api/scorer: where the scorer stands, in one line for the Nishiii section.
   scorer: async (request, env, parts, kit) => {
     if (request.method !== "GET" || parts.length !== 1) return kit.fail(404, "Not found.");
-    let model = null;
-    try {
-      const [stored, history] = await Promise.all([mustLoad(env, kit, "scorer/model"), kit.loadDoc(env, "history", []).catch(() => null)]);
-      model = usable(stored) ? stored : null;
-      // Gather and count again first if there is no status yet, if it is a while old, or if the record of her
-      // choices is not the one it was built from: a newer choice, or the record erased ("Forget everything").
-      const stale = !model || Date.now() - model.at > REFRESH_MS || (history !== null && lastAt(history) !== (model.seen || 0));
-      if (stale) model = await refresh(env, kit, { light: true, history: history || undefined, model });
-    } catch (e) {
-      if (!model || !current(model)) throw e;       // nothing stored, or only something long out of date: the line is left out
-      console.error("scorer: could not count again; showing the stored status", e);
-    }
-    return kit.json(statusOf(model));
+    return kit.json(statusOf(await upToDate(env, kit)));
   },
 };
+
+// The model as it stands, counted again first when it is old or her record of choices has changed since.
+// Used by GET /api/scorer and by the engine's status (server/engine.js).
+export async function upToDate(env, kit) {
+  let model = null;
+  try {
+    const [stored, history] = await Promise.all([mustLoad(env, kit, "scorer/model"), kit.loadDoc(env, "history", []).catch(() => null)]);
+    model = usable(stored) ? stored : null;
+    // Gather and count again first if there is no status yet, if it is a while old, or if the record of her
+    // choices is not the one it was built from: a newer choice, or the record erased ("Forget everything").
+    const stale = !model || Date.now() - model.at > REFRESH_MS || (history !== null && lastAt(history) !== (model.seen || 0));
+    if (stale) model = await refresh(env, kit, { light: true, history: history || undefined, model });
+  } catch (e) {
+    if (!model || !current(model)) throw e;       // nothing stored, or only something long out of date: the line is left out
+    console.error("scorer: could not count again; showing the stored status", e);
+  }
+  return model;
+}
 
 // Four times a day: gather what she chose, rebuild the counts, test them, and set the status.
 export const jobs = [{ name: "scorer", everyHours: 6, run: (env, kit) => refresh(env, kit) }];

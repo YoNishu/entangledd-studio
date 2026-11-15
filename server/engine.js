@@ -566,7 +566,7 @@ export const routes = {
   // GET /api/engine: where the engine stands, in a line for the Nishiii section and Insights.
   engine: async (request, env, parts, kit) => {
     if (request.method !== "GET" || parts.length !== 1) return kit.fail(404, "Not found.");
-    const e = await start(env, kit, {});
+    const e = await start(env, kit, { scorerModel: await scorer.upToDate(env, kit) });      // her latest picks counted first
     return kit.json(status(e.P, e.sig));
   },
 };
