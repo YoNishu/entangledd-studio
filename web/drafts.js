@@ -5,6 +5,10 @@
    - When a reel is made, what it was made from goes with it (PUT /api/drafts/keep/<job>), and the server keeps
      it under "Made, not posted" in Posts the moment the reel is ready.
    - Edit (on that list, on the waiting and hand-over cards, and on the finished reel) puts everything back exactly.
+   - Starting something new never loses the earlier piece: what is still waiting to be saved is sent first, and the
+     server sets the earlier draft aside. Those are listed in Posts, Drafts ("Not finished yet"), with Continue.
+     Hiding or closing the app sends what is waiting to be saved at once.
+   - Posts has two parts, Posted and Drafts (everything not yet on Instagram); this file switches between them.
    Server side: server/drafts.js. Starts when the app is open and unlocked ("studio:ready"). */
 (() => {
   "use strict";
@@ -59,29 +63,59 @@
   const firstWords = (snap) => { const t = quoteOf({ blocks: (snap.blocks || []).filter((b) => b.role !== "author") }).replace(/\s+/g, " "); return t.length > 60 ? t.slice(0, 58).trim() + "…" : t; };
   const newId = () => (crypto.randomUUID ? crypto.randomUUID() : S.draft().id);
 
-  let ready = false, timer = null, saving = false, again = false;
+  let ready = false, timer = null, unsaved = false, chain = Promise.resolve();
   function soon() {
     hideCarry();
+    unsaved = true;
     clearTimeout(timer);
     timer = setTimeout(save, SAVE_AFTER_MS);
   }
-  async function save() {
-    if (!ready || !S.server.on || S.isBlank()) return;      // a blank composer never overwrites a draft
-    if (saving) { again = true; return; }
-    saving = true;
-    let sent = false;
-    try {
-      const files = S.draftFiles(), d = S.draft();
-      const waits = [files.bg, files.music].filter((f) => f && !stored.has(f)).map((f) => storeFile(f));
-      await send("drafts/current", "PUT", { id: d.id, of: d.of, snap: complete(S.snapshot(), files) });
-      // A file still on its way is named in the next save, as soon as it is there.
-      if (waits.length) sent = (await Promise.allSettled(waits)).some((r) => r.status === "fulfilled");
-    } catch (e) { /* offline or signed out: the next change tries again */ }
-    finally {
-      saving = false;
-      if (again || sent) { again = false; timer = setTimeout(save, 200); }
-    }
+  // What a save would send now, taken at once (before anything else can change the composer); null when nothing.
+  function capture() {
+    if (!ready || !S.server.on || S.isBlank()) return null;  // a blank composer never overwrites a draft
+    const files = S.draftFiles(), d = S.draft();
+    // words: false when the words are still a style's sample; what follows keeps the same background and music.
+    return { files, body: { id: d.id, of: d.of, words: !S.isBlank(true), snap: complete(S.snapshot(), files) } };
   }
+  // Saves are sent one after another, each with the composer as it was when it was asked for.
+  function save() {
+    clearTimeout(timer); timer = null; unsaved = false;
+    const c = capture();
+    if (!c) return chain;
+    const waits = [c.files.bg, c.files.music].filter((f) => f && !stored.has(f)).map((f) => storeFile(f));
+    chain = chain.then(() => put(c, waits)).catch(() => {});
+    return chain;
+  }
+  async function put(c, waits) {
+    try {
+      const r = await send("drafts/current", "PUT", c.body);
+      if (r && r.aside) setAsideNow();
+    } catch (e) { unsaved = true; return; }                 // offline or signed out: the next change tries again
+    if (!waits.length || !(await Promise.allSettled(waits)).some((r) => r.status === "fulfilled")) return;
+    // A file still on its way is named as soon as it is there: in the next save, or, when she has begun something
+    // else meanwhile, in the draft that was set aside.
+    if (S.draft().id === c.body.id) { timer = setTimeout(save, 200); return; }
+    const snap = c.body.snap;
+    if (snap.bg) snap.bg.file = (c.files.bg && stored.get(c.files.bg)) || "";
+    if (snap.music) snap.music.file = (c.files.music && stored.get(c.files.music)) || "";
+    await send("drafts/current", "PUT", { ...c.body, setAside: true }).catch(() => {});
+  }
+  // Sends what is still waiting to be saved, at once. Called before a new piece of work begins (app.js newDraft)
+  // and before another draft or reel is opened here.
+  function flush() { return timer || unsaved ? save() : chain; }
+  S.beforeNew = flush;
+  // Hiding or closing the app: the request is made so that it is still sent as the page goes.
+  function flushOnHide() {
+    if (!(timer || unsaved)) return;
+    const c = capture();
+    clearTimeout(timer); timer = null; unsaved = false;
+    if (!c) return;
+    const body = JSON.stringify(c.body);
+    fetch("/api/drafts/current", { method: "PUT", keepalive: body.length < 60000, body,
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + S.server.token } }).catch(() => { unsaved = true; });
+  }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushOnHide(); });
+  window.addEventListener("pagehide", flushOnHide);
   document.addEventListener("studio:changed", soon);
   ["post-caption", "handoff-caption"].forEach((id) => $(id).addEventListener("input", () => { caption = $(id).value; soon(); }));
 
@@ -89,7 +123,20 @@
   const slot = $("draft-slot");
   const carry = el("button", { type: "button", className: "draftline", id: "draft-carry", hidden: true });
   const say = el("p", { className: "note", id: "draft-note", role: "status", hidden: true });
-  slot.append(carry, say);
+  const more = el("button", { type: "button", className: "draftline", id: "drafts-more", hidden: true });
+  more.addEventListener("click", () => goToDrafts());
+  slot.append(carry, more, say);
+  // One quiet line in Create when drafts are set aside: they are in Posts, Drafts.
+  function showMore() {
+    const n = data && data.drafts ? data.drafts.filter((d) => d.id !== S.draft().id).length : 0;
+    more.textContent = n === 1 ? "1 more draft is in Posts" : `${n} more drafts are in Posts`;
+    more.hidden = !n;
+  }
+  // The earlier piece of work was set aside by the server as she began this one.
+  function setAsideNow() {
+    if (say.hidden || !say.textContent) note("Your earlier reel is kept in Drafts, in Posts.");
+    refresh();
+  }
   function note(msg) { say.textContent = msg || ""; say.hidden = !msg; }
   function hideCarry() { carry.hidden = true; }
   let offered = null;
@@ -111,6 +158,7 @@
   }
   let opening = 0;
   async function open(snap, ids, words) {
+    flush();                                       // the piece open now is saved first, and so set aside
     const mine = ++opening;
     hideCarry();
     note(snap.bg || snap.music ? "Bringing back your background and music…" : "");
@@ -192,15 +240,75 @@
       el("div", { className: "made-top" }, img, el("div", {}, el("p", { className: "q", textContent: firstWords(m.snap) || "A reel" }), el("p", { className: "src", textContent: when }))),
       el("div", { className: "acts" }, post, change, share), el("div", { className: "links" }, drop));
   }
+  // A draft set aside: its first words, when it was last changed, what is already chosen; Continue and Delete.
+  function savedCard(d) {
+    const chosen = [d.snap.bg && (d.snap.bg.kind === "video" ? "Video background" : "Photo background"),
+      d.snap.music && (d.snap.music.title ? `Music: ${d.snap.music.title}` : "Music")].filter(Boolean).join(" · ");
+    const go = el("button", { type: "button", className: "btn soft ic ic-create", textContent: "Continue" });
+    go.addEventListener("click", () => {
+      K.show("create");
+      S.openOn("text");
+      open(JSON.parse(JSON.stringify(d.snap)), { draftId: d.id, of: d.of });
+    });
+    const drop = el("button", { type: "button", className: "last", textContent: "Delete" });
+    drop.addEventListener("click", async () => {
+      if (!(await confirmDialog({ title: "Delete this draft?", body: "It goes from the app for good.", yes: "Delete" }))) return;
+      try { data = await send("drafts/saved/" + d.id, "DELETE"); render(); } catch (e) { $("saved-note").textContent = friendly(e); }
+    });
+    return el("article", { className: "card made", id: "saved-" + d.id },
+      el("p", { className: "q", textContent: firstWords(d.snap) || "A reel" }),
+      el("p", { className: "src", textContent: `Changed ${day(d.updated)}.` }),
+      chosen ? el("p", { className: "src", textContent: chosen }) : null,
+      el("div", { className: "acts" }, go), el("div", { className: "links" }, drop));
+  }
   function render() {
     if (!data) return;
+    const saved = (data.drafts || []).filter((d) => d.id !== S.draft().id);
+    $("saved-wrap").hidden = !saved.length;
+    $("list-saved").replaceChildren(...saved.map(savedCard));
+    $("saved-note").textContent = `Up to ${data.limits.drafts} are kept, each for ${data.limits.draftDays} days after you last changed it.`;
     const list = data.made.filter((m) => m.where === "made");
     $("made-wrap").hidden = !list.length;
     $("list-made").replaceChildren(...list.map(madeCard));
     $("made-note").textContent = `Up to ${data.limits.made} are kept, each for ${data.limits.madeDays} days. Edit one to change it.`;
-    $("posted-head").hidden = $("made-wrap").hidden && $("queue-wrap").hidden && $("handoff-wrap").hidden;
+    showMore();
+    recount();
   }
   async function refresh() { await fetchData(); render(); }
+
+  // ---------- Posts in two parts: Posted, and Drafts (everything not yet on Instagram) ----------
+  const PART_KEY = "studio.postsPart.v1";
+  const parts = { posted: $("posts-part-posted"), drafts: $("posts-part-drafts") };
+  let chose = false, sent = false;           // she tapped a part since Posts opened; Create sent her to Drafts
+  function showPart(name) {
+    for (const [k, b] of Object.entries(parts)) b.setAttribute("aria-pressed", String(k === name));
+    $("posts-drafts").hidden = name !== "drafts";
+    $("posts-posted").hidden = name !== "posted";
+  }
+  for (const [k, b] of Object.entries(parts)) b.addEventListener("click", () => {
+    chose = true; showPart(k);
+    try { localStorage.setItem(PART_KEY, k); } catch (e) { /* not remembered on this phone */ }
+  });
+  // How many things are not yet on Instagram (the cards in Drafts); the posted heading is not needed with the parts.
+  function recount() {
+    const n = ["list-saved", "list-made", "list-queue", "list-handoffs"].reduce((t, id) => t + ($(id).closest(".group").hidden ? 0 : $(id).children.length), 0);
+    $("drafts-count").textContent = n ? String(n) : "";
+    $("drafts-count").hidden = !n;
+    $("drafts-empty").hidden = !!n;
+    $("posted-head").hidden = true;
+    // A reel waiting for her tap opens Drafts, unless she has chosen a part herself.
+    if (!chose && !$("view-posts").hidden && !$("queue-wrap").hidden) showPart("drafts");
+  }
+  function goToDrafts() { sent = true; K.show("posts"); }
+  document.addEventListener("studio:view", (e) => {
+    if (e.detail === "create") showMore();
+    if (e.detail !== "posts") return;
+    chose = false;
+    let last = "";
+    try { last = localStorage.getItem(PART_KEY) || ""; } catch (err) { /* nothing remembered */ }
+    showPart(sent || !$("queue-wrap").hidden ? "drafts" : last === "drafts" ? "drafts" : "posted");
+    sent = false;
+  });
 
   // Edit on a card that studio.js draws (waiting to be posted, being finished in Instagram): shown once this reel
   // is known to have been kept here.
@@ -218,13 +326,14 @@
     (asking || fetchData()).then(() => { b.hidden = !find(); });
     return b;
   }
-  window.StudioDrafts = { refresh, editButton, versionButton };
+  window.StudioDrafts = { refresh, editButton, versionButton, recount };
 
   // ---------- on opening: finish bringing back this phone's draft, or offer the one saved on another ----------
   document.addEventListener("studio:ready", async () => {
     if (ready) return;
     ready = true;
     const got = await fetchData(), cur = got && got.current, mine = S.draft();
+    showMore();
     if (!cur) return;
     if (cur.id === mine.id) {
       // The same piece of work: the server has the files; the newer of the two has the words and settings.

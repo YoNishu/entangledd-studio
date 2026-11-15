@@ -1030,7 +1030,8 @@
   // ---------- the whole composer as plain data, and back again (for drafts and made reels) ----------
   const newId = () => (crypto.randomUUID ? crypto.randomUUID()
     : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
-  function newDraft() { state.draftId = newId(); state.of = ""; }
+  // Before a new piece of work begins, web/drafts.js sends what is still waiting to be saved of the present one.
+  function newDraft() { if (window.Studio && window.Studio.beforeNew) window.Studio.beforeNew(); state.draftId = newId(); state.of = ""; }
   // Every value that decides what is drawn or made, so that the same snapshot always gives the same reel.
   function snapshot() {
     const bg = state.bg, m = state.music;
@@ -1081,9 +1082,10 @@
     return missing;
   }
   // Nothing of her own in Create yet: no background, no music, and only the sample words of a style.
-  function isBlank() {
+  // isBlank(true): only the sample words (a background or music may be chosen).
+  function isBlank(wordsOnly) {
     const sample = STYLES[state.style].preview.text.replace(/\n\s+/g, "\n");
-    return !state.bg && !state.music && state.blocks.filter((b) => b.role !== "author").map((b) => b.text).join("\n").trim() === sample;
+    return (wordsOnly === true || (!state.bg && !state.music)) && state.blocks.filter((b) => b.role !== "author").map((b) => b.text).join("\n").trim() === sample;
   }
   // Opens one editor tab (and leaves it open if it already is).
   function openOn(name) { if (openTab !== name) showTab(name); }
@@ -1116,7 +1118,7 @@
     draft: () => ({ id: state.draftId, of: state.of, updated: changedAt }),
     setDraft: (d) => { if (d.id) state.draftId = d.id; if (d.of != null) state.of = d.of; saveDraft(); },
     newDraft: () => { newDraft(); saveDraft(); },
-    storeFile: null, keepJob: null,          // filled in by web/drafts.js
+    storeFile: null, keepJob: null, beforeNew: null,          // filled in by web/drafts.js
   };
 
   // ---------- start ----------

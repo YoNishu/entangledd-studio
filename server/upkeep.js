@@ -76,7 +76,7 @@ export async function clean(env, kit) {
 // what was posted and how it did, and the sign-ins. (Caches, counters and the health record are left out:
 // the app rebuilds those by itself.) Everything under data/scorer/ is included too.
 export const BACKED_UP = ["library", "posts", "taste", "looks", "queue", "history", "rewords", "inspirations",
-  "account", "instagram", "passkeys", "lovenotes", "sealkey", "scorer", "draft", "made"];
+  "account", "instagram", "passkeys", "lovenotes", "sealkey", "scorer", "draft", "made", "drafts"];
 const KEEP_BACKUP_DAYS = 14;
 const COPIES_PER_RUN = 7;                         // each copy is one read and one write; a timed run has about 20 to spend
 const DAY_NAME = /^\d{4}-\d{2}-\d{2}$/;
