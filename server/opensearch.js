@@ -148,7 +148,7 @@ async function tavily(env, kit, state, q) {
   if (got.status !== 200) throw new Error("answered " + got.status);
   const data = JSON.parse(got.text);
   return (data.results || []).map((r) => ({ url: String(r.url || ""), title: kit.oneLine(r.title, 160), snippet: kit.oneLine(r.content, 400),
-    raw: typeof r.raw_content === "string" ? r.raw_content.slice(0, PAGE_BYTES) : "" }));
+    raw: typeof r.raw_content === "string" ? r.raw_content.slice(0, PAGE_BYTES) : "", extract: String(r.content || "").slice(0, 3000) }));
 }
 // Serper: Google's results as JSON: { organic: [{ title, link, snippet }] }.
 async function serper(env, kit, state, q) {
@@ -223,10 +223,10 @@ export function rank(list, names = [], not = []) {
   return list.map((r, i) => ({ r, i, s: score(r) })).filter((x) => x.r.host && !SKIP.test(x.r.host) && !not.includes(x.r.url))
     .sort((a, b) => b.s - a.s || a.i - b.i).map((x) => x.r);
 }
-// Fetches up to "max" of them at once: [{ url, site, title, head, text }]. A page Tavily already read in full is
+// Fetches up to "max" of them at once: [{ url, site, title, head, text }]. A page whose text Tavily already sent is
 // used as it came; one it sent only a short extract of is fetched, and the extract used if the site says no. A
 // page that turns the app away is on the trail.
-const FULL = 1500;
+const FULL = 200;
 export async function readPages(env, kit, state, list, max = MAX_PAGES) {
   const pick = [];
   for (const r of list) {
@@ -235,7 +235,7 @@ export async function readPages(env, kit, state, list, max = MAX_PAGES) {
     pick.push(r);
   }
   const extract = (r, why) => {
-    const text = String(r.raw || "").replace(/[ \t]+/g, " ");
+    const text = String(r.raw && r.raw.length >= FULL ? r.raw : r.extract || "").replace(/[ \t]+/g, " ");
     say(env, "page", { url: r.url, how: why, chars: text.length });
     return text.length >= 200 ? { url: r.url, site: r.host, title: r.title, head: "", text, via: r.via } : null;
   };
@@ -244,7 +244,7 @@ export async function readPages(env, kit, state, list, max = MAX_PAGES) {
     if (!spend(state, kit, "pages")) { F.step(state, "web", "not asked", { why: "the app's daily limit of pages" }); return null; }
     try {
       const pg = await fetchCapped(env, state, r.url, { accept: "text/html,text/plain" });
-      if (pg.status !== 200 || !/text\/(html|plain)|xhtml/i.test(pg.type)) { F.step(state, "web", "no page", { why: `${r.host} answered ${pg.status}` }); return r.raw ? extract(r, "the extract") : null; }
+      if (pg.status !== 200 || !/text\/(html|plain)|xhtml/i.test(pg.type)) { F.step(state, "web", "no page", { why: `${r.host} answered ${pg.status}` }); return r.extract ? extract(r, "the extract") : null; }
       const html = /html/i.test(pg.type);
       const text = html ? pageText(pg.text) : pg.text;
       const head = html ? F.plain((/<title[^>]*>([\s\S]{0,300}?)<\/title>/i.exec(pg.text) || [])[1] || "").trim() : "";
@@ -253,7 +253,7 @@ export async function readPages(env, kit, state, list, max = MAX_PAGES) {
     } catch (e) {
       F.step(state, "web", e && e.blocked ? "blocked" : "no answer", { why: `${r.host}: ${e && e.blocked ? e.blocked : e && e.name === "TimeoutError" ? "no answer in time" : "could not be reached"}` });
       say(env, "page", { url: r.url, how: "failed", why: e && (e.blocked || e.message) });
-      return r.raw ? extract(r, "the extract, the page said no") : null;
+      return r.extract ? extract(r, "the extract, the page said no") : null;
     }
   }));
   return got.filter(Boolean);
@@ -431,7 +431,7 @@ export function snippetLines(kit, list, work, have = new Set()) {
   const seen = new Map();
   for (const r of list) {
     const words = `${r.title} ${r.snippet}`;
-    if (work && !namesWork(kit, work, words)) continue;
+    if (work && !namesWork(kit, work, words, r)) continue;
     for (const m of String(r.snippet).matchAll(/[“"]([^”"]{20,300})[”"]/g)) {
       const text = kit.flatten(m[1]).trim(), n = kit.norm(text);
       if (n.split(" ").length < 5 || have.has(n)) continue;
