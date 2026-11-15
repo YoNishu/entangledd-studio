@@ -59,6 +59,9 @@ export function noteUse(state, who, what, more = {}) {
   if (!state.rec) return;
   const feature = state.feature || "lookup";
   state.rec.uses = state.rec.uses || {};
+  const prev = state.rec.uses[feature];
+  // Resting after a refusal says less than the refusal itself, which stays shown for the day.
+  if (what === "resting" && prev && prev.who === who && prev.what !== "found" && Date.now() - prev.at < DAY) return;
   state.rec.uses[feature] = { at: Date.now(), who, what, ...more };
   state.dirty = true;
 }

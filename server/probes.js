@@ -336,7 +336,7 @@ async function probeLookups(env, kit) {
     const lastly = l && LAST[l.what] ? ` The last search ${LAST[l.what]} on ${dayIST(l.at)}.` : "";
     const refused = got && [400, 401, 403].includes(got.status) && !got.list.length;
     if (refused) {
-      said.push(`${name} refuses its key (status ${got.status}${got.said ? `: "${hide(got.said)}"` : ""}).${lastly}`); urgent.push(`${name} refuses its key`);
+      said.push(`${name} refuses its key. It answered status ${got.status}${got.said ? `: "${hide(got.said)}"` : ""}.${lastly}`); urgent.push(`${name} refuses its key`);
       fix.push(`Make a new ${name} key: ${where}.`, inCloudflare(KEY));
     } else if (got && got.status === 200 && !got.list.length && !env[MODEL]) {
       said.push(`${name} lists no model the app can search with.`); soon.push(`${name} offers none of the app's models`);

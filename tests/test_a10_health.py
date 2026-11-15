@@ -41,9 +41,11 @@ serve("WEBSEARCH=unset", "GEMINI=on", "OPENAI=on")
 T = login(); calls()
 l = line(T)
 asked = calls()
-check("both keys accepted: calm, with the day's count", l["state"] == "ok" and "Gemini: key accepted, 0 of 40 searches today." in l["line"] and "OpenAI: key accepted, 0 of 20 searches today." in l["line"], l)
-check("the key check only reads the model, so it asks nothing and costs nothing", [(x["to"], x["path"]) for x in asked] == [("gemini", "/v1beta/models/gemini-3.8-flash"), ("openai", "/v1/models/gpt-6-luna")]
-      and not any(x.get("body") for x in asked), asked)
+listed = http("GET", "/__lines_log?list=models&reset=1")[1]
+check("both keys accepted: calm, with the models each may use and the day's count", l["state"] == "ok"
+      and "Gemini: key accepted, models it may use: gemini-3.8-flash, gemini-3.5-flash-lite, 0 of 40 searches today." in l["line"]
+      and "OpenAI: key accepted, models it may use: gpt-6-luna, gpt-6.1-terra, gpt-6.1-sol, 0 of 20 searches today." in l["line"], l)
+check("the key check only reads the lists of models, so it asks nothing and costs nothing", asked == [] and [x["to"] for x in listed] == ["gemini", "openai"], (asked, listed))
 ops(reset=True); part_now(T, "services"); cost = ops()
 check("the services run still costs under twenty calls", cost["storage"] + cost["outside"] <= 20, (cost["storage"], cost["outside"]))
 rec = {"day": india_day(), "gemini": {"calls": 40}, "openai": {"calls": 3}, "sites": {}, "last": {"gemini": {"at": 1, "what": "limit"}, "openai": {"at": 1, "what": "used up"}}}
