@@ -43,21 +43,24 @@ const refused = (res) => Object.assign(new Error("answered " + res.status), { bl
 // ---------------------------------------------------------------- the evidence for a quote
 
 // Where a quote sits on a page's text: the line, the few lines under it (Wikiquote puts the source, or who
-// really said it, there), and the headings above it.
+// really said it, there), and the headings above it. A long page has thousands of lines, so only the lines
+// holding the quote's longest plain word are looked at closely, found with one search through the text.
 export function locate(kit, text, quote) {
   const w = words(kit, quote), size = Math.min(6, w.length);
   if (size < 3) return null;
   const windows = [];
   for (let i = 0; i + size <= w.length; i += Math.max(1, Math.floor(size / 2))) windows.push(w.slice(i, i + size).join(" "));
-  const all = String(text).split("\n"), path = [];
-  for (let i = 0; i < all.length; i++) {
-    const h = HEADING.exec(all[i]);
-    if (h) { const level = h[1].length - 2; path.length = level; path[level] = h[2]; continue; }
-    const n = ` ${kit.norm(all[i])} `;
-    if (!windows.some((x) => n.includes(` ${x} `))) continue;
+  const page = String(text), low = page.toLowerCase();
+  const key = w.filter((x) => /^[a-z]{4,}$/.test(x)).sort((a, b) => b.length - a.length)[0] || w[0];
+  for (let at = low.indexOf(key), n = 0; at >= 0 && n < 200; at = low.indexOf(key, at + key.length), n++) {
+    const from = page.lastIndexOf("\n", at) + 1, to = page.indexOf("\n", at) < 0 ? page.length : page.indexOf("\n", at);
+    const line = page.slice(from, to);
+    if (HEADING.test(line) || !windows.some((x) => ` ${kit.norm(line)} `.includes(` ${x} `))) { at = to; continue; }
+    const path = [];
+    for (const h of page.slice(0, from).matchAll(/^(={2,6})\s*(.*?)\s*\1\s*$/gm)) { const level = h[1].length - 2; path.length = level; path[level] = h[2]; }
     const under = [];
-    for (let j = i + 1; j < all.length && under.length < 3 && !HEADING.test(all[j]); j++) if (all[j].trim()) under.push(all[j].trim());
-    return { path: path.filter(Boolean), context: [all[i].trim(), ...under].join("\n").slice(0, 700) };
+    for (const l of page.slice(to + 1, to + 2000).split("\n")) { if (HEADING.test(l) || under.length >= 3) break; if (l.trim()) under.push(l.trim()); }
+    return { path: path.filter(Boolean), context: [line.trim(), ...under].join("\n").slice(0, 700) };
   }
   return null;
 }
