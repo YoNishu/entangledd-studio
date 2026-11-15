@@ -47,6 +47,11 @@ const PAGES = [
   { title: "Harbour Lights (TV series)", description: "Norwegian television drama series (2020–2023)" },
   { title: "Small Hours", description: "2019 drama film by Ilse Brandt" },
   { title: "Long Tide", description: "Disambiguation page providing links to topics that could be referred to by the same term" },
+  // Two works of one name, as Wikipedia has them: the older with a short description, the new one with none yet
+  // (a new page often has none), so its opening words must say what it is.
+  { title: "The Quiet Orchard (2011 TV series)", description: "Taiwanese television series", extract: "The Quiet Orchard is a 2011 Taiwanese television series starring Chen Hao." },
+  { title: "The Quiet Orchard", description: "", extract: "The Quiet Orchard (Chinese: 静果园; pinyin: Jìng Guǒ Yuán) is a 2026 Chinese television series starring Wen Lu and Bai Qing. It is adapted from a web novel.",
+    full: "The Quiet Orchard (Chinese: 静果园; pinyin: Jìng Guǒ Yuán) is a 2026 Chinese television series starring Wen Lu and Bai Qing. It is adapted from a web novel.\n\n== Synopsis ==\nA letter writer returns to her family's orchard.\n\n== Cast ==\nWen Lu as Jiang Yu / June\nA letter writer.\nBai Qing as Lin Qing\nZhou Ke as Old Mo\n\n== Release ==\nThe series premiered on Youku on 3 October 2026." },
 ];
 function distance(a, b) {
   let row = Array.from({ length: b.length + 1 }, (_, i) => i);
@@ -59,12 +64,18 @@ function distance(a, b) {
 }
 function wikipedia(url) {
   const q = url.searchParams;
+  // One page's whole text (prop=extracts with titles=).
+  if (q.get("titles")) {
+    const p = PAGES.find((x) => x.title === q.get("titles"));
+    return { batchcomplete: true, query: { pages: [p ? { pageid: 7000 + PAGES.indexOf(p), ns: 0, title: p.title, extract: p.full || p.extract || "" } : { ns: 0, title: q.get("titles"), missing: true }] } };
+  }
   // As the real search does with no exact hit, a title spelt a little wrong still finds its page.
   const want = norm(q.get("gsrsearch")).replace(/ (novel|film|tv series)$/, "");
+  const extracts = /extracts/.test(q.get("prop") || "");
   const bare = (t) => norm(t.replace(/\s*\(.*\)$/, ""));
   const hits = PAGES.filter((p) => want.includes(bare(p.title)) || distance(want, bare(p.title)) <= 2);
   if (!hits.length) return { batchcomplete: true };
-  return { batchcomplete: true, query: { pages: hits.map((p, i) => ({ pageid: 7000 + PAGES.indexOf(p), ns: 0, title: p.title, index: i + 1, description: p.description, descriptionsource: "central" })) } };
+  return { batchcomplete: true, query: { pages: hits.map((p, i) => ({ pageid: 7000 + PAGES.indexOf(p), ns: 0, title: p.title, index: i + 1, description: p.description, descriptionsource: "central", ...(extracts && p.extract ? { extract: p.extract } : {}) })) } };
 }
 
 // ---------------------------------------------------------------- Open Library: book search

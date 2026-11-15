@@ -17,8 +17,9 @@ let log = [], at = "";
 
 export function env(PORT) {
   at = `http://localhost:${PORT}`;
-  return { DDG_SITE: at + "/__ddg", BING_SITE: at + "/__bing", TAVILY_API: at + "/__tavily", SERPER_API: at + "/__serper", OPEN_DEV_HOSTS: `localhost:${PORT}`,
+  return { DDG_SITE: at + "/__ddg", BING_SITE: at + "/__bing", TAVILY_API: at + "/__tavily", SERPER_API: at + "/__serper", OPEN_DEV_HOSTS: `localhost:${PORT}`, MDL_SITE: at + "/__mdl",
     OPEN_SEARCH: process.env.OPEN_SEARCH === "on" ? "on" : "off",
+    ...(process.env.CLAUDE === "off" ? { ANTHROPIC_API_KEY: "" } : {}),      // Nishiii switched off: lines are picked without Claude
     ...(mode.tavily === "on" ? { TAVILY_API_KEY: TAVILY_KEY } : {}), ...(mode.serper === "on" ? { SERPER_API_KEY: SERPER_KEY } : {}) };
 }
 
@@ -68,6 +69,23 @@ const ddgPage = (list) => `<!DOCTYPE html><html><head><title>results at DuckDuck
   + `</div></body></html>`;
 // Bing's page: <li class="b_algo">, links through bing.com/ck/a with the address in "u" as a1 + base64.
 const bingPage = (list) => `<!DOCTYPE html><html><body><ol id="b_results">` + list.map((r) => `<li class="b_algo"><div class="b_tpcn"></div><h2><a href="https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1${Buffer.from(r.url).toString("base64url")}&amp;ntb=1">${esc(r.title)}</a></h2><div class="b_caption"><p>${esc(r.snippet)}</p></div></li>`).join("") + `</ol></body></html>`;
+const bingRss = (list) => `<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel><title>Bing: results</title>`
+  + list.map((r) => `<item><title>${esc(r.title)}</title><link>${esc(r.url)}</link><description>${esc(r.snippet)}</description><pubDate>Sun, 15 Nov 2026 10:00:00 GMT</pubDate></item>`).join("") + `</channel></rss>`;
+
+// MyDramaList, in the shape its search and reviews pages really have (seen on the live run): a work only for
+// "The Quiet Orchard" (two works of that name, 2011 and 2026); every other search finds nothing.
+const MDL_SEARCH = (q) => `<!doctype html><html><head><title>Search results - MyDramaList</title></head><body><div class="col-lg-8">`
+  + (/quiet orchard/i.test(q) ? [["901-the-quiet-orchard", "The Quiet Orchard", "Taiwanese Drama - 2011, 20 episodes"], ["7702-jing-guo-yuan", "The Quiet Orchard", "Chinese Drama - 2026, 30 episodes"]]
+    .map(([path, title, about]) => `<div class="box"><div class="cover"><a href="/${path}" class="block"><img alt="${title}" src="x.jpg"></a></div><div class="content"><h6 class="text-primary title"><a href="/${path}">${title}</a></h6><span class="text-muted">${about}</span></div></div>`).join("") : "<p>No results found.</p>")
+  + `</div></body></html>`;
+const MDL_REVIEWS = () => `<!doctype html><html><head><title>The Quiet Orchard (2026) Reviews - MyDramaList</title><script>var x = "Not a line: in a script.";</script></head><body>
+<h1>The Quiet Orchard (2026) Reviews</h1><div class="review">Story 9.0 Acting/Cast 9.0 Music 8.0 Rewatch Value 8.0 This review may contain spoilers <b>Slow, gentle and true..</b> Oh my heart.. Significant Quotes Jiang Yu: You don’t have to hurry to arrive where you belong. Lin Qing: I kept every letter, even the ones I never sent. 💗The Harvest💗 "Some things only grow when no one is watching them. That is why I waited." 💗 Also, I loved how the drama ends.</div>
+<div class="review">Story 7.0 The pacing was slow. “Spring is the time of plans and projects.” — Leo Tolstoy, as my teacher used to say.</div></body></html>`;
+function mdl(send, path, q) {
+  if (path === "/search") return send(200, MDL_SEARCH(q), "text/html; charset=utf-8");
+  if (path === "/7702-jing-guo-yuan/reviews") return send(200, MDL_REVIEWS(), "text/html; charset=utf-8");
+  return send(404, "<html>Not found</html>", "text/html");
+}
 const ANOMALY = `<!DOCTYPE html><html><body><div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div><div>Please complete the following challenge to confirm this search was made by a human.</div></body></html>`;
 const plainText = (html) => html.replace(/<(script|style|nav|footer)[\s\S]*?<\/\1>/g, " ").replace(/<[^>]+>/g, "\n").replace(/\n\s*\n+/g, "\n").trim();
 
@@ -111,7 +129,7 @@ export async function handle(req, res, url, tools) {
     log.push({ to: "claude", path: "", query: {}, agent: "", content: body.messages[0].content });
     return send(200, { content: [{ type: "text", text: JSON.stringify(pick(body.messages[0].content)) }] });
   }
-  const to = (/^\/__(ddg|bing|tavily|serper|web)\//.exec(p) || [])[1];
+  const to = (/^\/__(ddg|bing|tavily|serper|web|mdl)\//.exec(p) || [])[1];
   if (!to) return false;
   const entry = { to, path: p.replace(/^\/__[a-z]+/, ""), query: Object.fromEntries(url.searchParams), agent: req.headers["user-agent"] || "" };
   log.push(entry);
@@ -120,6 +138,8 @@ export async function handle(req, res, url, tools) {
     if (mode.ddg === "captcha") return send(200, ANOMALY, "text/html");
     return send(200, ddgPage(mode.ddg === "empty" ? [] : resultsFor(url.searchParams.get("q") || "")), "text/html");
   }
+  if (to === "mdl") return mdl(send, p.replace(/^\/__mdl/, ""), url.searchParams.get("q") || "");
+  if (to === "bing" && url.searchParams.get("format") === "rss" && mode.bing !== "blocked") return send(200, bingRss(resultsFor(url.searchParams.get("q") || "")), "application/rss+xml");
   if (to === "bing") return mode.bing === "blocked" ? send(403, "<html>Forbidden</html>", "text/html") : send(200, bingPage(resultsFor(url.searchParams.get("q") || "")), "text/html");
   if (to === "tavily" || to === "serper") {
     const body = JSON.parse((await tools.readBody(req)).toString() || "{}");

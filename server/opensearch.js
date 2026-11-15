@@ -20,6 +20,7 @@ const UA = "DsStudio/1.0 (personal quotes app; a few pages per search)";
 export const PAGE_BYTES = 400 * 1024;          // the most read from one page
 export const MAX_RESULT_PAGES = 2;             // results pages asked for one search
 export const MAX_PAGES = 4;                    // pages fetched for one search
+export const KEYED_QUERIES = 2;                // questions to Tavily or Serper for one search
 export const OPEN_A_DAY = { results: 60, pages: 120, tavily: 30, serper: 20 };   // Tavily: 1,000 a month; Serper: 2,500 once
 const RESULTS_MS = 6000, PAGE_MS = 6000;
 // Sites that show nothing without signing in (their snippets are still used), and the search sites themselves.
@@ -29,7 +30,13 @@ const GOOD = /(^|\.)(goodreads\.com|wikiquote\.org|mydramalist\.com|fandom\.com|
 
 // What the live proving script (tests/live) is told as the lookups run; never set in the real app.
 export const say = (env, what, detail) => { if (typeof env.LOOKUP_LOG === "function") env.LOOKUP_LOG(what, detail); };
-const wall = (html) => /captcha|verify you are human|are you a robot|unusual traffic|anomaly-modal|bots use duckduckgo|access denied|enable javascript and cookies/i.test(String(html).slice(0, 8000));
+// A page that asks for proof of a person instead of its content. Such pages are small; a real page that merely
+// mentions a captcha (Wikipedia's articles carry such words in their scripts) is not one.
+const wall = (html) => {
+  const h = String(html), title = (/<title[^>]*>([^<]{0,200})/i.exec(h) || [])[1] || "";
+  return /just a moment|attention required|access denied|are you a robot|captcha|verify you are human|security check/i.test(title)
+    || (h.length < 60000 && /captcha|verify you are human|are you a robot|unusual traffic|anomaly-modal|bots use duckduckgo|access denied|enable javascript and cookies/i.test(h.slice(0, 8000)));
+};
 const blocked = (why) => Object.assign(new Error(why), { blocked: why });
 
 // ---------------------------------------------------------------- the daily cap
@@ -139,11 +146,13 @@ export function readBing(html) {
 const PROVIDER_NAME = { tavily: "Tavily", serper: "Serper", duckduckgo: "DuckDuckGo", bing: "Bing" };
 export const providerName = (id) => PROVIDER_NAME[id] || id;
 
-// Tavily: { results: [{ url, title, content, raw_content }] }. One basic search is one credit.
+// Tavily: { results: [{ url, title, content, raw_content }] }. One basic search is one credit; include_raw_content
+// "text" sends each page's whole text as plain text (Tavily's API reference, checked 15 Nov 2026), so the lines are
+// read from it without fetching the page again.
 async function tavily(env, kit, state, q) {
   const got = await fetchCapped(env, state, `${env.TAVILY_API || "https://api.tavily.com"}/search`, { method: "POST", accept: "application/json", bytes: 900 * 1024, ms: 9000,
     headers: { Authorization: "Bearer " + env.TAVILY_API_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ query: q, search_depth: "basic", max_results: 8, include_raw_content: true, include_answer: false }) });
+    body: JSON.stringify({ query: q, search_depth: "basic", max_results: 8, include_raw_content: "text", include_answer: false }) });
   if (got.status === 401 || got.status === 432 || got.status === 433) throw blocked(`refused the key or its allowance (status ${got.status})`);
   if (got.status !== 200) throw new Error("answered " + got.status);
   const data = JSON.parse(got.text);
@@ -163,10 +172,30 @@ async function duckduckgo(env, kit, state, q) {
   if (got.status !== 200) throw new Error("answered " + got.status);
   return readDuckDuckGo(got.text);
 }
+// Bing: its plain RSS answer first (titles, links and descriptions, and no page furniture to read past); its web
+// page only when that gives nothing. The words go as %20, not "+": Bing read "+" as the end of the query (it
+// answered "The Early Spring" with pages about the word "the").
+const bingQuery = (q) => "q=" + encodeURIComponent(q);
 async function bing(env, kit, state, q) {
-  const got = await fetchCapped(env, state, `${env.BING_SITE || "https://www.bing.com"}/search?${new URLSearchParams({ q, setlang: "en", cc: "US" })}`, { ms: RESULTS_MS });
+  const site = env.BING_SITE || "https://www.bing.com";
+  const rss = await fetchCapped(env, state, `${site}/search?format=rss&${bingQuery(q)}&setlang=en&cc=US`, { accept: "application/rss+xml,text/xml", ms: RESULTS_MS });
+  if (rss.status === 200) {
+    const got = readBingRss(rss.text);
+    if (got.length) return got;
+  }
+  const got = await fetchCapped(env, state, `${site}/search?${bingQuery(q)}&setlang=en&cc=US&form=QBLH`, { ms: RESULTS_MS });
   if (got.status !== 200) throw new Error("answered " + got.status);
   return readBing(got.text);
+}
+// Bing's RSS: <item><title>..</title><link>..</link><description>..</description></item>.
+export function readBingRss(xml) {
+  const out = [];
+  for (const part of String(xml).split(/<item>/i).slice(1, 16)) {
+    const tag = (n) => F.plain(((new RegExp(`<${n}>([\\s\\S]*?)</${n}>`, "i")).exec(part) || [])[1] || "").replace(/^<!\[CDATA\[|\]\]>$/g, "").trim();
+    const url = tag("link"), title = tag("title");
+    if (/^https?:\/\//.test(url) && title) out.push({ url, title, snippet: tag("description").replace(/\s+/g, " ") });
+  }
+  return out;
 }
 
 // The providers there are now, in order: the keyed ones whose settings exist, then the keyless pages.
@@ -184,7 +213,7 @@ export async function results(env, kit, state, queries, { enough = 6 } = {}) {
   for (const [id, run, cap] of providers(env)) {
     if (list.length >= enough) break;
     if (F.resting(state, id)) { F.step(state, id, "not asked", { why: "it turned the app away earlier" }); continue; }
-    for (const q of queries.slice(0, cap === "results" ? MAX_RESULT_PAGES - keyless : 1)) {
+    for (const q of queries.slice(0, cap === "results" ? MAX_RESULT_PAGES - keyless : KEYED_QUERIES)) {
       if (list.length >= enough || Date.now() - state.began > state.limit) break;
       if (cap === "results" && keyless >= MAX_RESULT_PAGES) break;
       if (!spend(state, kit, cap)) { F.step(state, id, "not asked", { why: "the app's daily limit for it" }); break; }
@@ -193,6 +222,7 @@ export async function results(env, kit, state, queries, { enough = 6 } = {}) {
       try { got = await run(env, kit, state, q); say(env, "results", { via: id, q, list: got.map((r) => [r.url, r.title, r.snippet]) }); }
       catch (e) {
         say(env, "results", { via: id, q, failed: e && (e.blocked || e.message) });
+        if (cap === "results") keyless -= 1;           // a results page that said no does not use up a search's share
         if (e && e.blocked) F.noteBlocked(state, id, e.blocked);
         else F.noteSite(state, id, e && e.name === "TimeoutError" ? "no answer in time" : "could not be reached");
         break;                                         // this provider is no good now: the next one
@@ -259,6 +289,32 @@ export async function readPages(env, kit, state, list, max = MAX_PAGES) {
   return got.filter(Boolean);
 }
 
+// ---------------------------------------------------------------- MyDramaList, read directly
+
+// MyDramaList's own search page: each work is a link "/761231-zao-chun-qing-lang" with its title as the link's
+// text, and its kind and year just after ("Chinese Drama - 2026, 24 episodes"). [{ path, slug, title, year, about }]
+export function readMdlSearch(html) {
+  const out = [], seen = new Set(), h = String(html);
+  for (const m of h.matchAll(/href="(?:https:\/\/mydramalist\.com)?\/(\d+-([a-z0-9-]+))"[^>]*>\s*([^<]{1,150}?)\s*</g)) {
+    const path = "/" + m[1];
+    if (seen.has(path)) continue;
+    const after = F.plain(h.slice(m.index + m[0].length, m.index + m[0].length + 700)).replace(/\s+/g, " ");
+    seen.add(path);
+    out.push({ path, slug: m[2], title: F.plain(m[3]).trim(), year: Number((/\b((?:19|20)\d\d)\b/.exec(after) || [])[1]) || 0, about: after.slice(0, 120) });
+  }
+  return out;
+}
+const slugOf = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+// The entry for this work on that page: its title (or another title it goes by, or the romanised original as the
+// address has it), and its year when the year is known.
+export function mdlPick(kit, work, list) {
+  const names = [work.real || work.title, work.title, ...(work.aka || [])].filter(Boolean);
+  const cores = names.map((n) => F.coreTitle(kit, n)).filter(Boolean), slugs = names.map(slugOf);
+  const yearFits = (r) => !work.year || !r.year || r.year === work.year;
+  return list.find((r) => cores.includes(F.coreTitle(kit, r.title)) && yearFits(r))
+    || list.find((r) => slugs.includes(r.slug) && yearFits(r)) || null;
+}
+
 // ---------------------------------------------------------------- lines on a page, without Claude
 
 // Words made comparable the way pages differ: curly quotes and apostrophes straight, every dash one hyphen, "…"
@@ -278,17 +334,21 @@ const NAME = "[A-Z][\\p{L}'’.-]+(?: [A-Z][\\p{L}'’.-]+){0,2}";
 const SPOKEN = new RegExp(`^\\s*(?:[-*•]\\s*)?(${NAME})\\s*(?:\\([^)]{0,30}\\))?\\s*[:：]\\s*(.+)$`, "u");
 const BEFORE = new RegExp(`(${NAME})\\s*(?:\\([^)]{0,30}\\))?\\s*(?:[:：]|,?\\s+(?:said|says|told|tells|asks|asked|replies|replied|to [A-Z][\\p{L}]+)\\b[^“"«「]{0,20}[,:]?)\\s*$`, "u");
 const AFTER = new RegExp(`^\\s*[,.]?\\s*(?:[-–—]\\s*|,?\\s*(?:said|says)\\s+)(${NAME})`, "u");
-const QUOTED = /“([^“”\n]{20,300})”|"([^"\n]{20,300})"|«\s?([^«»\n]{20,300}?)\s?»|「([^「」\n]{20,300})」|『([^『』\n]{20,300})』/g;
+const QUOTED = /“([^“”\n]{20,400})”|"([^"\n]{20,300})"|«\s?([^«»\n]{20,300}?)\s?»|「([^「」\n]{20,300})」|『([^『』\n]{20,300})』/g;
 
-// A piece of text worth offering as a line: four words or more, real words, not an address or a heading.
-function lineLike(t) {
-  const s = t.trim();
-  if (s.length < 20 || s.length > 300 || s.split(/\s+/).length < 4) return false;
+// A piece of text worth offering as a line: four to sixty words, real words, not an address, a heading or a title.
+export function lineLike(t) {
+  const s = String(t || "").trim(), n = s.split(/\s+/).length;
+  if (s.length < 20 || s.length > 400 || n < 4 || n > 60) return false;
   if (/https?:|www\.|\.com\b|@|#\w|\{|\}|<|>/.test(s) || !/[a-z]/.test(s)) return false;
   const caps = s.split(/\s+/).filter((w) => /^[A-Z]/.test(w)).length;
   return caps / s.split(/\s+/).length < 0.7;                      // a title or a list of names, not a line
 }
-const knownName = (names, who) => names.find((n) => n && who && sameWords(n) === sameWords(who)) || "";
+// Names compared without their spaces: pages write "Shang Zhitao" and "Shang Zhi Tao".
+const squash = (t) => sameWords(t).replace(/[^\p{L}\p{N}]+/gu, "");
+const MAX_CANDIDATES = 80;                // lines taken from one page at most (a dozen are kept): little computing
+const knownName = (names, who) => names.find((n) => n && who && squash(n) === squash(who)) || "";
+
 // Lines on a page, found without Claude: text inside quotation marks (straight, curly, « », 「」), and
 // "Speaker: line" where the speaker is a name known for the work or a capitalised name of one to three words.
 // "names" are the work's cast and characters (a known name before a quote is its speaker). "list" reads each
@@ -297,36 +357,61 @@ const knownName = (names, who) => names.find((n) => n && who && sameWords(n) ===
 export function extractLines(text, { names = [], list = false } = {}) {
   const out = [], seen = new Set();
   const add = (raw, by = "", other = "") => {
-    const t = String(raw).replace(/\s+/g, " ").replace(/^[\s"'“”‘’]+|[\s"'“”]+$/g, "").trim();
+    if (out.length >= MAX_CANDIDATES || seen.has(raw)) return;
+    seen.add(raw);
+    const t = String(raw).replace(/\s+/g, " ").replace(/^\s*\[[^\]]{0,80}\]\s*/, "").replace(/^[\s"'“”‘’]+|[\s"'“”]+$/g, "").trim();
     const n = sameWords(t);
     if (!lineLike(t) || seen.has(n)) return;
     seen.add(n);
-    out.push({ text: t, by, other });
+    out.push({ text: t, by, other, fromPage: true });
   };
-  const all = String(text);
+  const all = String(text).slice(0, 150000);                    // enough for any page of quotes; keeps the computing small
   for (const m of all.matchAll(QUOTED)) {
+    if (out.length >= MAX_CANDIDATES) break;
     const inner = m[1] || m[2] || m[3] || m[4] || m[5];
     const before = all.slice(Math.max(0, m.index - 70), m.index).split("\n").pop();
     const after = all.slice(m.index + m[0].length, m.index + m[0].length + 50).split("\n")[0];
     const known = names.filter((n) => n && n.length >= 3 && before.includes(n)).pop() || "";
-    const b = BEFORE.exec(before), a = AFTER.exec(after);
+    // (Each pattern only where its marks are there at all: most quotes have no speaker around them.)
+    const b = /[:：]\s*$|\b(said|says|told|tells|asks|asked|replies|replied|to [A-Z])/.test(before) ? BEFORE.exec(before) : null;
+    const a = /^\s*[,.]?\s*(?:[-–—]|,?\s*says?\b|,?\s*said\b)/.test(after) ? AFTER.exec(after) : null;
     const said = known || (b && !NOT_SPEAKERS.test(b[1]) ? b[1] : "") || (a && !NOT_SPEAKERS.test(a[1]) ? a[1] : "");
     const mine = knownName(names, said);
     // A name after a dash that is none of the work's: the line is credited to someone else.
     add(inner, mine || (said && !(a && said === a[1]) ? said : ""), a && !mine && said === a[1] ? a[1] : "");
   }
-  let heading = "";
+  // "Luan Nian: You don’t have to be perfect to be worthy of love." in the middle of a review: after a known name,
+  // the sentence up to its end. One pass over the colons, each checked against the names (little computing).
+  const squashed = names.map((n) => [n, squash(n)]).filter(([, q]) => q.length >= 4);
+  if (squashed.length) {
+    const ends = squashed.map(([, q]) => q.slice(-3));
+    for (const m of all.matchAll(/[:：]/g)) {
+      if (out.length >= MAX_CANDIDATES) break;
+      const raw = all.slice(Math.max(0, m.index - 40), m.index).toLowerCase().replace(/\s+/g, "");
+      if (!ends.some((e) => raw.endsWith(e))) continue;            // most colons follow no name: cheap to rule out
+      const before = squash(raw);
+      const who = squashed.find(([, q]) => before.endsWith(q));
+      if (!who) continue;
+      const said = /^\s*[“"]?([^\n:：“”"]{20,300}?[.!?…])(?=["”]?(?:\s|$))/.exec(all.slice(m.index + 1, m.index + 330));
+      if (said) add(said[1], who[0]);
+    }
+  }
+  let heading = "", started = !list;
   for (const line of all.split("\n")) {
+    if (out.length >= MAX_CANDIDATES) break;
     const h = /^={2,6}\s*(.*?)\s*={2,6}\s*$/.exec(line);
-    if (h) { heading = h[1]; continue; }
+    if (h) { heading = h[1]; started = true; continue; }
+    if (!started) continue;                                      // a page's opening words say what the work is
     const s = SPOKEN.exec(line);
     if (s && !NOT_SPEAKERS.test(s[1])) {
       add(s[2], knownName(names, s[1]) || s[1]);
       continue;
     }
-    if (list && !/[“"«「]/.test(line)) add(line, /^(season|series|episode|part|chapter|dialogue|act|book|volume)\b/i.test(heading) || /\d/.test(heading) ? "" : heading);
+    if (list && !/[“"«「]/.test(line) && !/^(quoting|describing|referring|speaking|said|after|while|when he|when she|on |about )/i.test(line.trim())) add(line, /^(season|series|episode|part|chapter|dialogue|act|book|volume)\b/i.test(heading) || /\d/.test(heading) ? "" : heading);
   }
-  return out;
+  // A piece of dialogue inside a longer quote is not a line of its own.
+  const words = out.map((q) => sameWords(q.text));
+  return out.filter((q, i) => !words.some((w, j) => j !== i && w.length > words[i].length && w.includes(words[i])));
 }
 
 // ---------------------------------------------------------------- lines from what was read
@@ -376,6 +461,12 @@ function passages(kit, text, near) {
   }
   return out.join("\n…\n");
 }
+// A line found again on another site: the two sites agree, so it is sure (no longer marked to check).
+// "have" may carry "kept", a Map from a line's words to the line kept for them (findlines.js sets it).
+export function agrees(have, n, pg) {
+  const k = have.kept && have.kept.get(n);
+  if (k && pg && k.site && pg.site && k.site !== pg.site) { k.verify = false; k.also = pg.url; }
+}
 // Claude picks lines from the pages read (or, when Claude cannot answer or picks nothing usable, extractLines
 // does); each is kept only if its words are on the page it names (quote marks, dashes and spaces aside), it is
 // new, and (when a work is asked about) the page names the work and the line is not credited to another work or
@@ -389,22 +480,25 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
   const about_ = pages.map((p) => !work || namesWork(kit, work, p.text, p));
   const names = work ? [...(work.cast || []), ...(work.characters || [])] : [];
   const lines = [];
+  let tried = 0;
   const take = (q, i) => {
     const pg = pages[i];
+    tried += 1;
     const text = kit.flatten(q && q.text).replace(/^"+|"+$/g, ""), n = kit.norm(text);
     if (!pg) return drop("no page named", text);
-    if (text.length < 20 || text.length > 400) return drop("too short or too long", text, pg.site);
+    if (!lineLike(text)) return drop("too short or too long", text, pg.site);
     if (!onPage(words[i], text)) return drop("not on the page", text, pg.site);
-    if (have.has(n)) return drop("already kept", text, pg.site);
+    if (have.has(n)) { agrees(have, n, pg); return drop("already kept", text, pg.site); }
     const by = kit.oneLine(q.by, 80), from = kit.oneLine(q.from, 120);
-    const credited = by && words[i].includes(sameWords(by)) ? by : "";
+    const credited = by && (q.fromPage || words[i].includes(sameWords(by))) ? by : "";
     if (work && !about_[i]) return drop("page not about this work", text, pg.site);
     if (work && from && !F.fromThisWork(kit, work, from)) return drop("from another work", text, pg.site);
     if (work && q.other && !knownName(names, q.other)) return drop("credited to someone else", text, pg.site);
     if (!work && !credited && !(from && words[i].includes(sameWords(from)))) return drop("no one named for it", text, pg.site);
-    lines.push({ text, by: credited, url: pg.url, site: pg.site, verify: false, theme: kit.oneLine(q.theme, 30), tone: kit.oneLine(q.tone, 20),
+    lines.push({ text, by: credited, url: pg.url, site: pg.site, verify: !!work, theme: kit.oneLine(q.theme, 30), tone: kit.oneLine(q.tone, 20),
       ...(!work && from ? { work: from, type: "classic" } : {}) });
     have.add(n);
+    if (have.kept) have.kept.set(n, lines[lines.length - 1]);
   };
   let answer = null, how = "claude";
   try {
@@ -414,7 +508,9 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
   } catch (e) { say(env, "claude", { why: kit.oneLine(e && e.message, 120) }); }
   for (const q of Array.isArray(answer) ? answer : []) { if (lines.length >= want) break; take(q, Number(q && q.page) - 1); }
   // Claude could not answer, or none of its picks passed: the lines on the pages themselves, found without it.
-  if (!lines.length && work) {
+  // (An empty answer, or picks already kept, is Claude's judgement: that stands.)
+  const missed = Array.isArray(answer) && answer.length && answer.every((q) => { const i = Number(q && q.page) - 1; return !words[i] || !onPage(words[i], kit.flatten(q && q.text)); });
+  if (!lines.length && work && (!Array.isArray(answer) || missed)) {
     how = "extractor";
     pages.forEach((pg, i) => {
       const got = about_[i] ? extractLines(pg.text, { names }) : [];
@@ -422,7 +518,7 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
       for (const q of got) { if (lines.length >= want) break; take(q, i); }
     });
   }
-  return { lines, dropped, how };
+  return { lines, dropped, how, tried };
 }
 
 // Lines from the snippets alone: only a quoted line that two results on different sites carry in the same
@@ -451,12 +547,19 @@ export function snippetLines(kit, list, work, have = new Set()) {
 
 // ---------------------------------------------------------------- the whole search, for the callers
 
-// The words to search for a work: its title with its public facts, then its original title.
+// The words to search for a work, best first: its proper title in quotes with its year, country and kind; for a
+// series, with its main characters' names; for a drama from East Asia, MyDramaList's reviews, where people quote
+// the lines they loved; its memorable lines and dialogue; its original title. Only public facts about the work.
+const EAST = /^(chinese|korean|south korean|japanese|taiwanese|thai|hong kong|filipino|vietnamese)$/i;
 export function queriesFor(work) {
-  const kind = { book: "book", film: "film", series: "drama" }[work.type] || "";
-  const first = [`"${work.real || work.title}"`, work.year || "", work.country || "", kind, work.type === "book" && work.author ? work.author : "", "quotes"].filter(Boolean).join(" ");
-  const second = work.original ? `"${work.original}" quotes lines` : `"${work.real || work.title}" ${work.cast && work.cast[0] ? work.cast[0] + " " : ""}lines dialogue`;
-  return [first, second];
+  const name = `"${work.real || work.title}"`, kind = { book: "book", film: "film", series: "drama" }[work.type] || "";
+  const chars = (work.characters || []).slice(0, 2).join(" ");
+  const out = [[name, work.year || "", work.country || "", kind, work.type === "book" && work.author ? work.author : "", "quotes"].filter(Boolean).join(" ")];
+  if (work.type !== "book" && chars) out.push(`${name} ${kind} quotes ${chars}`);
+  if (work.type !== "book" && EAST.test(work.country || "")) out.push(`${name} ${work.year || ""} mydramalist reviews`.replace(/\s+/g, " "));
+  out.push(`${name} ${work.type === "book" && work.author ? work.author + " " : ""}memorable lines dialogue`);
+  if (work.original) out.push(`"${work.original}" quotes lines`);
+  return [...new Set(out)];
 }
 
 // For a work (findlines.js): results, the pages that name it, Claude's picks from them, and lines two snippets
@@ -464,22 +567,25 @@ export function queriesFor(work) {
 export async function linesForWork(env, kit, work, state, { want = 10, have = new Set(), about = "" } = {}) {
   if (!providers(env).length) return { lines: [], pages: [], dropped: {}, off: true };
   const { list } = await results(env, kit, state, queriesFor(work));
-  if (!list.length) return { lines: [], pages: [], dropped: {} };
+  const counts = { results: list.length, read: 0, about: 0, tried: 0 };
+  if (!list.length) return { lines: [], pages: [], dropped: {}, counts };
   const names = [work.real || work.title, work.original].filter(Boolean);
   const read = await readPages(env, kit, state, rank(list, names, (work.found && work.found.not) || []));
   const pages = read.filter((p) => namesWork(kit, work, p.text, p));
   for (const p of read) say(env, "about the work", { url: p.url, yes: pages.includes(p) });
   const dropped = {};
   if (read.length > pages.length) dropped["pages not about this work"] = read.length - pages.length;
+  Object.assign(counts, { read: read.length, about: pages.length });
   let lines = [];
   if (pages.length) {
     state.spent += 4;
     const got = await pickLines(env, kit, pages, { work, want, have, about, near: names });
     lines = got.lines;
+    counts.tried = got.tried;
     for (const [k, v] of Object.entries(got.dropped)) dropped[k] = (dropped[k] || 0) + v;
   }
   if (lines.length < want) lines = lines.concat(snippetLines(kit, list, work, have).slice(0, want - lines.length));
-  return { lines, pages, dropped };
+  return { lines, pages, dropped, counts };
 }
 
 // For the engine and other callers without a work: { lines, dropped } for a query, picked as "ask" says.

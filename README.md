@@ -122,19 +122,31 @@ auto-reload on the Anthropic account.
 
 ## Real lines from books, films and series
 
-When she asks for quotes from a named book, film or series, the app looks for its real lines:
-first those it already keeps for that work, then Wikiquote, then Goodreads (books) or IMDb
-(films and series). These need no key and cost nothing. Then the web itself, with no key and no
-money (`server/opensearch.js`): DuckDuckGo's plain results page (Bing's when DuckDuckGo turns the
-app away), and up to four of the pages it points to, read for lines that are on them word for word
-and credited to the work (a page that only shares words with the title, such as one about the
-season, is left out; a line only in search snippets is kept when two sites agree, marked to check).
-At most two results pages and four pages per search, 400 KB a page, only https, 60 results pages
-and 120 pages a day. `OPEN_SEARCH=off` switches it off. Two free search keys go first when set:
+When she asks for quotes from a named book, film or series, the app first makes sure it knows which
+work it is: Open Library (books) and Wikipedia's search, whose pages give the proper title, the
+original title (早春晴朗), the romanised one, the year, the country, the cast, the characters and
+the network. A title that is also a common phrase ("The early spring") is only ever searched with
+those facts. Then it looks for real lines: those it already keeps for that work, Wikiquote,
+MyDramaList's reviews (East Asian dramas and films: its own search finds the work by title and
+year), then Goodreads (books) or IMDb (films and series). These need no key and cost nothing. Then
+the web itself, with no key and no money (`server/opensearch.js`): DuckDuckGo's plain results page
+(Bing's RSS results when DuckDuckGo turns the app away), and up to four of the pages it points to.
+A page counts only when it names the work (its title with one more known fact, such as its year,
+an actor, a character or the network; or its original title); a line counts only when it is on
+that page, word for word (curly or straight quote marks, dashes and spaces aside), and is not
+credited there to another work or person. Nishiii picks the lines; when Nishiii can't, the app's
+own reader takes the quoted lines and "Name: line" lines from the page. A line on one page is
+marked to check; two sites that agree make it sure. At most two results pages and four pages per
+search, 400 KB a page, only https, 60 results pages and 120 pages a day. `OPEN_SEARCH=off`
+switches the results pages off. How the last look went (each step's counts, no title, no line)
+is on the open health page, `/api/health`, as `lastLookup`. The workflow `Live lookups`
+(`tests/live/`) runs these lookups on GitHub against the real web, with no key, and prints every
+step. Two free search keys go first when set:
 
 - `TAVILY_API_KEY`: Tavily (1,000 searches a month free, no card). Sign up at tavily.com, copy the
-  key from the dashboard (it starts `tvly-`). It sends the text of each page it read, so no page
-  is fetched again. The app asks at most 30 times a day.
+  key from the dashboard (it starts `tvly-`). It sends the whole text of each page it read
+  (`include_raw_content: "text"`), so no page is fetched again; a page it sent only a short extract
+  of is fetched, and the extract used if the site says no. Two questions per look, at most 30 a day.
 - `SERPER_API_KEY`: Serper, Google's results as JSON (2,500 searches once, free, no card). Sign up
   at serper.dev, copy the API key from the dashboard. Its result pages are fetched and read as
   above. At most 20 a day.

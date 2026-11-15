@@ -14,6 +14,7 @@
 
 import * as claudeuse from "./claudeuse.js";
 import { PARTS, PROBE_IDS, PROBE_TITLES } from "./probes.js";
+import { coarseText } from "./findlines.js";
 
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR, WEEK = 7 * DAY;
 const RENEW_WHEN_DAYS_LEFT = 30;   // start asking Meta for a fresh sign-in this long before the old one ends
@@ -715,7 +716,11 @@ export const open = {
   health: async (request, env, parts, kit) => {
     if (request.method !== "GET" || parts.length !== 1) return kit.fail(404, "Not found.");
     const record = env.MEDIA ? await readOwn(env, kit, "health", null) : null;
-    return new Response(JSON.stringify(openView(record)), {
+    // The last look for quotes from a work, coarse: what each step did and its counts, no title, no line.
+    const looks = env.MEDIA ? await kit.loadDoc(env, "lookups", null).catch(() => null) : null;
+    const c = looks && looks.coarse;
+    const lastLookup = c && c.at ? { at: c.at, identified: !!c.identified, kind: c.kind || "", year: c.year || 0, kept: c.kept || 0, said: coarseText(c).slice(0, 900) } : null;
+    return new Response(JSON.stringify({ ...openView(record), lastLookup }), {
       headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
     });
   },

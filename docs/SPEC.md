@@ -125,8 +125,11 @@ included, of the 50 allowed.
 
 **The health record** (`server/health.js`, `server/probes.js`). Eighteen lines, each `ok`,
 `soon`, `attention`, `off` or `unknown`. `GET /api/health` (open) gives ids, states, day counts,
-one message in fixed words, three counts and `needsAttention`; it costs one storage read and
-never calls an outside service. `GET /api/checkup` (signed in) gives the full record with the
+one message in fixed words, three counts, `needsAttention`, and `lastLookup`: the last look for
+quotes from a work, coarse (`{at, identified, kind, year, kept, said}`, `said` such as "work
+identified: yes (series, 2026); mydramalist: found (3); web: 5 results, 4 pages read, 3 about the
+work, 12 candidates, 2 kept (9 not on the page); lines kept: 3"; no title and no line; kept in
+`data/lookups.json` as `coarse`); it costs two storage reads and never calls an outside service. `GET /api/checkup` (signed in) gives the full record with the
 steps to fix each thing; `POST /api/checkup` checks now, at most once a minute. A record older
 than 36 hours says so itself, so timers that stop cannot hide. Every probe is read-only: nothing
 is posted, written to Instagram or paid for.
@@ -240,23 +243,52 @@ framing by other sites (`web/_headers`). The session is derived from the passcod
   visit. findlines uses `known`: the author for Goodreads and Wikiquote when she gave none, and
   the year to choose between same-named titles (IMDb, within a year; Wikiquote's "(2016 film)"),
   and every fact in each question to Gemini and OpenAI. A look at a work without `known` (never
-  checked, or checked over a day ago with no result) checks the title first, within the look's own
-  budget. `POST .../<id>/merge {into}` folds a second entry for the same work into the first (found
+  checked, or checked over a day ago with no result, or checked over two hours ago with nothing
+  known and nothing found; also when what is known is thin, no year, cast or characters) checks the
+  title first, within the look's own budget; a "Did you mean ...?" waiting for her does not stop it,
+  and is dropped once her own title is known. The Wikipedia check (`verify.js`) searches the title
+  without words such as "drama" or "movie", with the kind of work after it, then with the kind in
+  brackets; each result's short description, or else its opening words, gives the kind, year and
+  country; the opening gives the original title, the romanised title and other titles ("also known
+  as"), and the leads ("starring"); for a film or series the whole page gives the characters
+  ("Jing Boran as Luan Nian") and the network. Of several works with her title, the one of the kind
+  she chose and, for a film or series, the most recent is taken, and the trail says so. `POST .../<id>/merge {into}` folds a second entry for the same work into the first (found
   lines, facts, her own lines "from" it); the Library offers it on the later entry, never on its own.
 - Quotes on request for a named book (without free full text), film or series are real lines
   looked up for her (`server/findlines.js`). The places are tried in this order, the next one
   only when those before gave too few: lines already kept for that work in the Library (found
-  earlier, or saved by her with its title under "Where it's from"); Wikiquote; Goodreads for a
-  book or IMDb for a film or series, read directly; the web with no paid allowance
+  earlier, or saved by her with its title under "Where it's from"); Wikiquote; MyDramaList for a
+  series, or a film from East Asia (its search page `mydramalist.com/search?q=<title>`, the entry
+  with the title or the romanised title in its address and the year, then that entry's `/reviews`;
+  `MDL_SITE` in the stand-in); Goodreads for a book or IMDb for a film or series, read directly;
+  the web with no paid allowance
   (`server/opensearch.js`: Tavily if `TAVILY_API_KEY` is set, Serper if `SERPER_API_KEY` is set,
-  then DuckDuckGo's plain results page or Bing's, unless `OPEN_SEARCH` is `off`; up to four result
-  pages fetched and read, lines kept only word for word on a page that names the work, or from two
-  sites' snippets marked to check); Gemini with Google Search, if
+  then DuckDuckGo's plain results page or Bing's RSS results (its web page when the RSS gives none;
+  the query sent as %20, since Bing read "+" as its end), unless `OPEN_SEARCH` is `off`; the
+  queries: the quoted proper title with year, country and kind, then with the main characters, then
+  MyDramaList's reviews for an East Asian drama, then "memorable lines dialogue", then the original
+  title; up to four result pages fetched and read, lines kept only on a page that names the work, or
+  from two sites' snippets marked to check); Gemini with Google Search, if
   `GEMINI_API_KEY` is set (at most 40 questions a day); OpenAI with web search, if
   `OPENAI_API_KEY` is set (at most 20 a day); Anthropic's paid web search, only if
   `CLAUDE_WEB_SEARCH` is `on`; and last Nishiii's memory, marked to check. The first three need
   no key and cost nothing.
-- A line from a page is kept only if its exact words are on that page, and only from the page of
+- Lines are picked by Nishiii; when Claude cannot answer (no key, the day's limit, an error, an
+  answer that is not a list) or none of its picks is on the page, the app's own reader
+  (`opensearch.js` `extractLines`) takes them: text in quotation marks (straight, curly, « », 「」),
+  "Speaker: line" on a line of its own (not labels such as "Rating:" or "Episode 3:"), a known
+  character's or actor's name followed by a colon anywhere in the text (pages write "Shang Zhitao"
+  and "Shang Zhi Tao": names are compared without spaces), and on Wikiquote each line under a
+  character's heading; a line a page credits after a dash to a person who is not of the work is left
+  out. Every line, Claude's or not, must look like a line: 4 to 60 words, not a heading or title.
+  Lines from web pages and MyDramaList are marked to check; one found again on another site in the
+  same look becomes sure.
+- A page counts as about the work when it has the original title (in its own script), or the
+  title, proper title or another title with one more known fact (year, an actor, a character, the
+  author, the network), or the title in the page's own `<title>` or address together with the kind
+  of work; the kind of work alone counts only when nothing else is known.
+- A line from a page is kept only if its words are on that page (quote marks, apostrophes, dashes,
+  ellipses, non-breaking and repeated spaces, and case aside), and only from the page of
   the right work (title, kind and, for a book, the author she gave). Lines from Gemini and OpenAI
   are kept only with a page that was really read standing behind them (a grounding support, or the
   page the answer names on a site that was read), and only when the answer credits them to this

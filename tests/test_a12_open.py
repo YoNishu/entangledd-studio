@@ -37,7 +37,8 @@ texts_ = [l["text"] for l in lines]
 check("the drama's lines are found with no key at all", s == 200 and "You don't have to bloom early to be worth the wait." in texts_
       and "I kept the window open all winter, in case you came back with the spring." in texts_, (s, texts_))
 blog = [l for l in lines if l["text"].startswith("You don't have to bloom")]
-check("each with its speaker and the page it was read on, not marked to check", blog and blog[0]["by"] == "Xia Lan" and "/__web/thaw-blog" in blog[0]["url"] and blog[0]["verify"] is False, blog)
+# Since agent 13: a line read on one page only is marked to check; two sites that agree make it sure.
+check("each with its speaker and the page it was read on, marked to check (one page)", blog and blog[0]["by"] == "Xia Lan" and "/__web/thaw-blog" in blog[0]["url"] and blog[0]["verify"] is True, blog)
 check("the page about the season gives nothing", not any("teaches the river" in t or "promise the earth" in t for t in texts_), texts_)
 check("a line the page credits to another show is left out", not any("season turns" in t for t in texts_), texts_)
 check("lines not on the page word for word are left out", not any("no page at all" in t or "Changed." in t for t in texts_), texts_)
