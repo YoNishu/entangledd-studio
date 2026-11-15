@@ -270,10 +270,11 @@ const notice = (sub, body, tag) => ({
   notification: { title: "D's Studio", body, navigate: `${sub.origin || SUBJECT}/`, tag, lang: "en" },
 });
 
-// The first few words of a quote, for the reminder.
+// How a quote begins, for the reminder: up to its first pause if that comes early, otherwise seven words.
 function opening(quote) {
   const words = String(quote || "").replace(/\s+/g, " ").replace(/^["“”'‘’\s]+|["“”'‘’\s]+$/g, "").split(" ").filter(Boolean);
-  let out = words.slice(0, 7).join(" ");
+  const pause = words.findIndex((w, i) => i >= 3 && i < 9 && /[,;:.!?—–]$/.test(w));
+  let out = words.slice(0, pause >= 0 ? pause + 1 : 7).join(" ");
   if (out.length > 60) out = out.slice(0, 60).replace(/\s+\S*$/, "");
   const cut = out.length < words.join(" ").length;
   return out ? `“${out.replace(/[\s,;:.!?…-]+$/, "")}${cut ? "…" : ""}”` : "";
