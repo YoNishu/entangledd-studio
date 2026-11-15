@@ -100,6 +100,45 @@ async function probes() {
   }
 }
 
+// ---- how much is there: every page of a drama's reviews on MyDramaList, read with the app's own extractor and
+// the gate's free checks (no Claude here). Prints, page by page, how many new lines each gives.
+const DEEP = [
+  ["The Early Spring", "/761231-zao-chun-qing-lang", { title: "The Early Spring", real: "The Early Spring", type: "series", year: 2026, original: "早春晴朗",
+    cast: ["Jing Boran", "Sun Qian", "Guo Xiaoting", "Liu Xiaobei", "Qi Tianqing", "Zhang Yezi"], characters: ["Shang Zhitao", "Luan Nian", "Zang Yao", "Sun Yuanzhu", "Sun Yu", "Lu Mi", "Tan Mian"] }],
+  ["True Beauty", "/38627-true-beauty", { title: "True Beauty", real: "True Beauty", type: "series", year: 2020,
+    cast: ["Moon Ga-young", "Cha Eun-woo", "Hwang In-youp", "Park Yoo-na"], characters: ["Lim Ju-kyung", "Lee Su-ho", "Han Seo-jun", "Kang Su-jin", "Lim Hee-kyung"] }],
+];
+async function deep() {
+  const O = await import("../../server/opensearch.js"), S = await import("../../server/said.js");
+  console.log("\n=== how much is there: MyDramaList reviews, page by page (the app's extractor and the gate's free checks; nothing is kept from here)");
+  for (const [title, path, work] of DEEP) {
+    const seen = new Set();
+    let total = 0;
+    for (let page = 1; page <= 8; page++) {
+      const url = `https://mydramalist.com${path}/reviews${page > 1 ? "?page=" + page : ""}`;
+      let res, html;
+      try { res = await realFetch(url, { headers: { "User-Agent": "DsStudio/1.0 (personal quotes app; a few pages per search)", Accept: "text/html", "Accept-Language": "en" }, signal: AbortSignal.timeout(12000) }); html = await res.text(); }
+      catch (e) { console.log(`  ${title} page ${page}: failed ${cut(e && e.message, 80)}`); break; }
+      const text = O.pageText(html), reviews = (html.match(/class="review"/g) || []).length || (html.match(/id="review-\d+/g) || []).length;
+      const got = O.extractLines(text, { names: [...work.cast, ...work.characters] });
+      const kept = [], why = {};
+      for (const q of got) {
+        const n = q.text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+        if (seen.has(n)) continue;
+        const r = S.isSaid({ text: q.text, by: q.by }, work, q.ctx ? { ...q.ctx, place: "mdl" } : S.contextOf({ text }, q.text, "mdl"));
+        if (!r.ok) { why[r.why] = (why[r.why] || 0) + 1; continue; }
+        seen.add(n); kept.push(q);
+      }
+      total += kept.length;
+      console.log(`  ${title} page ${page}: ${res.status} ${html.length}B, reviews on it: ${reviews}, candidates ${got.length}, new lines passing ${kept.length} (refused: ${JSON.stringify(why)}), next page link: ${/[?&]page=(\d+)/.test(html) ? [...new Set([...html.matchAll(/[?&]page=(\d+)/g)].map((m) => m[1]))].join(",") : "none"}`);
+      for (const q of kept) console.log(`     "${cut(q.text, 170)}"${q.by ? " (" + q.by + ")" : ""}`);
+      if (res.status !== 200 || !got.length && page > 1) break;
+      await new Promise((r) => setTimeout(r, 700));
+    }
+    console.log(`  ${title}: ${total} lines in all from its reviews`);
+  }
+}
+
 // ---- one work through the app's own lookup
 async function one(w, kit) {
   const env = { MEDIA: new Bucket(), LOOKUP_LOG: log, LOOKUP_SECONDS: process.env.LIVE_SECONDS || "" };
@@ -132,6 +171,7 @@ async function one(w, kit) {
 const kit = { ...realKit };
 const summary = [];
 if (process.env.LIVE_PROBES !== "off" && (!only || "the early spring".includes(only))) await probes();
+if (process.env.LIVE_DEEP !== "off" && !only) { try { await deep(); } catch (e) { console.log("  deep look STOPPED: " + cut(e && (e.stack || e.message), 400)); } }
 for (const w of WORKS) {
   if (only && !w.title.toLowerCase().includes(only)) continue;
   try { summary.push(await one(w, kit)); } catch (e) { console.log(`  FAILED: ${cut(e && (e.stack || e.message), 500)}`); summary.push({ title: w.title, failed: true }); }
