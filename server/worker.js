@@ -411,8 +411,8 @@ async function claudeRaw(env, { system, messages, maxTokens = 2000, tools }) {
 // ---------- looking lines up on the web ----------
 // For quotes from a particular book, film or series, Nishiii may search the web (Anthropic's web search tool),
 // so a new series or a modern book it knows little about still gives real, attributed lines.
-// Web search has to be switched on for the Anthropic account (Console, Settings, Privacy). Until it is, the
-// request is answered from memory alone, as it always was, and the answer says so.
+// Anthropic charges for each search, so it is used only when the setting CLAUDE_WEB_SEARCH is "on" (it is off
+// unless Nishith sets it in Cloudflare). Off, a request is answered from memory alone, as it always was.
 const SEARCH_TOOL = { type: "web_search_20250305", name: "web_search" };
 async function claudeSearching(env, { system, messages, maxTokens, uses = 4 }) {
   let turn = messages, data;
@@ -693,11 +693,14 @@ async function suggestFrom(env, b, already) {
     const works = [...others, ...fallback].map((x) => x.title).concat(screen.map((x) => x.title));
     const request = { maxTokens: ranker ? 4000 : 2500, messages: [{ role: "user", content: `Suggest ${ask} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] };
     let answer;
-    if (works.length) {
+    if (works.length && env.CLAUDE_WEB_SEARCH === "on") {
       const got = await claudeSearching(env, { ...request, system: SUGGEST_SYSTEM + SEARCH_RULES, uses: Math.min(6, 2 + works.length) });
       searchedFor = { works, off: got.off };
       answer = parseJson(got.text.trim() ? got.text : "[]");
-    } else answer = parseJson(await claude(env, { ...request, system: SUGGEST_SYSTEM }));
+    } else {
+      if (works.length) searchedFor = { works, off: true };
+      answer = parseJson(await claude(env, { ...request, system: SUGGEST_SYSTEM }));
+    }
     const pool = [];
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
@@ -712,7 +715,7 @@ async function suggestFrom(env, b, already) {
     if (searchedFor) {
       const names = searchedFor.works.slice(0, 3).join(", ");
       throw new UserError(502, searchedFor.off
-        ? `Nishiii doesn't know real lines from ${names} by heart, and looking them up on the web is switched off. Ask Nishith to switch on web search for the Anthropic account (Settings, Check everything, shows how). Meanwhile, add lines you love from it in the Library.`
+        ? `Nishiii doesn't know real lines from ${names} by heart yet. New books and series often aren't known yet. Add lines you love from it in the Library, and Nishiii will use them.`
         : `Nishiii looked on the web too, but found no real lines from ${names} yet. New books and series often have few quotes online at first. Try again in a while, or add lines you love from it in the Library.`);
     }
     throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");

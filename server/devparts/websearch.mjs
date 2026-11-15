@@ -5,6 +5,8 @@
 // A work whose title contains "Nothing Online" has no lines on the web.
 // GET /__websearch_log lists what each request carried (tools, whether it was a continuation).
 const log = [];
+// The real app searches only when CLAUDE_WEB_SEARCH is "on"; the stand-in has it on unless WEBSEARCH=unset.
+export function env() { return process.env.WEBSEARCH === "unset" ? {} : { CLAUDE_WEB_SEARCH: "on" }; }
 
 export async function handle(req, res, url, tools) {
   if (url.pathname === "/__websearch_log") {
