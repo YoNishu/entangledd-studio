@@ -37,13 +37,18 @@ export async function handle(req, res, url, tools) {
   const items = [];
   for (let i = 0; i < brief.count && works.length; i++) {
     const w = works[i % works.length];
-    items.push({ text: `A line found on the web from ${w.title}, number ${Math.floor(i / works.length) + 1}.`, author: w.type === "book" ? (w.author || "") : "A character",
+    // Each line differs from the others in more than a word or two, as real lines do (near-duplicates are left out).
+    const n = Math.floor(i / works.length);
+    items.push({ text: `A line found on the web from ${w.title}, number ${n + 1}, ${WEB_ENDINGS[n % WEB_ENDINGS.length]}.`, author: w.type === "book" ? (w.author || "") : "A character",
       source: { type: w.type, title: w.title }, theme: "love", tone: "tender", verify: i % 2 === 0, found: `https://www.goodreads.com/work/quotes/${i + 1}` });
   }
   // A continuation carries on after the earlier blocks; a first answer has them in front of the reply.
   const reply = [{ type: "text", text: JSON.stringify(items) }];
   return send(200, { stop_reason: "end_turn", content: continuing ? reply : [...lookedUp, ...reply], usage: { server_tool_use: { web_search_requests: 1 } } });
 }
+
+const WEB_ENDINGS = ["about the sea at first light", "about letters nobody ever sent", "about the long road back home", "about waiting out a hard winter",
+  "about the quiet after a storm", "about strangers who became family", "about the garden in late spring", "about keeping an old promise"];
 
 // Requests without the search tool go to the built-in pretend Claude unchanged.
 async function replay(req, res, raw, tools) {

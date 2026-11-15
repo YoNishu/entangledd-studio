@@ -74,8 +74,8 @@ with sync_playwright() as p:
     pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.goto(f"{_W.URL}/"); pg.wait_for_timeout(1200)
     pg.fill("#passcode", "letmein"); pg.click("#passcode-go"); pg.wait_for_timeout(1500)
-    pg.click("#nav-nishiii"); pg.wait_for_timeout(1500)
-    links = pg.locator("a.src.found")
+    pg.click("#nav-library"); pg.wait_for_timeout(1500)      # "Quotes you found" in the Library
+    links = pg.locator("#found-list a.src.found")
     n = links.count()
     check("cards show a 'Found on' link", n >= 1 and links.first.inner_text().startswith("Found on goodreads.com"), n)
     if n: check("the link opens the page in a new tab", links.first.get_attribute("target") == "_blank" and "noopener" in (links.first.get_attribute("rel") or ""))
