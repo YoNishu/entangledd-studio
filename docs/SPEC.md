@@ -47,18 +47,20 @@ list at the end, "Ideas for later, only if she asks".
 | 24 | "Who said this?" and Library titles looked up on the web (Wikiquote, Quote Investigator, Wikipedia, Open Library; Gemini or OpenAI when those find nothing), with the pages shown; lookups in the health record | Done |
 | 25 | One engine for every suggestion: a pool from every source (her lines, found lines, web discovery, the real quotes behind pages she follows, Nishiii's memory) and one score over every signal, with a reason on each card; also used for Insights, advice, captions and background words | Done |
 | 26 | Drafts: every piece of work in Create is saved by itself and opens again exactly (on another phone too); made reels kept under "Made, not posted" with Edit, Post, Share and Delete; Edit on waiting and handed-over reels; "Make a version of this" on posted reels for 7 days | Done |
+| 27 | Each tab has one purpose: the week's summary lives in Insights (7 days), Find quotes in the Library, the chat in the Nishiii tab; Today is ranked 1 to 5 | Done |
+| 28 | A quote is something said in the work, never something said about it: every looked-up line passes `server/said.js` (place on the page, wording, then one batched question to Claude: said, narration, about, unsure); the trail counts what was refused and why; a one-off job (`lines-gate`, `data/linegate.json`) cleans what was already kept | Done |
+| 29 | Reel file at the top of Instagram's reel specification (see "Reel file"); what Instagram serves for each reel is measured once (`post.served`, a numbers-only line in `/api/health`); numbers re-asked after 5 minutes for posts under 3 days | Done |
 
 ## How the app is laid out
 
 | Section | What it holds |
 |---|---|
-| Today | A little note from Nishiii, the day and date, exactly five suggestions (Use this, Reword, Skip; one may be marked "Something different"), and the previous seven days folded one row per day, still usable |
+| Today | A little note from Nishiii, the day and date, exactly five suggestions best first, each with its rank 1 to 5 from the engine's live score and the parts the rank rests on (Use this, Reword, Skip; one may be marked "Something different"), and the previous seven days folded one row per day, still usable (no ranks there) |
 | Create | The composer. Tabs: Background, Text (with "Check who said this"), Style (shape, styles, her saved looks), Music (her own file or a free track, start point, volume, preview), Finish (reel, picture or carousel; post now or keep for later) |
-| Library | What she feeds Nishiii: her own quotes (typed, scanned, or imported highlights), books (each marked if its full text is free to read), films and series, and reels and pages she loves |
-| Posts | The last 7 days against the week before, with Nishiii's note, the best time of day and themes so far; reels made but not posted (Post, Edit, Share, Delete); reels waiting to be posted (with Edit); everything posted with its numbers and comments |
-| Insights | A period picker, then: people reached, the key numbers, reach of each post, best posts, a day-by-time grid, "What works" comparisons, the clearest differences with Nishiii's advice, followers over time, Instagram's totals for the whole page, who follows the page, posting rhythm, and a file of every post's numbers |
-| Nishiii | Ask for five quotes from chosen books, films, series or pages (kept here, apart from Today); what Nishiii has learned about her taste; how far the scorer has come; notes she writes for Nishiii |
-| Chat (round button, top right) | Nishiii as a chat that can act in the app |
+| Library | What quotes come from, and getting quotes from it. "Find quotes" (one work or any mix; 5, 10, 15 or 20; the lines arrive in the sheet with Create with this, Reword, Skip; asking again gives only new lines) and "Quotes you found" (kept when the sheet closes); her own quotes (typed, scanned, or imported highlights), books (each marked if its full text is free to read), films and series, and reels and pages she loves |
+| Posts | The posts only, in two parts. Posted: everything posted, each card with its own numbers and comments, an "Updated ... ago" line and Refresh. Drafts: reels not finished yet (Continue, Delete), made but not posted (Post, Edit, Share, Delete), waiting to be posted, and being finished in Instagram |
+| Insights | A period picker, an "Updated ... ago" line and Refresh, then (for 7 days) this week against last with Nishiii's note, and: people reached, the key numbers, reach of each post, best posts, a day-by-time grid, "What works" comparisons, the clearest differences with Nishiii's advice, followers over time, Instagram's totals for the whole page, who follows the page, posting rhythm, and a file of every post's numbers |
+| Nishiii | Two parts. Chat: Nishiii as a chat that can act in the app, a screen of its own with the message box above the keyboard; the last conversation is kept on the phone until "Start a new chat". What Nishiii knows: what she has learned about her taste, how far the scorer has come and today's order, notes she writes for Nishiii, make Nishiii forget |
 | Settings (top right) | Face ID lock, the Instagram connection, little notes from Nishiii, Check everything (the health record), the daily reminder, signing out |
 
 ## How Nishiii learns
@@ -198,6 +200,8 @@ lifetime and a cleaner.
 | `data/draft.json` | The current draft in Create (`{ id, of, updated, snap }`; last save wins) | One; 30 days after its last change |
 | `data/made.json` | Reels made from the app and what each was made from (`{ id, jobId, made, snap, about, posted, postId }`) | 20 not posted, 30 days each; posted ones 7 days; then only the post's record |
 | `data/drafts.json` | Unfinished reels set aside when she starts something else (`{ id, of, updated, snap }`); shown under Drafts in Posts, removed by `DELETE /api/drafts/saved/<id>`; `PUT /api/drafts/current` answers with the id it set aside | 10, each 30 days |
+| `data/asked.json`, `data/asked-shown.json` | Quotes she found in the Library (up to 200; a quote goes after 30 days, or 7 days after she used it), and what she has been shown per work so asking again gives new lines (150 lines a work, 40 works) | as stated |
+| `data/served.json`, `data/postscheck.json` | What Instagram serves for each reel (kbps only, never the address), and when the list of posts was last checked | small, kept |
 | `slides/<id>.jpg` | Carousel pictures | 7 days |
 | `data/stockcache/`, `data/musiccache/` | Search results | 2 days, 8 days |
 | `auth/` | Wrong-passcode counts and markers, used Face ID challenges | 1 day |
