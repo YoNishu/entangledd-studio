@@ -186,6 +186,17 @@ async function checkInstagram(env, kit, ctx) {
   }
   const ig = ctx.ig;
   if (!ig) return { title, state: "off", line: "Not connected. Connect it above to post and see your numbers.", brief: "" };
+  // Meta has paused the app's access (see graph() in worker.js). Nothing is asked of Instagram while it lasts.
+  const block = await kit.loadDoc(env, "igblock", {});
+  if (block.at && Date.now() - block.at < 26 * 60 * 60 * 1000) {
+    return { title, state: "attention", brief: "Instagram has paused this app's access",
+      line: "Instagram answered \"API access blocked\": Meta has paused this app's access. Posting from the app can't work until it is lifted. Sharing a reel to Instagram by hand (\"Add a song in Instagram\") still works.",
+      fix: ["Open developers.facebook.com on a computer and sign in with the Facebook account that owns the app.",
+        "Look for an alert at the top or under the bell: \"Confirm account\", a security check, or a notice about the app. Complete what it asks.",
+        "Open the app there (My Apps) and read Alerts and App Review: if it says the app is restricted or deactivated, follow its steps or appeal.",
+        "Also open facebook.com/accountquality for the Facebook account and Page: clear any restriction shown.",
+        "Then open D's Studio and tap Check now. The app asks Instagram again by itself every two hours."] };
+  }
 
   let user, page;
   try { [user, page] = await Promise.all([debugToken(env, kit, ig.userToken), debugToken(env, kit, ig.pageToken)]); }

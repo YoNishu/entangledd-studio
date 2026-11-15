@@ -1176,7 +1176,24 @@ async function musicRoutes(request, env, parts, url) {
 // ---------- Instagram: connect, music, post ----------
 const GRAPH_VERSION = "v25.0";
 let graphAnswered = "";               // the version named in Meta's latest answer; differs once v25.0 has been withdrawn
+// Meta can pause an app's access altogether ("API access blocked", code 200). That is decided on Meta's side:
+// an alert in the developer account to confirm, a check of the account, or the app being restricted. While it
+// lasts, every call fails, so the app stops calling by itself (the timers, the checks) and asks again at most
+// every two hours, or when she tries to post. The note is kept in data/igblock.json and shown in the health record.
+const BLOCK_WORDS = "Instagram has paused this app's access, on Meta's side, so posting from here can't work right now. You can still post: make the reel, then use \"Add a song in Instagram\" to share it to Instagram yourself. Ask Nishith to look at Settings, Check everything, for how to lift it.";
+const BLOCK_REST_MS = 2 * 60 * 60 * 1000;
+let blockedAt = 0, blockLoaded = false;
+async function instagramPaused(env) {
+  // Read once, and again whenever it looks paused (another copy of the app may have seen it lifted).
+  if ((!blockLoaded || blockedAt) && env.MEDIA) { blockLoaded = true; blockedAt = (await loadDoc(env, "igblock", {})).at || 0; }
+  return blockedAt && Date.now() - blockedAt < BLOCK_REST_MS;
+}
+function blockedError() { const err = new UserError(502, BLOCK_WORDS); err.code = 200; err.blocked = true; err.denied = false; return err; }
+
 async function graph(env, method, path, params) {
+  // Asked by a timer or a check while access is paused: don't call at all. (params.__ask marks her own try.)
+  const hers = params && params.__ask; if (params) delete params.__ask;
+  if (!hers && (await instagramPaused(env))) throw blockedError();
   const url = new URL((env.GRAPH_API || "https://graph.facebook.com") + "/" + GRAPH_VERSION + path);
   const init = { method };
   if (method === "GET") for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
@@ -1190,6 +1207,11 @@ async function graph(env, method, path, params) {
     // Meta's own words can repeat the token it was sent ("Malformed access token ..."), so anything shaped
     // like a key is cut out before they are logged or passed on.
     console.error("Graph error", res.status, e.code, e.error_subcode, health.hide(e.message));
+    if (e.code === 200 && /api access blocked/i.test(e.message || "")) {
+      blockedAt = Date.now(); blockLoaded = true;
+      if (env.MEDIA) await saveDoc(env, "igblock", { at: blockedAt, trace: String(e.fbtrace_id || "").slice(0, 40) }).catch(() => {});
+      throw blockedError();
+    }
     // 190 is Instagram's code for a sign-in it no longer accepts: ended, withdrawn, or pasted wrongly.
     const err = new UserError(502, e.code === 190
       ? "Instagram didn't accept the sign-in: it has ended or was withdrawn. Ask Nishith to connect Instagram again (Settings, Check everything, shows how)."
@@ -1201,6 +1223,7 @@ async function graph(env, method, path, params) {
     err.gone = e.code === 100 && (e.error_subcode === 33 || /does not exist/i.test(e.message || ""));
     throw err;
   }
+  if (blockedAt) { blockedAt = 0; if (env.MEDIA) await env.MEDIA.delete("data/igblock.json").catch(() => {}); }   // it answers again
   return data;
 }
 const igReady = (env) => !!(env.META_APP_ID && env.META_APP_SECRET && env.MEDIA);
@@ -1354,7 +1377,7 @@ async function createContainer(env, ig, params, wantUser) {
   let last;
   for (const kind of order) {
     try {
-      const out = await graph(env, "POST", `/${ig.igId}/media`, { ...params, access_token: kind === "user" ? ig.userToken : ig.pageToken });
+      const out = await graph(env, "POST", `/${ig.igId}/media`, { ...params, __ask: 1, access_token: kind === "user" ? ig.userToken : ig.pageToken });
       return { containerId: out.id, tokenKind: kind };
     } catch (e) { if (!(e instanceof UserError)) throw e; last = e; }
   }
@@ -1435,7 +1458,7 @@ async function postCarousel(request, env, ig, posts, b) {
     const made = await createContainer(env, ig, { image_url: await publicSlideUrl(request, env, id), is_carousel_item: "true" }, false);
     children.push(made.containerId); tokenKind = made.tokenKind;
   }
-  const whole = await graph(env, "POST", `/${ig.igId}/media`, { media_type: "CAROUSEL", children: children.join(","), caption,
+  const whole = await graph(env, "POST", `/${ig.igId}/media`, { __ask: 1, media_type: "CAROUSEL", children: children.join(","), caption,
     access_token: tokenKind === "user" ? ig.userToken : ig.pageToken });
   const post = { id: crypto.randomUUID(), kind: "carousel", slides: slides.length, containerId: whole.id, tokenKind, state: "processing", error: null, caption, music: null,
     quote: lines(b.quote, 600), author: oneLine(b.author, 80), theme: oneLine(b.theme, 30), tone: oneLine(b.tone, 20), source: oneLine(b.source, 20),

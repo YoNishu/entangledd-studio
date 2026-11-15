@@ -143,7 +143,7 @@ want = http("GET", "/api/health")[1]
 for label, method, path, headers in [("a made-up sign-in", "GET", "/api/health", {"Authorization": "Bearer nonsense"}), ("a query string", "GET", "/api/health?check=now&refresh=1", None),
                                      ("a trailing slash", "GET", "/api/health/", None)]:
     ops(reset=True); s, b, _ = http(method, path, headers=headers); o = ops()
-    check(f"{label}: the same answer, for one read and nothing else", s == 200 and b == want and o["what"] == ["get data/health.json"], (s, o["what"]))
+    check(f"{label}: the same answer, for two reads and nothing else", s == 200 and b == want and sorted(o["what"]) == ["get data/health.json", "get data/lookups.json"], (s, o["what"]))
 for method, path in [("POST", "/api/health"), ("PUT", "/api/health"), ("DELETE", "/api/health"), ("GET", "/api/health/check"), ("GET", "/api/health/../checkup"), ("POST", "/api/health/checkup")]:
     ops(reset=True); s, b, _ = http(method, path, body={} if method in ("POST", "PUT") else None); o = ops()
     check(f"{method} {path}: turned away, nothing read, nothing called", s in (401, 404) and o["storage"] == 0 and o["outside"] == 0 and "items" not in json.dumps(b), (s, o["what"]))
