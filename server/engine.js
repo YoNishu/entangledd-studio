@@ -34,7 +34,7 @@ import { providers } from "./opensearch.js";
 const DAY = 24 * 3600 * 1000;
 // id, starting weight, K: the evidence at which the part counts half its weight (0: always full weight).
 export const PARTS = [["picks", 1.0, 40], ["taste", 1.0, 2], ["own", 0.6, 5], ["pages", 0.8, 6], ["audience", 0.9, 10], ["trust", 0.5, 0], ["fresh", 0.4, 0]];
-const PART_NAME = { picks: "your picks", taste: "what you told Nishiii", own: "your own lines", pages: "pages you follow", audience: "how your posts did", trust: "how sure the wording is", fresh: "variety" };
+export const PART_NAME = { picks: "your picks", taste: "what you told Nishiii", own: "your own lines", pages: "pages you follow", audience: "how your posts did", trust: "how sure the wording is", fresh: "variety" };
 const REASON_MIN = 0.08;                         // a part must add at least this much to be named as a reason
 const BURIED = -1.4;                             // a taste value this low (an avoid) keeps a line out unless nothing else is left
 const CAP = { theme: 2, author: 2, src: 2, own: 1 };
