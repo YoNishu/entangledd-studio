@@ -25,6 +25,7 @@ import * as scorer from "./scorer.js";
 import * as lovenotes from "./lovenotes.js";
 import * as upkeep from "./upkeep.js";
 import * as claudeuse from "./claudeuse.js";
+import * as findlines from "./findlines.js";      // real lines from books, films and series, found without a paid search
 const SECTIONS = [health, scorer, lovenotes, upkeep];
 
 // The daily reminder to post is a section too (its routes are under /api/reminders); it also has a few
@@ -313,6 +314,14 @@ async function libraryRoutes(request, env, parts) {
     await saveDoc(env, "library", lib);
     return json(lib);
   }
+  if ((kind === "books" || kind === "screen") && id && parts[3] === "found" && method === "POST") {
+    // "Not the right one": the lines found for this work belong to another work of the same name.
+    const work = lib[kind].find((x) => x.id === id);
+    if (!work) return fail(404, "That's no longer on the list.");
+    if ((await body(request)).forget) findlines.setAside(work);
+    await saveDoc(env, "library", lib);
+    return json(lib);
+  }
   if (kind === "import" && method === "POST") {
     // Highlights exported from an e-reader, or any list of lines: added to her own quotes, duplicates left out.
     const b = await body(request);
@@ -412,7 +421,8 @@ async function claudeRaw(env, { system, messages, maxTokens = 2000, tools }) {
 // For quotes from a particular book, film or series, Nishiii may search the web (Anthropic's web search tool),
 // so a new series or a modern book it knows little about still gives real, attributed lines.
 // Anthropic charges for each search, so it is used only when the setting CLAUDE_WEB_SEARCH is "on" (it is off
-// unless Nishith sets it in Cloudflare). Off, a request is answered from memory alone, as it always was.
+// unless Nishith sets it in Cloudflare), and then only as the last place to look, after the ones that cost
+// nothing or have their own small daily limit (findlines.js). Off, what those did not find comes from memory.
 const SEARCH_TOOL = { type: "web_search_20250305", name: "web_search" };
 async function claudeSearching(env, { system, messages, maxTokens, uses = 4 }) {
   let turn = messages, data;
@@ -552,6 +562,7 @@ Rules:
 - Keep each quote under 45 words, complete on its own, with no surrounding quotation marks.
 - Lean towards what the reader has picked before and away from what she skipped, while keeping some variety.
 - "taste" is a profile of what she likes, built up over time; follow it, and treat "herNotes" inside it as instructions from her. The profile is written to her, so "you" in it means her.
+- "foundLines" are real lines already found for her books, films and series, each with who says it. You may suggest any of them, copied word for word, with its work in "source" and "verify" false.
 - "lovedElsewhere" are lines from other pages she admires. Use them only to understand her taste. Never suggest them or close rewordings of them.
 - Do not repeat anything in the "avoid" list.
 - Order the array with the strongest match for her first.`;
@@ -606,6 +617,9 @@ async function generateSuggestions(env, count) {
       taste: taste || undefined,
       lovedElsewhere: shuffle(insp.flatMap((i) => [i.quote, ...(i.top || []).map((t) => t.quote)]).filter(Boolean)).slice(0, 15),
     };
+    // Real lines found earlier for her works (see findlines.js): Nishiii may suggest these word for word.
+    const foundLines = findlines.forBrief(kit, lib, seen);
+    if (foundLines.length) brief.foundLines = foundLines;
     const answer = parseJson(await claude(env, {
       system: SUGGEST_SYSTEM, maxTokens: ranker ? 4500 : 3000,
       messages: [{ role: "user", content: `Suggest ${ask} quotes. Reader details as JSON:\n${JSON.stringify(brief)}` }],
@@ -614,7 +628,7 @@ async function generateSuggestions(env, count) {
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
       if (!text || seen.has(norm(text))) continue;
-      pool.push(cleanSuggestion(s, text));
+      pool.push(findlines.stamp(kit, lib, cleanSuggestion(s, text)));
       seen.add(norm(text));
       if (pool.length >= ask) break;
     }
@@ -658,7 +672,7 @@ async function suggestFrom(env, b, already) {
   const seen = new Set([...history, ...day, ...already].map((x) => norm(x.text)));
   const fresh = [];
   const fromWorks = books.length + screen.length + pages.length > 0 || !!about;
-  let searchedFor = null;      // set when particular works were looked up (or would have been, with web search off)
+  let searchedFor = null;      // set when particular works were asked for: their titles, and whether the paid search ran
 
   if (wantOwn) {
     const mine = shuffle((lib.quotes || []).filter((q) => !seen.has(norm(q.text)))).slice(0, fromWorks ? 2 : count);
@@ -676,36 +690,47 @@ async function suggestFrom(env, b, already) {
     try { fresh.push(...(await quotesFromBookText(env, withText[i], share, about, taste, seen))); }
     catch (e) { if (!(e instanceof UserError)) throw e; }
   }
+  // Books without free text, films and series: real lines found for them, kept in the Library or looked up
+  // now on Wikiquote, the big quote sites and, with a key, Gemini and OpenAI (see findlines.js).
+  const named = [...others.map((x) => ({ ...x, type: "book" })), ...screen.map((x) => ({ ...x, type: x.kind }))];
+  let short = named;           // the works that still lack lines after that
+  if (named.length && count > fresh.length) {
+    const got = await findlines.forWorks(env, kit, lib, named, { room: count - fresh.length, also: pages.length ? 1 : 0, about, taste, seen, ranker });
+    fresh.push(...got.items);
+    short = got.short;
+    searchedFor = { works: named.map((x) => x.title), paid: false };
+  }
   const want = count - fresh.length;
-  if (want > 0 && fromWorks && (otherWorks || !fresh.length)) {
-    const fallback = !otherWorks ? withText : [];      // the text gave nothing usable: fall back to memory for those books
+  const more = short.length + pages.length > 0 || !!about && !withText.length && !named.length;
+  if (want > 0 && fromWorks && (more || !fresh.length)) {
+    const fallback = !more ? withText : [];            // the text gave nothing usable: fall back to memory for those books
     const ask = ranker ? ranker.ask(want) : want;      // more than needed once the scorer is live, as for Today's five
     const brief = {
       count: ask,
-      only: others.length || screen.length || fallback.length ? [...[...others, ...fallback].map((x) => ({ type: "book", title: x.title, author: x.author })), ...screen.map((x) => ({ type: x.kind, title: x.title }))] : undefined,
+      only: short.length || fallback.length ? [...short, ...fallback.map((x) => ({ ...x, type: "book" }))].map((x) => (x.type === "book" ? { type: "book", title: x.title, author: x.author } : { type: x.type, title: x.title })) : undefined,
       inTheSpiritOf: pages.length ? pages.map((x) => ({ page: x.handle ? "@" + x.handle : "saved reel", look: x.style || "",
         linesSheLoved: [x.quote, ...(x.top || []).map((t) => t.quote)].filter(Boolean).slice(0, 6) })) : undefined,
       about: about || undefined,
       avoid: [...history, ...day, ...already].slice(-120).map((x) => x.text),
       taste: taste || undefined,
     };
-    // Particular books, films or series: Nishiii may look their lines up on the web (see claudeSearching).
-    const works = [...others, ...fallback].map((x) => x.title).concat(screen.map((x) => x.title));
+    // Works that still lack lines: Anthropic's paid search if it is switched on (see claudeSearching), else memory.
+    const works = [...short, ...fallback].map((x) => x.title);
     const request = { maxTokens: ranker ? 4000 : 2500, messages: [{ role: "user", content: `Suggest ${ask} quotes. Request details as JSON:\n${JSON.stringify(brief)}` }] };
     let answer;
     if (works.length && env.CLAUDE_WEB_SEARCH === "on") {
       const got = await claudeSearching(env, { ...request, system: SUGGEST_SYSTEM + SEARCH_RULES, uses: Math.min(6, 2 + works.length) });
-      searchedFor = { works, off: got.off };
+      searchedFor = { works, paid: !got.off };
       answer = parseJson(got.text.trim() ? got.text : "[]");
     } else {
-      if (works.length) searchedFor = { works, off: true };
+      if (works.length) searchedFor = { works, paid: false };
       answer = parseJson(await claude(env, { ...request, system: SUGGEST_SYSTEM }));
     }
     const pool = [];
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
       if (!text || seen.has(norm(text))) continue;
-      pool.push(cleanSuggestion(s, text));
+      pool.push(findlines.stamp(kit, lib, cleanSuggestion(s, text)));
       seen.add(norm(text));
       if (pool.length >= ask) break;
     }
@@ -713,10 +738,9 @@ async function suggestFrom(env, b, already) {
   }
   if (!fresh.length) {
     if (searchedFor) {
+      // Nothing anywhere: said plainly, with the one thing that always works.
       const names = searchedFor.works.slice(0, 3).join(", ");
-      throw new UserError(502, searchedFor.off
-        ? `Nishiii doesn't know real lines from ${names} by heart yet. New books and series often aren't known yet. Add lines you love from it in the Library, and Nishiii will use them.`
-        : `Nishiii looked on the web too, but found no real lines from ${names} yet. New books and series often have few quotes online at first. Try again in a while, or add lines you love from it in the Library.`);
+      throw new UserError(502, `Nishiii looked${searchedFor.paid ? " on the web too" : ""}, but found no real lines from ${names} yet. New books and series often have few quotes online at first. Add lines you love from it in the Library, with its title under "Where it's from", and Nishiii will use them.`);
     }
     throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
   }
@@ -2477,7 +2501,7 @@ async function runChatTool(env, name, input, actions) {
     const fresh = await suggestFrom(env, { sources: ids.filter(Boolean), about: input.about, count: input.count || 5 }, list);
     await saveDoc(env, "asked", [...list, ...fresh].slice(-ASKED_KEEP));
     actions.push({ type: "refresh", what: "asked" });
-    return fresh.map((q) => ({ text: q.text, author: q.author, from: q.source.title || q.source.type, checkWording: q.verify }));
+    return fresh.map((q) => ({ text: q.text, author: q.author, from: q.source.title || q.source.type, checkWording: q.verify, foundOn: q.source.site || undefined }));
   }
   if (name === "add_to_library") {
     const lib = { ...emptyLibrary(), ...(await loadDoc(env, "library", emptyLibrary())) };
@@ -2677,6 +2701,7 @@ const kit = { json, fail, UserError, body, loadDoc, saveDoc, signedIn, claude, c
   reelsReady, stockProvider, todayIST, oneLine, lines, GRAPH_VERSION,
   CLAUDE_MODEL,
   findBookText, textHostAllowed,
+  norm, flatten, parseJson, foundAt,
   musicSearchCached,
   searchPixabay, searchPexels, stockTargets, fetchStockFile, PROVIDERS,
   graphAnswered: () => graphAnswered };

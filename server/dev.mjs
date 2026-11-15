@@ -322,6 +322,23 @@ function pretendClaude(req) {
     text = JSON.stringify([{ text: "This sentence is not in the book at all, not anywhere.", theme: "fake", tone: "x" }, ...picks.map((t) => ({ text: t, theme: "life", tone: "plain" }))]);
     return { status: 200, body: { content: [{ type: "text", text }] } };
   }
+  if (system.startsWith("You pick real lines from a page of quotes")) {
+    // Picks what is really on the page (the speaker from "Name: line", or the heading above it), plus one
+    // made-up line that the server must reject. Like a sensible reader, it skips a page's opening description.
+    const picks = [];
+    for (const passage of req.messages[0].content.split(/--- \d+ ---\n/).slice(1)) {
+      let heading = "", open = !/^==/m.test(passage);
+      for (const raw of passage.split("\n")) {
+        const line = raw.trim(), h = /^==+\s*(.*?)\s*==+$/.exec(line);
+        if (h) { heading = /^(chapter|season|episode|quotes)\b/i.test(h[1]) ? "" : h[1]; open = true; continue; }
+        if (!open || /^\[[^\]]*\]$/.test(line) || line.length < 25) continue;
+        const m = /^([A-Z][\w .'-]{1,30}): (.+)$/.exec(line);
+        picks.push({ text: (m ? m[2] : line).replace(/^\[[^\]]*\]\s*/, ""), by: m ? m[1] : heading, theme: "sea", tone: "quiet" });
+      }
+    }
+    text = JSON.stringify([{ text: "This sentence is on no page at all, not anywhere.", by: "Nobody", theme: "fake", tone: "x" }, ...picks.slice(0, 14)]);
+    return { status: 200, body: { content: [{ type: "text", text }] } };
+  }
   if (system.startsWith("You choose quotes")) {
     const want = Number((req.messages[0].content.match(/Suggest (\d+)/) || [])[1] || 6);
     let brief = {};
@@ -329,13 +346,18 @@ function pretendClaude(req) {
     const items = [];
     if (brief.only) {
       // Asked for quotes from particular works: answer only from those, as the real model is told to.
-      for (let i = 0; i < want; i++) {
-        const w = brief.only[i % brief.only.length];
-        items.push({ text: `A line from ${w.title}, number ${Math.floor(i / brief.only.length) + 1}${brief.about ? `, about ${brief.about}` : ""}.`,
+      // (A work whose title contains "Nobody Knows" is one that memory holds nothing about.)
+      const known = brief.only.filter((w) => !/Nobody Knows/.test(w.title));
+      for (let i = 0; i < want && known.length; i++) {
+        const w = known[i % known.length];
+        items.push({ text: `A line from ${w.title}, number ${Math.floor(i / known.length) + 1}${brief.about ? `, about ${brief.about}` : ""}.`,
           author: w.type === "book" ? (w.author || "Unknown") : "A character", source: { type: w.type, title: w.title }, theme: "asked", tone: "plain", verify: true });
       }
     } else {
-      for (let i = 0; i < want; i++) {
+      // A real line already found for one of her works is suggested word for word, as the real model may.
+      const f = (brief.foundLines || [])[0];
+      if (f) items.push({ text: f.text, author: "", source: { type: f.type, title: f.from }, theme: "found", tone: "plain", verify: true });
+      for (let i = items.length; i < want; i++) {
         const [t, author, type, title, theme, tone, verify] = CANNED[(cannedAt++) % CANNED.length];
         items.push({ text: brief.inTheSpiritOf || brief.about ? `${t} (${brief.about || brief.inTheSpiritOf[0].page} ${cannedAt})` : t, author, source: { type, title }, theme, tone, verify });
       }

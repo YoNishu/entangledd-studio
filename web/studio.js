@@ -100,13 +100,13 @@
     return s.title ? `Well-known line, from ${s.title}` : "Well-known line";
   };
 
-  // Where Nishiii found a line on the web, as a link to that page (only for quotes looked up on the web).
+  // Where Nishiii found a line, as a link to that page (only for quotes looked up on Wikiquote, a quote site or the web).
   function foundLink(source) {
     let u;
     try { u = new URL(source && source.url); } catch (e) { return null; }
     if (u.protocol !== "https:") return null;
     return el("a", { className: "src found", href: u.href, target: "_blank", rel: "noopener noreferrer",
-      textContent: "Found on " + u.hostname.replace(/^www\./, "") });
+      textContent: "Found on " + (source.site || u.hostname.replace(/^www\./, "")) });
   }
 
   // What actually happened to a suggestion, so "used" is never mistaken for "posted".
@@ -292,7 +292,20 @@
       });
       return el("li", {}, el("div", {}, el("p", { className: "main", textContent: main }), sub ? el("p", { className: "sub", textContent: sub }) : null, ...extra), remove);
     };
+    // Real lines found for a book, film or series (on Wikiquote, a quote site or the web), kept for next time.
+    const foundRow = (kind, x) => {
+      const n = x.found && x.found.lines ? x.found.lines.length : 0;
+      if (!n) return null;
+      const site = [...new Set(x.found.lines.map((l) => l.site).filter(Boolean))];
+      const wrong = el("button", { type: "button", id: "found-wrong-" + x.id, textContent: "Not the right one" });
+      wrong.addEventListener("click", async () => {
+        try { renderLibrary(await send(`library/${kind}/${x.id}/found`, "POST", { forget: true })); } catch (e) { note(friendly(e)); }
+      });
+      return [el("p", { className: "sub", id: "found-" + x.id, textContent: `${n} real ${n === 1 ? "line" : "lines"} found${site.length === 1 ? " on " + site[0] : ""}.` }), wrong];
+    };
     const bookRow = (b) => {
+      const found = foundRow("books", b);
+      if (found && !b.textUrl) return row("books", b, b.title, b.author, ...found);
       if (b.textUrl) {
         const wrong = el("button", { type: "button", textContent: "Not the right book" });
         wrong.addEventListener("click", async () => {
@@ -301,7 +314,7 @@
         return row("books", b, b.title, b.author, chip("ok", "Quoted word for word"),
           el("p", { className: "sub", textContent: `Matched to "${b.textTitle}"${b.textAuthor ? ` by ${b.textAuthor}` : ""}.` }), wrong);
       }
-      if (b.textChecked) return row("books", b, b.title, b.author, el("p", { className: "sub", textContent: (b.textNote || "").startsWith("Set aside") ? "Quotes come from Nishiii's memory." : "Not free to read online, so quotes come from Nishiii's memory." }));
+      if (b.textChecked) return row("books", b, b.title, b.author, el("p", { className: "sub", textContent: (b.textNote || "").startsWith("Set aside") ? "Nishiii looks for its real lines when you ask." : "Not free to read online. Nishiii looks for its real lines when you ask." }));
       const find = el("button", { type: "button", textContent: "Look for its full text" });
       find.addEventListener("click", () => findText(b.id, find));
       return row("books", b, b.title, b.author, find);
@@ -309,7 +322,7 @@
     const fill = (id, rows, empty) => $(id).replaceChildren(...(rows.length ? rows : [el("li", {}, el("p", { className: "empty", textContent: empty }))]));
     fill("list-quotes", lib.quotes.slice().reverse().map((q) => row("quotes", q, q.text, [q.author, q.from].filter(Boolean).join(", "))), "No quotes saved yet.");
     fill("list-books", lib.books.map(bookRow), "No books yet.");
-    fill("list-screen", (lib.screen || []).map((x) => row("screen", x, x.title, x.kind === "series" ? "Series" : "Film")), "No films or series yet.");
+    fill("list-screen", (lib.screen || []).map((x) => row("screen", x, x.title, x.kind === "series" ? "Series" : "Film", ...(foundRow("screen", x) || []))), "No films or series yet.");
   }
 
   // Looks the book up among books that are free to read. Old classics usually are; modern books are not.

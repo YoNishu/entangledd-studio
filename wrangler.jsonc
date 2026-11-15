@@ -26,4 +26,6 @@
   // Secrets are added in the Cloudflare dashboard, not here:
   // APP_PASSCODE, RENDER_SECRET, GITHUB_TOKEN, ANTHROPIC_API_KEY, PIXABAY_API_KEY,
   // META_APP_ID, META_APP_SECRET
+  // Optional, for finding real lines from new books, films and series (see the README):
+  // GEMINI_API_KEY (a free key with no billing), OPENAI_API_KEY (with a monthly budget set)
 }

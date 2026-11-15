@@ -1,8 +1,9 @@
 # Tests
 
 Everything here runs against the stand-in server (`server/dev.mjs`), which has pretend versions
-of Claude, Instagram, GitHub, Pixabay, Openverse and Gutendex. Nothing touches the real app, a
-real key or Instagram, and nothing costs money. The made-up passcode is `letmein`.
+of Claude, Instagram, GitHub, Pixabay, Openverse, Gutendex, Wikiquote, Goodreads, IMDb, Gemini
+and OpenAI. Nothing touches the real app, a real key or Instagram, and nothing costs money. The
+made-up passcode is `letmein`.
 
 ## Run them
 
@@ -53,7 +54,7 @@ python3 tests/test_a6_signin.py          # most tests start their own server any
 | `make_media.sh` | Makes every sample file with ffmpeg and plain text: two pictures, four short videos, two sounds, a pretend book and a pretend highlights file. No media file is kept in the repository. Each sound has its own pitch, so a test can hear which one ended up in a reel |
 | `serve`, `stop` | Start (afresh) and stop the stand-in server |
 | `where.py` | Addresses and folders, from the environment |
-| `a3lib.py`, `a4lib.py`, `a5lib.py`, `a6lib.py`, `a4kit.mjs`, `a4loop.mjs`, `pitch.py`, `harness_a5.mjs`, `count_calls.mjs`, `cpu_run.mjs`, `seal_raw.mjs`, `unseal_raw.mjs` | Helpers |
+| `a3lib.py`, `a4lib.py`, `a5lib.py`, `a6lib.py`, `a8lib.py`, `a4kit.mjs`, `a4loop.mjs`, `pitch.py`, `harness_a5.mjs`, `count_calls.mjs`, `cpu_run.mjs`, `seal_raw.mjs`, `unseal_raw.mjs` | Helpers |
 
 Two kinds of test:
 
@@ -67,7 +68,8 @@ Two kinds of test:
   the interface and exported pictures; `test_a3_*` the health record and Instagram renewal;
   `test_a4_*` the scorer; `test_a5_*` little notes and sealed deliveries; `test_a6_*` cleaning,
   backups, probes, the ceiling on Claude, the model move, the record of problems, sign-in and
-  safety; `test_web_quotes.py`; `unit_renew.mjs`). Each asserts, prints `PASS` or `FAIL` on its
+  safety; `test_a8_*` where real lines from books, films and series are found (Wikiquote, Goodreads,
+  IMDb, Gemini, OpenAI); `test_web_quotes.py`; `unit_renew.mjs`). Each asserts, prints `PASS` or `FAIL` on its
   last line and exits non-zero on failure.
 
 ## Writing a new one
