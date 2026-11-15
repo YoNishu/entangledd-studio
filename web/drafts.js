@@ -56,7 +56,7 @@
     return snap;
   }
   const quoteOf = (snap) => (snap.blocks || []).map((b) => String(b.text || "").trim()).filter(Boolean).join("\n");
-  const firstWords = (snap) => { const t = quoteOf(snap).replace(/\s+/g, " "); return t.length > 60 ? t.slice(0, 58).trim() + "…" : t; };
+  const firstWords = (snap) => { const t = quoteOf({ blocks: (snap.blocks || []).filter((b) => b.role !== "author") }).replace(/\s+/g, " "); return t.length > 60 ? t.slice(0, 58).trim() + "…" : t; };
   const newId = () => (crypto.randomUUID ? crypto.randomUUID() : S.draft().id);
 
   let ready = false, timer = null, saving = false, again = false;
