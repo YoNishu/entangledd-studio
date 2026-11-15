@@ -383,7 +383,7 @@ async function mdlPage(env, kit, work, state) {
   more.mdl.last = O.lastPage(pg.links);
   const text = pg.text.slice(0, 300000);
   // Reviews: every quoted line goes to the gate, whose judge sees the words around it (no picking by Claude).
-  return text.length < 200 ? null : { name: name || more.mdl.path, url, site: "mydramalist.com", text, web: true, extractor: true };
+  return text.length < 200 ? null : { name: name || more.mdl.path, url, site: "mydramalist.com", text, web: true, extractor: true, via: pg.how };
 }
 
 // ---------------------------------------------------------------- 2. Goodreads (books) and IMDb (films and series)
@@ -916,7 +916,7 @@ async function lookUp(env, kit, item, need, about, taste, state) {
       const pg = await find(env, kit, work, state);
       if (!pg) { if (state.trail.length === before) step(state, site, "no page", { why: `no page for ${work.real || work.title}` }); return; }
       const got = await pickFrom(env, kit, work, pg, about, taste, have, state);
-      if (got.length) noteSite(state, site, "");
+      if (got.length && pg.via !== "read through Tavily") noteSite(state, site, "");     // (read through Extract: the site itself still says no)
       if (got.length && !where) where = pg.name;
       step(state, site, got.length ? "found" : "no line passed", { n: got.length, ...(got.length ? {} : { why: "no line on the page was picked" }) });
       lines = lines.concat(got);

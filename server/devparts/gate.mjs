@@ -50,6 +50,17 @@ const ddgPage = (list) => `<!DOCTYPE html><html><head><title>results at DuckDuck
   + `</div></body></html>`;
 const mode = { judge: process.env.SAID === "down" ? "down" : "on" };
 const ABOUT = /\b(praised|hailed|loved by|fans|critics|audiences?|viewers|this drama|recommend)\b/i;
+// What a reader of a review sees around a quoted piece (Agent 21): a reviewer's own voice just before it ("I was like",
+// "Me:", "Honestly,", "I kept saying", "my first impression was", "had me yelling") makes it the reviewer's remark;
+// so do words about the making ("the writing", "the actors"). Without those words around it, a line is "said".
+const REVIEWER = /(\b(i was like|i kept saying|i thought|i screamed|honestly|my first impression was|my reaction was|in my head)\s*[:,]?|\bme(,? at [^:]{0,30})?:|\bhad me (yelling|screaming)[^"“]{0,40}?[,:]?)\s*$/i;
+const MAKING = /\b(the (rest of the )?(actors?|acting|writing|cast|directing|pacing|script)|top-notch)\b/i;
+export function standInVerdict({ text, before = "", after = "", book = false }) {
+  if (ABOUT.test(text)) return "about";
+  if (/\bunsure\b/i.test(text)) return "unsure";
+  if (REVIEWER.test(String(before).replace(/["“']\s*$/, "")) || MAKING.test(text)) return "about";
+  return book ? "narration" : "said";
+}
 
 export function env(PORT) { at = `http://localhost:${PORT}`; return {}; }
 
@@ -78,10 +89,12 @@ export async function handle(req, res, url, tools) {
   if (req.headers["x-api-key"] !== tools.env.ANTHROPIC_API_KEY) return send(401, {});
   const content = String((body.messages && body.messages[0] && body.messages[0].content) || "");
   const work = content.split("\n")[0];
-  const lines = [...content.matchAll(/^(\d+)\. "(.*)" \((.*)\)$/gm)].map((m) => ({ n: Number(m[1]), text: m[2], note: m[3] }));
+  // Each line, with the words before and after it on its page on the two lines under it (when the question has them).
+  const lines = [...content.matchAll(/^(\d+)\. "(.*)" \((.*)\)$((?:\n   (?:before|after): ".*")*)/gm)].map((m) => ({ n: Number(m[1]), text: m[2], note: m[3],
+    before: (/\n   before: "(.*)"/.exec(m[4] || "") || [])[1] || "", after: (/\n   after: "(.*)"/.exec(m[4] || "") || [])[1] || "" }));
   log.push({ to: "judge", work, lines, all: content });
   if (mode.judge === "down") return send(500, { error: { message: "pretend outage" } });
   const book = /^Work: the .*\bbook\b/.test(work);
-  const out = lines.map((l) => ({ n: l.n, is: ABOUT.test(l.text) ? "about" : /\bunsure\b/i.test(l.text) ? "unsure" : book ? "narration" : "said" }));
+  const out = lines.map((l) => ({ n: l.n, is: standInVerdict({ ...l, book }) }));
   return send(200, { content: [{ type: "text", text: JSON.stringify(out) }] });
 }
