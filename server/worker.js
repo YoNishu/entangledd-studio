@@ -23,7 +23,8 @@
 import * as health from "./health.js";
 import * as scorer from "./scorer.js";
 import * as lovenotes from "./lovenotes.js";
-const SECTIONS = [health, scorer, lovenotes];
+import * as reminders from "./reminders.js";
+const SECTIONS = [health, scorer, lovenotes, reminders];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PART_SIZE = 8 * 1024 * 1024;        // R2 needs equal parts of at least 5 MB
@@ -2659,6 +2660,10 @@ export default {
       })());
       return;
     }
+    // The daily reminder to post: sent by the first run at or after each phone's time. 11:11 in India has a
+    // timer line of its own (05:41 UTC), which does this and nothing else; every other time rides on the five-minute one.
+    ctx.waitUntil(reminders.tick(env, kit, event.scheduledTime || Date.now()).catch((e) => console.error("reminders failed", e && e.message)));
+    if (event.cron === reminders.CRON) return;
     ctx.waitUntil(runOneDueJob(env).catch((e) => console.error("timed job failed", e)));
     // Every few minutes: finish any post still waiting on Instagram, in case she closed the app.
     ctx.waitUntil((async () => {
