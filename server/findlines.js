@@ -1403,8 +1403,18 @@ async function proofRound(env, kit) {
   await kit.saveDoc(env, "proof", rec);
   return proofView(rec, "ran a round for " + w.title);
 }
+// The round runs after the answer is sent (a look-up can take longer than a caller waits): the answer is what is
+// kept so far, and the next call shows what the round found.
 export const open = {
-  proof: async (request, env, parts, kit) => (request.method === "GET" && parts.length === 1 ? kit.json(await proofRound(env, kit)) : kit.fail(404, "Not found.")),
+  proof: async (request, env, parts, kit, ctx) => {
+    if (request.method !== "GET" || parts.length !== 1) return kit.fail(404, "Not found.");
+    if (!ctx || !ctx.waitUntil) return kit.json(await proofRound(env, kit));
+    const doc = await kit.loadDoc(env, "proof", null);
+    const rec = doc && doc.v === PROOF_V ? doc : null;
+    const due = !rec || (rec.works.some((x) => x.rounds < PROOF_ROUNDS && !x.done) && Date.now() - rec.at >= 15000);
+    if (due) ctx.waitUntil(proofRound(env, kit).catch((e) => console.error("proof round failed", e)));
+    return kit.json(rec ? proofView(rec, due ? "a round has been started: ask again in half a minute" : rec.works.some((x) => x.rounds < PROOF_ROUNDS && !x.done) ? "a round is running or has just run" : "done") : { v: PROOF_V, note: "the first round has been started: ask again in half a minute", works: [] });
+  },
 };
 
 // ---------------------------------------------------------------- for Nishith

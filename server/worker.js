@@ -2953,7 +2953,7 @@ async function route(request, env, parts, ctx) {
   }
   if (parts[0] === "login" && request.method === "POST") return login(request, env);
   if (parts[0] === "passkey") return passkeyRoutes(request, env, parts, await signedIn(request, env));
-  for (const s of SECTIONS) if (s.open && Object.hasOwn(s.open, parts[0])) return s.open[parts[0]](request, env, parts, kit);
+  for (const s of SECTIONS) if (s.open && Object.hasOwn(s.open, parts[0])) return s.open[parts[0]](request, env, parts, kit, ctx);
   if (parts[0] === "public" && parts[1] === "reel" && ["GET", "HEAD"].includes(request.method)) return publicReel(request, env, parts);
   if (parts[0] === "public" && parts[1] === "slide" && ["GET", "HEAD"].includes(request.method)) return publicSlide(request, env, parts);
   if (parts[0] === "render") {
