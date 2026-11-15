@@ -3,7 +3,8 @@
    Other signals: "studio:view" (detail = the section now showing) and "studio:settings" (Settings just opened).
    One line in #scorer-slot (#scorer-line): what the engine has learnt so far, from which signals, how sure;
    and a smaller one (#engine-sources): where today's candidates come from. From the signed-in GET /api/engine
-   (server/engine.js). */
+   (server/engine.js). Under them, #scorer-today: today's quotes in the order and with the numbers Today shows
+   (the same ranks from GET /api/suggestions, kept by web/studio.js as StudioKit.today()). */
 (() => {
   "use strict";
   const slot = document.getElementById("scorer-slot");
@@ -22,8 +23,20 @@
     const { el } = window.StudioKit;
     const line = el("p", { className: "note", id: "scorer-line", textContent: s.line || "" });
     const src = sourcesLine(s.sources || {});
-    slot.replaceChildren(line, ...(src ? [el("p", { className: "note engine-src", id: "engine-sources", textContent: src })] : []));
+    slot.replaceChildren(line, ...(src ? [el("p", { className: "note engine-src", id: "engine-sources", textContent: src })] : []), ...todayOrder());
     slot.dataset.state = s.state || "learning";
+  }
+
+  // Today's order as Today shows it: a numeral and the first words of each quote.
+  function todayOrder() {
+    const { el } = window.StudioKit, items = window.StudioKit.today ? window.StudioKit.today() : [];
+    if (!items.length) return [];
+    const list = el("ol", { className: "scorer-today", id: "scorer-today" }, ...items.map((i) => {
+      const li = el("li", {}, el("span", { className: "n", textContent: String(i.rank) }), el("span", { className: "t", textContent: i.text }));
+      li.dataset.rank = i.rank; li.dataset.id = i.id; li.dataset.score = i.score;
+      return li;
+    }));
+    return [el("p", { className: "note engine-src", id: "scorer-today-note", textContent: "Today's order, best first:" }), list];
   }
 
   async function load() {

@@ -193,14 +193,41 @@
     return node;
   }
 
+  // A quote's place in today's order (rank 1..n, best first, from the server's live score): the card's strongest
+  // mark, a large numeral; number 1 is Nishiii's first choice; one quiet line says what the place rests on. The
+  // numbers are the ones of the last load: a skip or a use leaves them as they are, the next load brings the new order.
+  const COUNT = ["", "one", "two", "three", "four", "five"];
+  const PLACE = ["First", "Second", "Third", "Fourth", "Fifth"];
+  function rankHead(item, of) {
+    const first = item.rank === 1, rests = (item.rests || []).join(" and ");
+    const num = el("span", { className: "pick-num", textContent: String(item.rank) });
+    num.setAttribute("aria-hidden", "true");
+    return el("div", { className: "pick-head" + (first ? " first" : ""), id: "rank-" + item.id },
+      num,
+      el("div", { className: "pick-what" },
+        el("span", { className: "vh", textContent: `${PLACE[item.rank - 1] || "Number " + item.rank} of ${COUNT[of] || of}.` }),
+        first ? el("p", { className: "pick-first", textContent: "Nishiii's first choice for today" }) : null,
+        rests ? el("p", { className: "pick-rests", textContent: "Ranked by " + rests }) : null));
+  }
+  function rankedCard(item, of) {
+    const node = card(item);
+    if (item.rank) { node.prepend(rankHead(item, of)); node.classList.add("ranked"); if (item.rank === 1) node.classList.add("first"); }
+    return node;
+  }
+
   function renderToday(data) {
     todayData = data;
+    if (!data.of) data.of = data.items.length;      // how many there were at this load: "First of five" stays true after a skip
     const d = new Date(data.date + "T12:00:00");
     $("today-weekday").textContent = d.toLocaleDateString(undefined, { weekday: "long" });
     $("today-date").textContent = d.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
-    $("suggestions").replaceChildren(...data.items.map((i) => card(i)));
-    $("today-note").textContent = data.items.length ? "Five quotes Nishiii chose for you today." : "That's all five for today. Want more? Ask in the Nishiii section.";
+    $("suggestions").replaceChildren(...data.items.map((i) => rankedCard(i, data.of)));
+    const n = data.items.length, word = COUNT[n] ? COUNT[n][0].toUpperCase() + COUNT[n].slice(1) : String(n);
+    $("today-note").textContent = !n ? "That's all five for today. Want more? Ask in the Nishiii section."
+      : n === 1 ? "One for today." : `${word} for today, best first.`;
   }
+  // What Today shows now, in its order and with its numbers: the scorer's line in the Nishiii section lists the same.
+  window.StudioKit.today = () => (todayData ? todayData.items.filter((i) => i.rank) : []);
 
   async function loadToday(force) {
     if (!S.server.ai) {

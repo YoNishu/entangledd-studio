@@ -835,10 +835,37 @@ const DAILY = 5, HISTORY_DAYS = 7;
 // The n dates before today (India time), newest first, as YYYY-MM-DD.
 const pastDates = (n) => Array.from({ length: n }, (_, i) => new Date(Date.now() + 5.5 * 3600 * 1000 - (i + 1) * 24 * 3600 * 1000).toISOString().slice(0, 10));
 const daily = (day) => day.filter((i) => !i.askedFor).slice(0, DAILY);
+// Today's quotes best first, by the engine's score as it stands now (her newest picks and the newest numbers of her
+// posts included), each with its place (rank 1..n) and the two parts that add the most to it, in the engine's words
+// ("rests"). A line does not count against itself: today's own lines are left out of what she has had lately.
+// Equal scores go by the words, then the id, so the order is the same every time.
+const RESTS_MIN = 0.03;                           // a part must add at least this much to be named
+async function ranked(env, items, posts) {
+  if (!items.length) return items;
+  const mine = new Set(items.map((i) => norm(i.text)));
+  const [history, scorerModel] = await Promise.all([loadDoc(env, "history", []), scorer.upToDate(env, kit).catch(() => null)]);
+  const eng = await engine.start(env, kit, { history: history.filter((h) => !mine.has(norm(h.text))), day: [], posts, bank: null, scorerModel });
+  const all = items.map((i) => engine.score(eng.P, i));
+  // A part names a place by how far it moves this line from the middle of today's lines: up for a line above the
+  // middle, down for one below (the same "how sure the wording is" on all five explains nothing); when nothing sets
+  // a line apart, by what adds the most.
+  const mean = {};
+  for (const r of all) for (const [id, c] of Object.entries(r.parts)) mean[id] = (mean[id] || 0) + c / all.length;
+  const top = (pairs) => pairs.filter(([, c]) => c >= RESTS_MIN).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([id]) => engine.PART_NAME[id]);
+  const middle = all.reduce((a, r) => a + r.s, 0) / all.length;
+  const scored = items.map((i, n) => {
+    const parts = Object.entries(all[n].parts), up = all[n].s >= middle ? 1 : -1;
+    const apart = top(parts.map(([id, c]) => [id, up * (c - mean[id])]));
+    return { ...i, score: Math.round(all[n].s * 1000) / 1000, rests: apart.length ? apart : top(parts) };
+  });
+  const words = (t) => String(t || "");
+  scored.sort((a, b) => b.score - a.score || (words(a.text) < words(b.text) ? -1 : words(a.text) > words(b.text) ? 1 : 0) || (a.id < b.id ? -1 : 1));
+  return scored.map((i, n) => ({ ...i, rank: n + 1 }));
+}
 async function suggestionRoutes(request, env, parts) {
   const method = request.method, date = todayIST();
   const visible = async (day, checkInstagram, posts) =>
-    json({ date, items: await withFate(env, daily(day).filter((i) => i.state !== "rejected"), checkInstagram, posts) });
+    json({ date, items: await ranked(env, await withFate(env, daily(day).filter((i) => i.state !== "rejected"), checkInstagram, posts), posts) });
   if (parts.length === 1 && method === "GET") {
     const [day, posts] = await Promise.all([loadDoc(env, `suggestions/${date}`, []), loadDoc(env, "posts", [])]);
     if (daily(day).length || !env.ANTHROPIC_API_KEY) return visible(day, true, posts);
