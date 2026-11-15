@@ -970,7 +970,7 @@
     });
     const song = el("button", { className: "btn ic ic-music", type: "button", textContent: "Add a song in Instagram" });
     song.addEventListener("click", () => openHandoff(q));
-    return el("article", { className: "card" }, el("p", { className: "q", textContent: q.quote || "A reel" }), chip("wait", "Made, not posted"),
+    return el("article", { className: "card" }, el("p", { className: "q", textContent: q.quote || "A reel" }), chip("wait", "Waiting for your tap"),
       el("p", { className: "src", textContent: `Kept until ${day(q.keptUntil)}. After that you'd need to create it again.` }),
       el("div", { className: "acts tall" }, go, song, ...(drafts() ? [drafts().editButton(q.jobId)] : []), drop));
   }
