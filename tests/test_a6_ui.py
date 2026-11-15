@@ -61,7 +61,7 @@ with sync_playwright() as p:
     pg.click("#health-rest-label"); pg.wait_for_timeout(300)
     rows = pg.locator("#health-rest-list > li")
     titles = [rows.nth(i).locator(".main").inner_text() for i in range(rows.count())]
-    check("the ten new lines have plain titles", titles[7:] == ["Book texts", "Music search", "Photos from the search", "Reel maker's self-test", "Your posts on Instagram",
+    check("the eleven new lines have plain titles", titles[7:] == ["Book texts", "Music search", "Photos from the search", "Reel maker's self-test", "Looking things up", "Your posts on Instagram",
           "Post numbers", "Comments", "Backups", "Tidying up", "Problems noticed"], titles)
     pg.locator("#health-item-backup").scroll_into_view_if_needed(); pg.screenshot(path=S + "a6_health_probes.png")
     check("the page raised no script errors", errs == [], errs)

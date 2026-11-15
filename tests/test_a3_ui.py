@@ -67,7 +67,7 @@ with sync_playwright() as p:
         pg.click("#health-fix-github summary"); pg.wait_for_timeout(200)
         steps = pg.locator("#health-fix-github .steps li")
         check("tapping shows three numbered steps", steps.count() == 3 and steps.first.is_visible() and "No expiration" in steps.nth(1).inner_text(), steps.count())
-        check("the rest is tucked under 'What is working (15)'", pg.inner_text("#health-rest-label") == "What is working (15)", pg.inner_text("#health-rest-label"))
+        check("the rest is tucked under 'What is working (16)'", pg.inner_text("#health-rest-label") == "What is working (16)", pg.inner_text("#health-rest-label"))
         check("nothing runs off the side", fits(pg))
         pg.locator("#health-title").scroll_into_view_if_needed(); pg.screenshot(path=f"{S}health_two_things_{width}.png")
         pg.click("#health-check")
