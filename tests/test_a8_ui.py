@@ -24,7 +24,7 @@ with sync_playwright() as p:
     pg.fill("#passcode", "letmein"); pg.click("#passcode-go"); pg.wait_for_timeout(1500)
 
     # ---- the cards in the Nishiii section
-    pg.click("#nav-nishiii"); pg.wait_for_selector("#asked-list .card", timeout=8000)
+    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_selector("#asked-list .card", timeout=8000)
     cards = pg.locator("#asked-list .card")
     wiki = cards.filter(has_text="From the film The Long Tide")
     check("a line from Wikiquote says so, as a link to the page", wiki.count() == 2 and wiki.first.locator("a.src.found").inner_text() == "Found on wikiquote.org"

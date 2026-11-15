@@ -143,12 +143,10 @@ with sync_playwright() as p:
     heart = pg.evaluate("""() => { const h = document.querySelector('#wordmark .wm-heart'); const r = h.getBoundingClientRect(); const s = document.querySelector('#wordmark svg').getBoundingClientRect();
       return { fill: getComputedStyle(h).fill, filter: getComputedStyle(h).filter, top: r.top - s.top, left: (r.left - s.left) / s.width, w: r.width }; }""")
     check("the heart is rose, unfiltered, and sits up where the apostrophe goes", heart["fill"] == "rgb(242, 167, 181)" and heart["filter"] == "none" and heart["top"] < 2 and 0.1 < heart["left"] < 0.2 and heart["w"] >= 10, heart)
-    chat = pg.evaluate("""() => { const b = document.getElementById('chat-open'); const r = b.getBoundingClientRect();
-      return { name: b.getAttribute('aria-label'), w: r.width, h: r.height, hidden: b.hidden, twin: document.getElementById('nishiii-chat').hidden }; }""")
-    check("Chat is a round 44 px button with a name", chat["name"] == "Chat with Nishiii" and chat["w"] >= 44 and chat["h"] >= 44 and not chat["hidden"] and not chat["twin"], chat)
-    pg.click("#nav-nishiii"); pg.wait_for_timeout(300); pg.click("#nishiii-chat"); pg.wait_for_timeout(300)
-    check("Nishiii: 'Chat with Nishiii' opens the same chat", pg.evaluate("!document.getElementById('chat').hidden"))
-    pg.click("#chat-close"); pg.wait_for_timeout(200)
+    chat = pg.evaluate("[...document.querySelectorAll('.top-actions button')].filter((b) => !b.hidden).map((b) => b.id)")
+    check("the header has Settings alone (the chat lives in the Nishiii tab)", chat == ["settings-open"], chat)
+    pg.click("#nav-nishiii"); pg.wait_for_timeout(300)
+    check("Nishiii: the chat is the tab's first part", pg.evaluate("document.getElementById('view-nishiii').dataset.part") == "chat" and pg.locator("#chat-form").is_visible())
     pg.click("#nav-create"); pg.wait_for_timeout(300)
     filled = pg.evaluate("[...document.querySelectorAll('#view-create .btn.primary')].map((b) => b.id || b.textContent.trim())")
     check("Create: the tall choice buttons are equals (none filled)", pg.evaluate("document.querySelectorAll('.btn.tall.primary').length") == 0, filled)

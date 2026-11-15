@@ -20,7 +20,7 @@ def open_app(p):
     return b, pg, errs
 
 def nishiii(pg):
-    pg.click("#nav-nishiii")
+    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows")
     pg.wait_for_selector("#scorer-line", timeout=15000)
     pg.wait_for_timeout(400)
 

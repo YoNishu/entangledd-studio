@@ -33,7 +33,7 @@ with sync_playwright() as p:
     pg.locator("#list-books").scroll_into_view_if_needed(); pg.screenshot(path=S+"120_library_books.png")
 
     # --- Ask for quotes from the book with text
-    pg.click("#nav-nishiii"); pg.wait_for_timeout(500); pg.click("#ask-open"); pg.wait_for_timeout(600)
+    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_timeout(500); pg.click("#ask-open"); pg.wait_for_timeout(600)
     pg.locator("#ask-groups button", has_text="Walden").click(); pg.click("#ask-go")
     wait(pg, "document.getElementById('ask-sheet').hidden", 30); pg.wait_for_timeout(500)
     cards=pg.locator("#asked-list .card").all_inner_texts()
