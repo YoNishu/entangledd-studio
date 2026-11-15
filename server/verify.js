@@ -282,7 +282,7 @@ export function fromResults(kit, list, kind) {
     const k = kind === "book" ? (KIND_FITS.book.test(all) ? "book" : "") : series ? "series" : KIND_FITS.film.test(all) ? "film" : "";
     if (!k) continue;
     const original = (/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]{2,20}/.exec(all) || [])[0] || "";
-    const cast = (/\b(?:starring|stars)\s*:?\s+([A-Z][a-z]+(?: [A-Z][a-z]+)+)(?:,?\s+(?:and\s+)?([A-Z][a-z]+(?: [A-Z][a-z]+)+))?/.exec(all) || []).slice(1).filter(Boolean);
+    const cast = (/\b(?:[Ss]tarring|[Ss]tars)\s*:?\s+([A-Z][a-z]+(?: [A-Z][a-z]+)+)(?:,?\s+(?:and\s+)?([A-Z][a-z]+(?: [A-Z][a-z]+)+))?/.exec(all) || []).slice(1).filter(Boolean);
     out.push({ title: kit.oneLine(name, 120), by: "", year: yearIn(base) || yearIn(r.snippet), kind: k, original, cast,
       country: countryIn(all.replace(/\b(Drama|Series|Film|Novel|Movie)\b/g, (w) => w.toLowerCase())),
       site: r.host, page: kit.foundAt(r.url) || "", about: kit.oneLine(r.snippet, 120) });

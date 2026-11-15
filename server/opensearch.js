@@ -200,7 +200,7 @@ export async function results(env, kit, state, queries, { enough = 6 } = {}) {
         seen.add(r.url); n += 1;
         list.push({ ...r, host: F.hostOf(r.url), via: id });
       }
-      F.step(state, id, n ? "answered" : "no page", { q: `"${kit.oneLine(q, 90)}"`, n });
+      F.step(state, id, n ? "answered" : "no page", { q: kit.oneLine(q, 90), n });
       if (n) { F.noteSite(state, id, ""); if (!via.includes(id)) via.push(id); }
     }
   }
