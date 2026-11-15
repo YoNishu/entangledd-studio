@@ -1415,15 +1415,17 @@ async function postCarousel(request, env, ig, posts, b) {
 const CAPTION_SYSTEM = `You write Instagram captions for a quiet, reflective quotes page.
 Reply with a JSON object only: {"caption": "...", "hashtags": ["#...", "#..."]}
 - "caption": one or two short lines that sit beside the quote without repeating it. Calm, plain, lowercase is fine. No emojis unless they add something. If the quote has a named author, end with a credit line such as "— Seneca".
-- "hashtags": 8 to 12, mixing a few broad ones with more specific ones that fit this quote. No spaces inside a tag.`;
+- "hashtags": 8 to 12, mixing a few broad ones with more specific ones that fit this quote. No spaces inside a tag.
+- "didWell", when given, are hashtags from her own earlier posts that did better than her usual post; include the ones that fit this quote.`;
 
 async function writeCaption(request, env) {
   const b = await body(request);
   const quote = lines(b.quote, 600);
   if (!quote) return fail(400, "There is no quote to write a caption for.");
-  const taste = await tasteBrief(env);
+  const [taste, posts] = await Promise.all([tasteBrief(env), loadDoc(env, "posts", [])]);
+  const didWell = engine.hashtagsThatWork(posts);         // her own hashtags that did well, by the engine's measure
   const answer = parseJson(await claude(env, { system: CAPTION_SYSTEM, maxTokens: 700,
-    messages: [{ role: "user", content: `Quote:\n${quote}\nAuthor: ${oneLine(b.author, 80) || "none"}${taste ? `\n\nHer taste, for the caption's voice (written to her, so "you" in it means her):\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : ""}` }] }));
+    messages: [{ role: "user", content: `Quote:\n${quote}\nAuthor: ${oneLine(b.author, 80) || "none"}${taste ? `\n\nHer taste, for the caption's voice (written to her, so "you" in it means her):\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : ""}${didWell.length ? `\n\ndidWell: ${JSON.stringify(didWell)}` : ""}` }] }));
   const tags = (Array.isArray(answer.hashtags) ? answer.hashtags : []).map((t) => "#" + String(t).replace(/[^\p{L}\p{N}_]/gu, "")).filter((t) => t.length > 1).slice(0, 14);
   return json({ caption: lines(answer.caption, 600), hashtags: tags });
 }
@@ -1565,10 +1567,12 @@ function weekStats(posts, now) {
 const REPORT_SYSTEM = `You write a short weekly note to Dhruuu about her Instagram quotes page, signed off by nobody. You get this week's numbers, last week's, her best post and any patterns.
 ${TO_HER}
 Write two or three short, plain sentences: what went well ("your posts reached…"), and one concrete thing to try next week. Warm, no hype, no emojis, no markdown.
-Use only the numbers given. If there are fewer than three posts this week, say it is too early to read much into the numbers.`;
+Use only the numbers given. If there are fewer than three posts this week, say it is too early to read much into the numbers.
+"learnt", when given, is what the app's scoring has found works for her over all her posts; the thing to try may build on it.`;
 
 async function report(env) {
-  const stats = weekStats(await loadDoc(env, "posts", []), Date.now());
+  const [posts, insp, tagsDoc] = await Promise.all([loadDoc(env, "posts", []), loadDoc(env, "inspirations", []), loadDoc(env, "engine/tags", null)]);
+  const stats = weekStats(posts, Date.now());
   let note = "";
   if (env.ANTHROPIC_API_KEY && stats.thisWeek.posts > 0) {
     // One note a day at most, rewritten only if the numbers behind it changed.
@@ -1578,7 +1582,8 @@ async function report(env) {
     else {
       try {
         const numbers = JSON.stringify({ thisWeek: stats.thisWeek, lastWeek: stats.lastWeek,
-          bestPost: stats.best && { quote: stats.best.quote, ...stats.best.metrics }, bestTimes: stats.times, themes: stats.themes });
+          bestPost: stats.best && { quote: stats.best.quote, ...stats.best.metrics }, bestTimes: stats.times, themes: stats.themes,
+          learnt: engine.works(posts, insp, tagsDoc).phrases });
         const write = async (extra) => lines(await claude(env, { system: REPORT_SYSTEM, maxTokens: 300, messages: [{ role: "user", content: numbers + extra }] }), 600);
         note = await write("");
         if (aboutHer(note)) note = await write(SAY_IT_TO_HER);
@@ -1803,17 +1808,19 @@ const ADVICE_SYSTEM = `You are Nishiii. You read the numbers for Dhruuu's Instag
 ${TO_HER}
 You get totals, the comparisons that have enough posts behind them, the best times so far, and how regularly she posts.
 Reply with a JSON array of exactly three short strings. Each is one concrete thing to try in the coming week, tied to a number you were given ("Your evening posts reach about 4,600 each, so…"). Plain and warm, no hype, no emojis, no markdown.
-Use only the numbers given. If there are fewer than six posts with numbers, say in the first string that it is early and these are hints, not patterns.`;
+Use only the numbers given. If there are fewer than six posts with numbers, say in the first string that it is early and these are hints, not patterns.
+"learnt", when given, is what the app's scoring has found works for her (saves and shares per person reached on her posts, and what does well on the pages she follows); build on it where the numbers agree.`;
 
 async function insightAdvice(env, range) {
-  const posts = await loadDoc(env, "posts", []);
+  const [posts, insp, tagsDoc] = await Promise.all([loadDoc(env, "posts", []), loadDoc(env, "inspirations", []), loadDoc(env, "engine/tags", null)]);
   const ins = buildInsights(posts, range, Date.now());
   if (!env.ANTHROPIC_API_KEY || ins.measured < 3) return { advice: [] };
   const stamp = `v1:${todayIST()}:${range}:${ins.totals.posts}:${ins.totals.reach}`;
   const saved = await loadDoc(env, `insightcache/advice-${range}`, {});
   if (saved.stamp === stamp) return { advice: saved.advice };
   const given = JSON.stringify({ range: range === "all" ? "all time" : `last ${range} days`, totals: ins.totals, before: ins.before, postsWithNumbers: ins.measured,
-    comparisons: ins.dimensions.map((d) => ({ what: d.name, groups: d.groups.slice(0, 5) })), bestTimesOfDay: ins.times.byPart, bestDays: ins.times.byDay, rhythm: ins.rhythm });
+    comparisons: ins.dimensions.map((d) => ({ what: d.name, groups: d.groups.slice(0, 5) })), bestTimesOfDay: ins.times.byPart, bestDays: ins.times.byDay, rhythm: ins.rhythm,
+    learnt: engine.works(posts, insp, tagsDoc).phrases });
   const write = async (extra) => {
     const a = parseJson(await claude(env, { system: ADVICE_SYSTEM, maxTokens: 500, messages: [{ role: "user", content: given + extra }] }));
     return (Array.isArray(a) ? a : []).map((x) => lines(x, 300)).filter(Boolean).slice(0, 3);
@@ -2580,9 +2587,10 @@ async function runChatTool(env, name, input, actions) {
     return { saved: true };
   }
   if (name === "write_caption") {
-    const taste = await tasteBrief(env);
+    const [taste, posts] = await Promise.all([tasteBrief(env), loadDoc(env, "posts", [])]);
+    const didWell = engine.hashtagsThatWork(posts);
     const a = parseJson(await claude(env, { system: CAPTION_SYSTEM, maxTokens: 700, messages: [{ role: "user",
-      content: `Quote:\n${lines(input.quote, 600)}\nAuthor: ${oneLine(input.author, 80) || "none"}${taste ? `\n\nHer taste (written to her, so "you" in it means her):\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : ""}` }] }));
+      content: `Quote:\n${lines(input.quote, 600)}\nAuthor: ${oneLine(input.author, 80) || "none"}${taste ? `\n\nHer taste (written to her, so "you" in it means her):\n${JSON.stringify({ voice: taste.voice, herNotes: taste.herNotes })}` : ""}${didWell.length ? `\n\ndidWell: ${JSON.stringify(didWell)}` : ""}` }] }));
     return { caption: a.caption, hashtags: a.hashtags };
   }
   return { error: "Unknown tool." };

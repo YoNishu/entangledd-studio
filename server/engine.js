@@ -380,7 +380,38 @@ export async function start(env, kit, have = {}) {
   };
 }
 
+// ---------------------------------------------------------------- hashtags that did well for her
+// The hashtags in her own captions that came with more saves, shares, comments and likes per person reached than
+// her usual post: real, and in use (she used them), best first. At least two posts behind each; shrunk when few.
+export function hashtagsThatWork(posts, max = 6) {
+  const rows = [];
+  for (const p of Array.isArray(posts) ? posts : []) {
+    const m = p && p.metrics, reach = m ? Number(m.reach != null ? m.reach : m.views) || 0 : 0;
+    if (!p || p.state !== "published" || reach <= 0) continue;
+    const y = (3 * (Number(m.saved) || 0) + 3 * (Number(m.shares) || 0) + 2 * (Number(m.comments) || 0) + (Number(m.likes) || 0)) / reach;
+    rows.push({ y, tags: [...new Set(String(p.caption || "").toLowerCase().match(/#[\p{L}\p{N}_]+/gu) || [])].slice(0, 30) });
+  }
+  const usual = median(rows.map((r) => r.y)) || 1e-4, by = new Map();
+  for (const r of rows) for (const t of r.tags) by.set(t, [...(by.get(t) || []), Math.log((r.y + 1e-4) / (usual + 1e-4))]);
+  return [...by.entries()].filter(([, l]) => l.length >= 2).map(([t, l]) => [t, (l.reduce((a, b) => a + b, 0) / l.length) * (l.length / (l.length + 2))])
+    .filter(([, v]) => v > 0.05).sort((a, b) => b[1] - a[1]).slice(0, max).map(([t]) => t);
+}
+
 // ---------------------------------------------------------------- where it stands, in her words
+// What does well, in a few plain phrases: her own posts' groups that did clearly better per person reached (saves
+// and shares counting most), then the theme doing best on the pages she follows. For Insights, the advice and the
+// weekly note, so they speak from the same numbers as the suggestions.
+export function works(posts, insp, tagsDoc, now = Date.now()) {
+  const t = soundTags(tagsDoc), aud = audienceOf(posts, t), pages = pagesOf(insp, t, now);
+  const say = { theme: (v) => `posts about ${v} do well for you`, tone: (v) => `${v} posts do well for you`,
+    len: (v) => `${v === "medium" ? "medium-length" : v} posts do well for you`, kind: (v) => `lines from ${KIND_WORDS[v] || v} do well for you` };
+  const all = [];
+  for (const field of Object.keys(say)) for (const [v, lift] of aud[field] || []) if (lift >= 0.1) all.push([lift, say[field](v)]);
+  const out = all.sort((a, b) => b[0] - a[0]).slice(0, 2).map((x) => x[1]);
+  const best = [...pages.theme.entries()].filter(([, e]) => e.best && e.best.rel >= 0.5 && e.best.handle).sort((a, b) => b[1].sum - a[1].sum)[0];
+  if (best) out.push(`${best[0]} does well on @${best[1].best.handle}`);
+  return { phrases: out, posts: aud.n };
+}
 export function status(P, sig) {
   const bank = sig.bank || emptyBank();
   const found = findlines.keptPool({ norm: (t) => low(t, 400) }, sig.lib || {}, new Set(), 10000).length;
@@ -392,17 +423,16 @@ export function status(P, sig) {
   if (P.aud.n) from.push(`${P.aud.n} of your posts`);
   const learnt = [];
   if (P.lately && P.ev.picks > 0.2) learnt.push(`you pick ${P.lately}`);
-  const topOf = (map) => [...map.entries()].sort((a, b) => b[1] - a[1])[0];
-  const aud = topOf(P.aud.theme || new Map());
-  if (aud && aud[1] >= 0.1) learnt.push(`posts about ${aud[0]} do well for you`);
+  const w = works(sig.posts, sig.insp, sig.tagsDoc);
+  if (w.phrases[0] && P.aud.n) learnt.push(w.phrases[0]);
   const pg = [...P.pages.theme.entries()].sort((a, b) => b[1].sum - a[1].sum)[0];
   if (pg && P.pages.n >= 3) learnt.push(`${pg[0]} does well on pages you follow`);
   if (!learnt.length && P.taste.loves[0]) learnt.push(`you like ${short(P.taste.loves[0].p, 50)}`);
-  const sure = P.pickState === "resting" ? "Your picks are set aside for now: they didn't predict well." : P.ev.picks >= 0.6 ? "Fairly sure now." : P.pickN ? "Still early." : "";
+  const sure = P.pickState === "resting" ? "Your picks are set aside for now: they didn't predict well." : P.pickState === "live" ? "Fairly sure now." : P.picks ? "Still early." : "";     // sure once its picks are proven on her own days
   const line = [from.length ? `Learning from ${from.slice(0, -1).join(", ")}${from.length > 1 ? " and " : ""}${from[from.length - 1]}.` : "Learning from your first picks.",
     learnt.length ? `So far: ${learnt.slice(0, 2).join("; ")}.` : "", sure].filter(Boolean).join(" ");
   const parts = PARTS.map(([id, w]) => ({ id, name: PART_NAME[id], weight: round(w * P.ev[id]) }));
-  return { line, learnt, sources, parts, picks: P.picks, state: P.pickState || "learning" };
+  return { line, learnt, works: w.phrases, sources, parts, picks: P.picks, state: P.pickState || "learning" };
 }
 
 // ---------------------------------------------------------------- timed jobs (one per tick; each well under 20 outside calls)
