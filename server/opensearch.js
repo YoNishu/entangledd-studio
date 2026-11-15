@@ -587,7 +587,7 @@ const knownName = (names, who) => names.find((n) => n && who && squash(n) === sq
 // "names" are the work's cast and characters (a known name before a quote is its speaker). "list" reads each
 // line under a heading as a line (Wikiquote's own pages). [{ text, by, other }]: "other" is a name the page
 // credits the line to that is not one of the work's (a known author on a mixed list page).
-export function extractLines(text, { names = [], list = false } = {}) {
+export function extractLines(text, { names = [], list = false, flat: given = "" } = {}) {
   const out = [], seen = new Set();
   const add = (raw, by = "", other = "", ctx = {}) => {
     if (out.length >= MAX_CANDIDATES || seen.has(raw)) return;
@@ -649,7 +649,7 @@ export function extractLines(text, { names = [], list = false } = {}) {
   // A piece of dialogue inside a longer quote is not a line of its own; of two wordings of one line ("worthy
   // love" and "worthy of love"), the one the page has more often stays, else the longer.
   const words = out.map((q) => sameWords(q.text));
-  const flat = out.length > 1 ? sameWords(all) : "";
+  const flat = out.length > 1 ? given || sameWords(all) : "";          // ("flat": the page's words, when the caller has them)
   const seenOn = (w) => (flat ? flat.split(w).length - 1 : 1);
   const counts = words.map(seenOn);
   return out.filter((q, i) => !words.some((w, j) => j !== i && ((w.length > words[i].length && w.includes(words[i]))
@@ -765,7 +765,7 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
   if ((!lines.length || noPick) && work && (noPick || !Array.isArray(answer) || !answer.length || missed)) {
     how = "extractor";
     pages.forEach((pg, i) => {
-      const got = about_[i] ? extractLines(pg.text, { names }) : [];
+      const got = about_[i] ? extractLines(pg.text, { names, flat: pg.text.length <= 150000 ? words[i] : "" }) : [];
       say(env, "candidates", { site: pg.site, url: pg.url, n: got.length });
       for (const q of got) { if (lines.length >= want) break; take(q, i); }
     });

@@ -11,7 +11,10 @@
       line on its page, the part of the page it sat in, and the kind of place it came from.
    2. judge(env, kit, work, lines, opts): what is left goes to Claude in one question for the whole look-up:
       for each numbered line "said" (a character says it), "narration" (the work's own words: a sentence of the
-      book, a voice-over), "about" (anyone describing the work) or "unsure". Only "said" and "narration" stay.
+      book, a voice-over), "about" (anyone describing the work) or "unsure". Only "said" and "narration" stay, and
+      an "unsure" line with the page's own proof and one of the work's characters named for it (marked to check).
+      Each line goes with the words just before and after it on its page (up to 120 characters each), who it is
+      credited to and where it was found, so a reviewer's own remark in quotation marks is told from a line quoted.
       Nothing about her is sent: only the work's public title and kind, and the lines.
       When Claude cannot be asked, only lines with strong proof in the page's own structure stay: a quotes
       page's own list item (Wikiquote, Goodreads, IMDb quotes), a line quoted in a review on the work's own

@@ -7,7 +7,7 @@
      2. the big quote sites, read directly (free, no key): Goodreads for books, IMDb for films and series
      3. Gemini with Google Search, only when the setting GEMINI_API_KEY is there (at most 40 questions a day)
      4. OpenAI with web search, only when the setting OPENAI_API_KEY is there (at most 20 questions a day)
-   What is found is kept on the work in the Library as "found": at most 30 lines, each with the page it came
+   What is found is kept on the work in the Library as "found": at most 80 lines, each with the page it came
    from. So a title is looked up once, and again only when its kept lines run short or after 30 days.
    After these come Anthropic's paid search (only when switched on) and Nishiii's memory, both in worker.js.
 
@@ -380,7 +380,7 @@ async function mdlPage(env, kit, work, state) {
   const pg = (await O.readSite(env, kit, state, "mydramalist", [url], own)).get(O.addressKey(url));
   if (!pg) return null;
   more.mdl.next = 2;
-  more.mdl.last = O.lastPage(pg.links);
+  more.mdl.last = O.lastPage(pg.links) || 1;                  // no list of pages: it is the only one
   const text = pg.text.slice(0, 300000);
   // Reviews: every quoted line goes to the gate, whose judge sees the words around it (no picking by Claude).
   return text.length < 200 ? null : { name: name || more.mdl.path, url, site: "mydramalist.com", text, web: true, extractor: true, via: pg.how };
@@ -409,7 +409,7 @@ async function goodreadsPage(env, kit, work, state) {
   if (!res.ok) return void noteBlocked(state, "goodreads", "quotes page answered " + res.status);
   const html = (await res.text()).slice(0, 1_500_000);
   if (wall(html)) return void noteBlocked(state, "goodreads", "asked for proof of a person");
-  if (state.more.gr.id === id && state.more.gr.next <= 1) Object.assign(state.more.gr, { next: 2, last: O.lastPage(html) });
+  if (state.more.gr.id === id && state.more.gr.next <= 1) Object.assign(state.more.gr, { next: 2, last: O.lastPage(html) || 1 });   // no list of pages: it is the only one
   const quotes = [];
   for (let at = 0, n = 0; n < 40; n++) {
     const start = html.indexOf('class="quoteText"', at);
