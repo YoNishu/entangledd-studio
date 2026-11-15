@@ -154,12 +154,14 @@ export function describe(work) {
 // ---------------------------------------------------------------- 0. what the Library already holds
 
 // Lines for one work that have not been suggested yet: her own lines saved "from" that title, and the lines
-// found for it earlier.
+// found for it earlier. "seen" may also answer like(line) (server/shown.js): then a line near one she has
+// already been shown (a word or two different) counts as seen too.
 function unused(kit, lib, work, seen) {
   const title = kit.norm(work.title);
-  const own = (lib.quotes || []).filter((q) => q.from && kit.norm(q.from) === title && !seen.has(kit.norm(q.text)))
+  const isNew = (t) => { const n = kit.norm(t); return !seen.has(n) && !(seen.like && seen.like(n)); };
+  const own = (lib.quotes || []).filter((q) => q.from && kit.norm(q.from) === title && isNew(q.text))
     .map((q) => ({ text: q.text, author: q.author || "", source: { type: "own", title: q.from }, theme: "", tone: "", verify: false }));
-  const found = kept(work).filter((l) => !seen.has(kit.norm(l.text))).map((l) => asQuote(work, l));
+  const found = kept(work).filter((l) => isNew(l.text)).map((l) => asQuote(work, l));
   return { own, found, n: own.length + found.length };
 }
 // A kept line as a suggestion: who says it, which work, and the page it was found on.
@@ -178,10 +180,11 @@ function due(work, have, share, now) {
   // look that found nothing must never stand in the way of her own request; only a tap twice within two minutes
   // is spared. The waits of 2, 12 and 48 hours are for the timed job, which goes by retryAt below.)
   if (!kept(work).length) return typeof f.resume === "number" || f.v !== LOOK_VERSION || now - f.at > 2 * 60 * 1000;
-  // Running short: look again at once if the last look had to stop early or still turned up something new,
-  // otherwise tomorrow.
-  return typeof f.resume === "number" || f.added > 0 || now - f.at > DAY;
+  // Running short (she has been shown the kept lines): look again at once for more, unless a look a moment ago
+  // found nothing new, which means every line there is to find has been found for now.
+  return typeof f.resume === "number" || f.added > 0 || f.v !== LOOK_VERSION || now - f.at > AGAIN_AFTER;
 }
+const AGAIN_AFTER = 10 * 60 * 1000;     // a look that found nothing new is not repeated for her within ten minutes
 
 // When a look that found nothing may be tried again: after 2 hours, then 12, then 48, then the 30 days.
 export const retryAt = (f) => (f.at || 0) + (RETRY_HOURS[Math.max(0, (f.tries || 1) - 1)] ?? LOOK_AGAIN_DAYS * 24) * HOUR;
@@ -461,7 +464,7 @@ function passagesOf(text) {
 // page are taken without Claude (opensearch.js extractLines: each line under a character's heading, quoted text,
 // "Name: line"). A line is kept only if its words are really on the page that was read.
 async function pickFrom(env, kit, work, pg, about, taste, have, state) {
-  const passages = passagesOf(pg.text);
+  const passages = passagesOf(have.had ? withoutHad(kit, pg.text, have.had) : pg.text);
   let answer = null;
   try {
     state.spent += 4;                                // the question itself, and the counting that goes with every question to Claude
@@ -495,6 +498,11 @@ async function pickFrom(env, kit, work, pg, about, taste, have, state) {
   return lines;
 }
 const oneLineOf = (e) => String((e && e.message) || e || "").replace(/\s+/g, " ").slice(0, 120);
+// The page without the lines she has already been shown (with or without "Name: " before them), so that a look
+// for more, when she has had every kept line, is read for the others (forWorks passes them as "had").
+function withoutHad(kit, text, had) {
+  return text.split("\n").filter((l) => { const n = kit.norm(l); return !n || !(had.has(n) || had.has(kit.norm(l.replace(/^[^:]{1,32}: /, "")))); }).join("\n");
+}
 
 // ---------------------------------------------------------------- 3 and 4. Gemini and OpenAI, searching the web
 
@@ -846,6 +854,8 @@ async function lookUp(env, kit, item, need, about, taste, state) {
   }
   const work = withKnown(kit, item);
   const have = new Set(kept(work).map((l) => kit.norm(l.text)));
+  for (const n of item.had || []) have.add(n);     // and what she has already been shown (forWorks), so only new lines are picked
+  if (item.had) have.had = item.had;
   have.kept = new Map();                           // the lines of this look, so a second site that agrees makes one sure
   const prior = work.found || {};
   let lines = [], where = "";
@@ -962,20 +972,28 @@ export function keepTrail(state, work, steps, n) {
 
 // Real lines for the works she named. "works" are Library items with a "type" (book, film or series);
 // "room" is how many quotes are still wanted and "also" how many other sources share that room.
-// Returns { items, short }: the quotes, and the works that did not get as many as their share.
+// Returns { items, short, dry }: the quotes, the works that did not get as many as their share, and of those the
+// ones with nothing new left to find for now (looked up just now, or a moment ago, and still nothing new).
 export async function forWorks(env, kit, lib, works, { room, also = 0, about = "", taste = null, seen, ranker = null }) {
-  const items = [], short = [], looked = [];
+  const items = [], short = [], looked = [], dry = [];
   const state = newState(env);
   const words = kit.norm(about).split(" ").filter((w) => w.length > 3);
   for (let i = 0; i < works.length && room > 0; i++) {
     const work = works[i];
     const share = Math.ceil(room / (works.length - i + also));
     let have = unused(kit, lib, work, seen);
-    if (state.spent + 6 <= BUDGET && Date.now() - state.began <= state.limit && due(work, have.n, share, Date.now())) {
+    const isDue = due(work, have.n, share, Date.now());
+    let lookedNow = false;
+    if (state.spent + 6 <= BUDGET && Date.now() - state.began <= state.limit && isDue) {
+      work.had = seen;                                   // the look picks only lines she has not been shown
       work.found = await lookUp(env, kit, work, Math.max(1, share - have.n), about, taste, state);
+      delete work.had;
       looked.push(work);
+      lookedNow = true;
       have = unused(kit, lib, work, seen);
     }
+    // (A look that had to stop early, out of time or calls, carries on next time: that is not "nothing left".)
+    if (have.n < share && ((lookedNow && typeof work.found.resume !== "number") || !isDue)) dry.push(work);
     // Her own lines from this title first; then found lines: those on her subject, or as the scorer ranks them.
     let pool = shuffle(have.found);
     if (words.length) pool.sort((a, b) => words.filter((w) => kit.norm(b.text).includes(w)).length - words.filter((w) => kit.norm(a.text).includes(w)).length);
@@ -988,7 +1006,7 @@ export async function forWorks(env, kit, lib, works, { room, also = 0, about = "
   }
   await closeRecord(env, kit, state);
   if (looked.length) await keep(env, kit, lib, looked);
-  return { items, short };
+  return { items, short, dry };
 }
 // Writes what was found onto the works in the Library. The Library is read afresh first, so anything she
 // changed while the search ran is not lost.
