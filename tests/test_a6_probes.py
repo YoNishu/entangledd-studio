@@ -22,7 +22,7 @@ check("with Instagram not connected its three probes are 'off', not alarms", st[
 check("the services and the housekeeping are fine", all(st[k] == "ok" for k in ["books", "tracks", "photos", "backup", "cleaning", "errors"]), st)
 check("and nothing needs attention", not pub["needsAttention"] and pub["message"] == "Everything is working.", pub["message"])
 check("every line carries when it was checked", all(i["checked"] for i in pub["items"]))
-check("the open record has only states, counts and fixed words", set(pub) - {"lastLookup"} == {"app", "needsAttention", "message", "asOf", "ageHours", "counts", "notes", "items"}
+check("the open record has only states, counts and fixed words", set(pub) - {"lastLookup", "served"} == {"app", "needsAttention", "message", "asOf", "ageHours", "counts", "notes", "items"}
       and all(set(i) == {"id", "state", "daysLeft", "checked"} for i in pub["items"]), list(pub))
 check("it stays small", len(json.dumps(pub)) < 2600, len(json.dumps(pub)))
 

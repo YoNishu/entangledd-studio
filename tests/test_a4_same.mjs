@@ -5,6 +5,7 @@
 // outside calls of the daily pass and of an asked-for batch. The older worker is still loaded, for the call counts.
 // Run: bash tests/prepare.sh && node tests/test_a4_same.mjs
 import { Bucket, checker, suggestion, DAY, dateOf } from "./a4kit.mjs";
+const ENDS = ["behind on the shingle at dawn", "for the gulls to argue over", "when nobody is watching the harbour", "in the pockets of an old coat", "under the pier in winter", "beside the boats hauled out to dry", "where the river gives up its name", "after the last ferry has gone"];
 const OUT = process.env.STUDIO_OUT || "/tmp/studio-tests";       // where tests/prepare.sh puts the code as it once was
 const base = (await import(OUT + "/base/server/worker.js")).default;
 const head = (await import("../server/worker.js")).default;
@@ -22,11 +23,12 @@ globalThis.fetch = async (url, init) => {
   let text = JSON.stringify({ summary: "You like quiet lines.", loves: ["the sea"], avoids: [], voice: [], look: [], performs: [] });
   const said = body.messages[0].content;
   const m = typeof said === "string" && said.match(/^Suggest (\d+) quotes/);
-  if (m) text = JSON.stringify(Array.from({ length: Number(m[1]) }, (_, i) => ({ text: `Line ${i + 1} about the tide and what it leaves`, author: `Writer ${i % 3}`,
+  if (m) text = JSON.stringify(Array.from({ length: Number(m[1]) }, (_, i) => ({ text: `Line ${i + 1} about the tide and what it leaves ${ENDS[i % ENDS.length]}`, author: `Writer ${i % 3}`,
     source: { type: i % 2 ? "book" : "classic", title: i % 2 ? "The Sea Book" : "" }, theme: ["sea", "time", "home"][i % 3], tone: ["calm", "wry"][i % 2], verify: false })));
   return new Response(JSON.stringify({ content: [{ type: "text", text }] }), { status: 200, headers: { "content-type": "application/json" } });
 };
 
+// (Each made-up line ends in its own words: lines a word or two apart count as one line.)
 // The same starting storage for both: a little of everything the suggestion code reads.
 function world(extra = {}) {
   const MEDIA = new Bucket();

@@ -107,6 +107,9 @@ check("Tavily is asked, and the pages' text it sends is read without fetching th
       and "You don't have to bloom early to be worth the wait." in [l["text"] for l in kept(w)], [(x["to"], x["path"]) for x in log])
 check("Tavily is asked for the work only", "PRIVATE" not in json.dumps(tv) and "Late Thaw" in tv[0]["body"]["query"], tv[0]["body"] if tv else None)
 oset(tavily="off", serper="on")
+# (The same work is added afresh: without the earlier copy, its kept lines and what she was shown, since a line she
+# already has is not kept or shown a second time, whatever the work.)
+lib = doc("library"); lib["screen"] = []; putdoc("library", lib); putdoc("asked", []); putdoc("asked-shown", {"works": {}})
 w = add_screen(T, "The Late Thaw (2026)", "series")
 lib = doc("library"); x = next(i for i in lib["screen"] if i["id"] == w); x["known"] = {"title": "The Late Thaw (2026)", "real": "The Late Thaw", "original": "春迟", "year": 2026, "kind": "series"}; putdoc("library", lib)
 ask(T, [w], 3)

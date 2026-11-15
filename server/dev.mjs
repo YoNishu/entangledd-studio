@@ -267,6 +267,8 @@ const CANNED = [
   ["The soul becomes dyed with the colour of its thoughts.", "Marcus Aurelius", "book", "Meditations", "mind", "quiet", false],
 ];
 let cannedAt = 0;
+const MEMORY_ENDINGS = ["said beside the harbour at dusk", "written on the back of a ticket", "whispered before the long train left", "kept for the winter that followed", "told to nobody but the river", "left under a stone by the door", "sung once and never again", "found again years afterwards"];
+
 function pretendClaude(req) {
   const system = req.system || "";
   if (req.model !== "claude-sonnet-5-5" || req.output_config?.effort !== "medium") return { status: 400, body: { error: { message: "wrong model or effort" } } };
@@ -361,7 +363,9 @@ function pretendClaude(req) {
       const known = brief.only.filter((w) => !/Nobody Knows/.test(w.title));
       for (let i = 0; i < want && known.length; i++) {
         const w = known[i % known.length];
-        items.push({ text: `A line from ${w.title}, number ${Math.floor(i / known.length) + 1}${brief.about ? `, about ${brief.about}` : ""}.`,
+        // (Each line ends in its own words: lines a word or two apart count as one line and only one would be kept.)
+        const nth = Math.floor(i / known.length);
+        items.push({ text: `A line from ${w.title}, number ${nth + 1}${brief.about ? `, about ${brief.about}` : ""}${nth ? `, ${MEMORY_ENDINGS[(nth - 1) % MEMORY_ENDINGS.length]}` : ""}.`,
           author: w.type === "book" ? (w.author || "Unknown") : "A character", source: { type: w.type, title: w.title }, theme: "asked", tone: "plain", verify: true });
       }
     } else {

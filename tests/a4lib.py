@@ -119,7 +119,9 @@ def put_log(rows, **extra):
 WORDS = "quiet water keeps its own slow counsel under every passing weather and leaves the hurried shore to argue with itself about what the tide has taken and what it means to stay when staying costs".split()
 def quote(tag, tone, n_words, theme, author, kind="classic", title="", verify=False):
     """A candidate for the pretend Claude. The pool adds a number to each text, which counts as one word."""
-    body = " ".join(WORDS[: max(1, n_words - 2)])
+    # Each candidate has its own words (the same count as before): lines a word or two apart count as one line.
+    k = sum(ord(c) for c in tag) * 7
+    body = " ".join(WORDS[(k + i * (1 + k % 5)) % len(WORDS)] for i in range(max(1, n_words - 2)))
     return {"text": f"{tag} {body}", "author": author, "source": {"type": kind, "title": title}, "theme": theme, "tone": tone, "verify": verify}
 def pool_calm_short_late():
     """Ten candidates in 'Claude's order': the four she would like (calm and short) come 6th to 9th."""

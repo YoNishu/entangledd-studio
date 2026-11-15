@@ -180,7 +180,8 @@ check("the next request carries on at Gemini, without asking the free places aga
 # ---- Anthropic's paid search comes last, and only when it is switched on
 serve("GEMINI=on", "OPENAI=on")
 T = login()
-n = add_screen(T, "Nobody Knows This Show", "series")
+# (A title without "show": the pretend paid search writes the title into its lines, and words about a work are refused.)
+n = add_screen(T, "Nobody Knows This One", "series")
 calls()
 s, got = ask(T, [n], 2)
 log = [x["to"] for x in calls()]

@@ -61,7 +61,7 @@ export const emptyShown = () => ({ works: {} });
 // The lines shown for these works (ids), as one list.
 export function shownFor(doc, ids) {
   const out = [];
-  for (const id of ids) { const w = doc.works[id]; if (w && Array.isArray(w.t)) out.push(...w.t); }
+  for (const id of ids) { const w = (doc && doc.works ? doc.works : {})[id]; if (w && Array.isArray(w.t)) out.push(...w.t); }
   return out;
 }
 
