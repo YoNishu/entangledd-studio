@@ -32,11 +32,13 @@ with sync_playwright() as p:
     print("import again:", pg.inner_text("#library-note"))
     pg.locator("#list-books").scroll_into_view_if_needed(); pg.screenshot(path=S+"120_library_books.png")
 
-    # --- Ask for quotes from the book with text
-    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_timeout(500); pg.click("#ask-open"); pg.wait_for_timeout(600)
+    # --- Find quotes (Library) from the book with text; closing the sheet keeps them under "Quotes you found"
+    pg.locator("#find-open").scroll_into_view_if_needed(); pg.click("#find-open"); pg.wait_for_timeout(600)
     pg.locator("#ask-groups button", has_text="Walden").click(); pg.click("#ask-go")
-    wait(pg, "document.getElementById('ask-sheet').hidden", 30); pg.wait_for_timeout(500)
-    cards=pg.locator("#asked-list .card").all_inner_texts()
+    wait(pg, "!document.getElementById('ask-go').disabled && document.getElementById('ask-progress').textContent.startsWith('Found')", 30); pg.wait_for_timeout(300)
+    print("find progress:", pg.inner_text("#ask-progress"))
+    pg.click("#ask-close"); pg.wait_for_timeout(500)
+    cards=pg.locator("#found-list .card").all_inner_texts()
     print("asked cards:", len(cards), "| first:", cards[0].replace("\n"," | ")[:170])
     pg.screenshot(path=S+"121_asked_fromtext.png")
 

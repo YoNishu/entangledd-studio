@@ -49,7 +49,7 @@ before = subprocess.run(["git", "-C", WT, "show", "d576d40:web/index.html"], cap
 ids_before = set(re.findall(r'\bid="([^"]+)"', before))
 ids_now = set(re.findall(r'\bid="([^"]+)"', html))
 # Ids taken away on purpose since: the chat sheet and its header button (the chat is a part of the Nishiii tab now).
-GONE = {"chat", "chat-close", "chat-open", "chat-title"}
+GONE = {"chat", "chat-close", "chat-open", "chat-title", "ask-open", "asked-list", "asked-note", "week-card"}
 check("every element id from before still exists, but for those taken away on purpose", ids_before - ids_now <= GONE, sorted(ids_before - ids_now - GONE))
 all_ids = re.findall(r'\bid="([^"]+)"', html)
 check("no element id is used twice", len(all_ids) == len(set(all_ids)), sorted({i for i in all_ids if all_ids.count(i) > 1}))

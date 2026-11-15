@@ -28,6 +28,7 @@ import * as claudeuse from "./claudeuse.js";
 import * as findlines from "./findlines.js";      // real lines from books, films and series, found without a paid search
 import * as verify from "./verify.js";            // quotes and titles looked up on the web: who said it, which work it is
 import * as engine from "./engine.js";            // the pool of quotes from every source, and one score for all of them
+import * as shown from "./shown.js";              // what she has been shown when she asked for quotes, so asking again brings new lines
 import { gutenbergText } from "./opensearch.js";   // the address of a free book's text
 const SECTIONS = [health, scorer, lovenotes, upkeep, engine];
 SECTIONS.push(findlines);                        // GET /api/lookups: the trail of the last look-ups, for Nishith
@@ -703,9 +704,13 @@ function foundAt(v) {
 
 // Quotes on request, from sources she picks: any mix of her books, films, series, pages she loves,
 // her own lines, and an optional subject. The results join today's list, marked with what she asked for.
-async function suggestFrom(env, b, already) {
+// "out" (optional) may carry "shown" (data/asked-shown.json, server/shown.js): then no line she has been shown for
+// those works comes back, not even one a word or two different; and it receives "said" when fewer came back
+// because nothing new is left to find. At most ASK_ROUND quotes per request: the phone asks again for more.
+const ASK_ROUND = 10;
+async function suggestFrom(env, b, already, out = {}) {
   const date = todayIST();
-  const count = Math.min(8, Math.max(1, Number(b.count) || 5));
+  const count = Math.min(ASK_ROUND, Math.max(1, Number(b.count) || 5));
   const about = oneLine(b.about, 120);
   const [lib, history, day, tasteDoc, insp] = await Promise.all([
     loadDoc(env, "library", emptyLibrary()), loadDoc(env, "history", []), loadDoc(env, `suggestions/${date}`, []),
@@ -724,13 +729,19 @@ async function suggestFrom(env, b, already) {
 
   const label = [...books.map((x) => x.title), ...screen.map((x) => x.title), ...pages.map((x) => (x.handle ? "@" + x.handle : "a reel you saved")),
     wantOwn ? "your own lines" : "", about ? `about ${about}` : ""].filter(Boolean).join(", ").slice(0, 160);
-  const seen = new Set([...history, ...day, ...already].map((x) => norm(x.text)));
+  // Seen: everything she has had (word for word), and near-duplicates of what she was shown for these works.
+  const shownDoc = out.shown || shown.emptyShown();
+  const workIds = [...books, ...screen, ...pages].map((x) => x.id).concat(wantOwn ? ["own"] : []);
+  const before = shown.nearSet([...shown.shownFor(shownDoc, workIds), ...already.map((x) => norm(x.text))]);
+  const seen = shown.nearSet(before);
+  for (const x of [...history, ...day]) seen.exact(norm(x.text));
+  for (const w of Object.values(shownDoc.works || {})) for (const n of w.t || []) seen.exact(n);
   const fresh = [];
   const fromWorks = books.length + screen.length + pages.length > 0 || !!about;
   let searchedFor = null;      // set when particular works were asked for: their titles, and whether the paid search ran
 
   if (wantOwn) {
-    const mine = shuffle((lib.quotes || []).filter((q) => !seen.has(norm(q.text)))).slice(0, fromWorks ? 2 : count);
+    const mine = shuffle((lib.quotes || []).filter((q) => !seen.seenOrLike(norm(q.text)))).slice(0, fromWorks ? 2 : count);
     for (const q of mine) { fresh.push({ text: q.text, author: q.author || "", source: { type: "own", title: q.from || "" }, theme: "", tone: "", verify: false }); seen.add(norm(q.text)); }
     if (!mine.length && !fromWorks) throw new UserError(409, "There are no unused lines of your own left. Add some in the Library.");
   }
@@ -749,10 +760,12 @@ async function suggestFrom(env, b, already) {
   // now on Wikiquote, the big quote sites and, with a key, Gemini and OpenAI (see findlines.js).
   const named = [...others.map((x) => ({ ...x, type: "book" })), ...screen.map((x) => ({ ...x, type: x.kind }))];
   let short = named;           // the works that still lack lines after that
+  let dry = [];                // of those, the ones with nothing new left to find for now
   if (named.length && count > fresh.length) {
     const got = await findlines.forWorks(env, kit, lib, named, { room: count - fresh.length, also: pages.length ? 1 : 0, about, taste, seen, ranker });
     fresh.push(...got.items);
     short = got.short;
+    dry = got.dry || [];
     searchedFor = { works: named.map((x) => x.title), paid: false,
       trail: short.map((x) => x.found && x.found.trail && x.found.trail.said).find(Boolean) || "" };
   }
@@ -787,12 +800,21 @@ async function suggestFrom(env, b, already) {
     let n = 0;
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
-      if (!text || seen.has(norm(text))) continue;
+      if (!text || seen.seenOrLike(norm(text))) continue;
       pool.push(findlines.stamp(kit, lib, cleanSuggestion(s, text)));
       seen.add(norm(text));
       if (++n >= ask) break;
     }
     fresh.push(...ranker.choose(pool, want, fresh));
+  }
+  // Last, whatever the source: nothing she was shown for these works, and no two near the same.
+  const kept = fresh.filter((f) => { const n = norm(f.text); if (before.seenOrLike(n)) return false; before.add(n); return true; });
+  fresh.length = 0; fresh.push(...kept);
+  // Fewer than asked because a work she has had lines from has no new ones left: said plainly.
+  const spent = dry.filter((w) => shown.shownFor(shownDoc, [w.id]).length);
+  if (fresh.length < count && spent.length) {
+    out.said = `That's every line I could find from ${andTitles(spent.map((w) => w.title))} for now. I'll keep looking.`;
+    if (!fresh.length) return [];
   }
   if (!fresh.length) {
     if (searchedFor) {
@@ -803,8 +825,14 @@ async function suggestFrom(env, b, already) {
     throw new UserError(502, "Nothing new came back for that. Try other sources or a different subject.");
   }
   const now = Date.now();
-  return eng.explain(fresh).map((f) => ({ id: crypto.randomUUID(), state: "new", askedFor: label, askedAt: now, ...f }));
+  // Each quote knows which of the chosen works it came from (for "Quotes you found", and for what was shown).
+  const chosen = [...books.map((x) => ({ ...x, type: "book" })), ...screen.map((x) => ({ ...x, type: x.kind }))];
+  const workOf = (f) => (f.source && f.source.type === "own" ? (wantOwn ? "own" : "")
+    : (chosen.find((w) => w.type === (f.source && f.source.type) && norm(w.title) === norm(f.source && f.source.title)) || {}).id
+      || (chosen.length === 1 && !pages.length ? chosen[0].id : "")) || "";
+  return eng.explain(fresh).map((f) => ({ id: crypto.randomUUID(), state: "new", askedFor: label, askedAt: now, workId: workOf(f), ...f }));
 }
+const andTitles = (a) => (a.length < 2 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}`);
 
 // Marks each quote with what really happened to it: "posted", or "deleted" if the post made from it
 // was later removed on Instagram. "Used" alone only means it was opened in Create.
@@ -896,19 +924,29 @@ async function suggestionRoutes(request, env, parts) {
   return fail(404, "Not found.");
 }
 
-// Quotes she asked Nishiii for directly. Kept apart from Today, newest first, until she skips them.
-const ASKED_KEEP = 40;
+// Quotes she found ("Find quotes" in the Library). Kept apart from Today, newest first, until she skips them,
+// for 30 days, or a week after she used one. data/asked.json holds at most ASKED_KEEP of them (each well under
+// 1 KB, so under about 200 KB); what she was shown is noted in data/asked-shown.json (server/shown.js).
+const ASKED_KEEP = 200, ASKED_DAYS = 30, USED_DAYS = 7;
+function tidyAsked(list, now = Date.now()) {
+  return list.filter((i) => now - (i.askedAt || now) <= ASKED_DAYS * DAY_MS && !(i.state === "used" && now - (i.usedAt || i.askedAt || now) > USED_DAYS * DAY_MS)).slice(-ASKED_KEEP);
+}
 async function askedRoutes(request, env, parts) {
   const method = request.method;
   // Showing the list also needs the posts (to mark what was posted): both are fetched side by side.
-  const [list, posts] = await Promise.all([loadDoc(env, "asked", []), parts.length === 1 && method === "GET" ? loadDoc(env, "posts", []) : null]);
-  const reply = async (items, checkInstagram) => json({ items: await withFate(env, items.slice().reverse(), checkInstagram, posts) });
-  if (parts.length === 1 && method === "GET") return reply(list, true);
-  if (parts.length === 1 && method === "POST") {
-    const fresh = await suggestFrom(env, await body(request), list);
-    const next = [...list, ...fresh].slice(-ASKED_KEEP);
-    await saveDoc(env, "asked", next);
-    return reply(next, false);
+  const asking = parts.length === 1 && method === "POST";
+  const [list, posts, shownDoc] = await Promise.all([loadDoc(env, "asked", []), parts.length === 1 && method === "GET" ? loadDoc(env, "posts", []) : null,
+    asking ? loadDoc(env, "asked-shown", shown.emptyShown()) : null]);
+  const reply = async (items, checkInstagram, more = {}) => json({ items: await withFate(env, items.slice().reverse(), checkInstagram, posts), ...more });
+  if (parts.length === 1 && method === "GET") return reply(tidyAsked(list), true);
+  if (asking) {
+    const out = { shown: shownDoc };
+    const fresh = await suggestFrom(env, await body(request), list, out);
+    const next = tidyAsked([...list, ...fresh]);
+    shown.note(shownDoc, fresh.map((f) => [f.workId || "other", norm(f.text)]));
+    await Promise.all([saveDoc(env, "asked", next), fresh.length ? saveDoc(env, "asked-shown", shownDoc) : null]);
+    // "fresh": only the quotes found now, newest first; "said": why fewer came back, when nothing new was left.
+    return reply(next, false, { fresh: fresh.slice().reverse().map((f) => f.id), said: out.said || "" });
   }
   if (parts[2] === "feedback" && method === "POST") {
     const b = await body(request);
@@ -916,7 +954,8 @@ async function askedRoutes(request, env, parts) {
     const item = list.find((i) => i.id === parts[1]);
     if (!item) return fail(404, "That quote is no longer in the list.");
     item.state = b.action;
-    await Promise.all([saveDoc(env, "asked", b.action === "rejected" ? list.filter((i) => i.id !== item.id) : list), recordChoice(env, item, b.action)]);
+    if (b.action === "used") item.usedAt = Date.now();
+    await Promise.all([saveDoc(env, "asked", tidyAsked(b.action === "rejected" ? list.filter((i) => i.id !== item.id) : list)), recordChoice(env, item, b.action)]);
     return json({ ok: true });
   }
   return fail(404, "Not found.");

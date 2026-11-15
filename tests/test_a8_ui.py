@@ -23,9 +23,10 @@ with sync_playwright() as p:
     pg.goto(f"{_W.URL}/"); pg.wait_for_selector("#passcode", timeout=8000)
     pg.fill("#passcode", "letmein"); pg.click("#passcode-go"); pg.wait_for_timeout(1500)
 
-    # ---- the cards in the Nishiii section
-    pg.click("#nav-nishiii"); pg.click("#nishiii-part-knows"); pg.wait_for_selector("#asked-list .card", timeout=8000)
-    cards = pg.locator("#asked-list .card")
+    # ---- the cards under "Quotes you found" in the Library (all of them: "Show all")
+    pg.click("#nav-library"); pg.wait_for_selector("#found-list .card", timeout=8000)
+    if pg.locator("#found-all").is_visible(): pg.click("#found-all"); pg.wait_for_timeout(300)
+    cards = pg.locator("#found-list .card")
     wiki = cards.filter(has_text="From the film The Long Tide")
     check("a line from Wikiquote says so, as a link to the page", wiki.count() == 2 and wiki.first.locator("a.src.found").inner_text() == "Found on wikiquote.org"
           and wiki.first.locator("a.src.found").get_attribute("href") == "https://en.wikiquote.org/wiki/The_Long_Tide_(film)", wiki.count())
@@ -45,7 +46,7 @@ with sync_playwright() as p:
     pg.screenshot(path=f"{_W.OUT}/shots/a8_cards.png")
 
     # ---- nothing anywhere: a plain message in the sheet
-    pg.click("#ask-open"); pg.wait_for_selector("#ask-groups button", timeout=8000)
+    pg.locator("#find-open").scroll_into_view_if_needed(); pg.click("#find-open"); pg.wait_for_selector("#ask-groups button", timeout=8000)
     pg.locator("#ask-groups button", has_text="Nobody Knows This Book").click()
     pg.click("#ask-go")
     pg.wait_for_function("document.getElementById('ask-status').textContent.length > 20", timeout=15000)
