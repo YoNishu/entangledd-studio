@@ -29,6 +29,7 @@ import * as findlines from "./findlines.js";      // real lines from books, film
 import * as verify from "./verify.js";            // quotes and titles looked up on the web: who said it, which work it is
 import * as engine from "./engine.js";            // the pool of quotes from every source, and one score for all of them
 import * as shown from "./shown.js";              // what she has been shown when she asked for quotes, so asking again brings new lines
+import * as saidGate from "./said.js";            // a quote is something said in the work, never something said about it
 import { gutenbergText } from "./opensearch.js";   // the address of a free book's text
 const SECTIONS = [health, scorer, lovenotes, upkeep, engine];
 SECTIONS.push(findlines);                        // GET /api/lookups: the trail of the last look-ups, for Nishith
@@ -625,6 +626,7 @@ const SEARCH_RULES = `
 Web search:
 - You can search the web. For every work in the "only" list whose exact lines you do not know well, search for them: quote pages (Goodreads, Wikiquote, fan wikis), transcripts, subtitles, reviews and articles that quote the work. Always search for a work you do not recognise; it may be new.
 - Keep a line only when a page you read gives its wording and says it is from that work. Copy the wording exactly as that page has it. Never fill gaps from memory or guess.
+- A line is something a character says in the work, or the work's own words (a sentence of the book, a voice-over). Never words about the work: an article or reference title, a headline, a review, a rating, a plot summary, a tagline, an episode or chapter title.
 - Add "found": the address of the page you took it from.
 - Set "verify" to false only when two separate pages give the same wording for the same work; otherwise true.
 - If nothing real can be found for a work, leave that work out. If nothing can be found at all, reply with [].
@@ -801,6 +803,7 @@ async function suggestFrom(env, b, already, out = {}) {
     for (const s of Array.isArray(answer) ? answer : []) {
       const text = lines(s && s.text, 400).replace(/^["“”']+|["“”']+$/g, "");
       if (!text || seen.seenOrLike(norm(text))) continue;
+      if (!saidGate.isSaid({ text, by: s && s.author }, null, { place: "helper" }).ok) continue;      // words about a work are not a line from it
       pool.push(findlines.stamp(kit, lib, cleanSuggestion(s, text)));
       seen.add(norm(text));
       if (++n >= ask) break;

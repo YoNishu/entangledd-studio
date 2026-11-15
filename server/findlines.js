@@ -27,6 +27,7 @@
 
 import * as V from "./verify.js";
 import * as O from "./opensearch.js";
+import * as S from "./said.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 export const KEEP = 30;                 // lines kept for one work
@@ -38,7 +39,7 @@ const PICK = 12;                        // lines Nishiii may pick from one page
 const UA = "DsStudio/1.0 (personal quotes app; one search and one page per title)";
 const HOUR = 60 * 60 * 1000;
 // Raised whenever the way of looking changes, so that works looked up the old way are looked up afresh.
-const LOOK_VERSION = 5;
+const LOOK_VERSION = 6;                // 6: every line through the gate (said.js)
 const RETRY_HOURS = [2, 12, 48];        // a look that found nothing is tried again after this long, then after 30 days
 const MODEL_DAYS = 7;                   // the models a key may use are asked again after this long
 const QUESTIONS = 3;                    // questions to Gemini and OpenAI together for one look at one work
@@ -168,7 +169,7 @@ function unused(kit, lib, work, seen) {
 function asQuote(work, line) {
   return { text: line.text, author: work.type === "book" ? work.author || line.by || "" : line.by || "",
     source: { type: work.type, title: work.title, url: line.url || undefined, site: line.site || undefined },
-    theme: line.theme || "", tone: line.tone || "", verify: !!line.verify, found: true };
+    theme: line.theme || "", tone: line.tone || "", verify: !!line.verify, found: true, ...(line.is ? { is: line.is } : {}) };
 }
 // Is it time to look this work up (again)?
 function due(work, have, share, now) {
@@ -441,7 +442,7 @@ Reply with a JSON array only: [{"text": "...", "by": "...", "theme": "one or two
 - The passages come from one page (Wikiquote, Goodreads or IMDb) about one book, film or series. A line "== like this ==" is a heading: a character, an episode, a season or a chapter.
 - Copy each line exactly as it appears in the passages: same words, same punctuation. One to three sentences, complete on its own, under 45 words. Leave out the speaker's name before a colon and any stage direction in [brackets].
 - "by" is who says the line: for a film or series the character (the heading above it, or the name before the colon); for a book the author, or "" when the passages do not say.
-- Only lines from the work itself. Skip the opening description of the work, cast lists, what critics and others said about it, headings and links.
+- Only lines from the work itself: what a character says, or the book's own sentences. Skip the opening description of the work, cast lists, what critics and others said about it, headings and links.
 - Choose lines that stand alone without the story around them.
 - If "about" is given, prefer lines on that subject. If "taste" is given, follow it.`;
 
@@ -480,8 +481,13 @@ async function pickFrom(env, kit, work, pg, about, taste, have, state) {
       if (!O.lineLike(text) || !O.onPage(words, text) || have.has(kit.norm(text)) || HEADING.test(text)) { O.say(env, "rejected", { site: pg.site, why: "not on the page, too short or already kept", text: text.slice(0, 120) }); continue; }
       const by = kit.oneLine(q.by, 80);
       const named = by && (q.fromPage || lower.includes(by.toLowerCase())) ? by : "";
+      // The gate (said.js): only what is said in the work. A quotes page's own list is its proof.
+      const place = QUOTE_PAGES.has(pg.site) ? "quotes" : pg.site === "mydramalist.com" ? "mdl" : "page";
+      const ctx = q.ctx ? { ...q.ctx, place } : S.contextOf(pg, text, place);
+      const said = S.isSaid({ text, by: named }, work, ctx);
+      if (!said.ok) { S.count(O.gateTally(state), said.why); O.say(env, "rejected", { site: pg.site, why: "gate: " + said.why, text: text.slice(0, 120) }); continue; }
       lines.push({ text, by: work.type === "book" ? pg.by || named : named, url: pg.url, site: pg.site, verify: !!pg.web,
-        theme: kit.oneLine(q.theme, 30), tone: kit.oneLine(q.tone, 20) });
+        theme: kit.oneLine(q.theme, 30), tone: kit.oneLine(q.tone, 20), ctx });
       have.add(kit.norm(text));
       if (have.kept) have.kept.set(kit.norm(text), lines[lines.length - 1]);
       if (lines.length >= PICK) break;
@@ -503,6 +509,7 @@ const oneLineOf = (e) => String((e && e.message) || e || "").replace(/\s+/g, " "
 function withoutHad(kit, text, had) {
   return text.split("\n").filter((l) => { const n = kit.norm(l); return !n || !(had.has(n) || had.has(kit.norm(l.replace(/^[^:]{1,32}: /, "")))); }).join("\n");
 }
+const QUOTE_PAGES = new Set(["wikiquote.org", "goodreads.com", "imdb.com"]);   // pages that are lists of a work's quotes
 
 // ---------------------------------------------------------------- 3 and 4. Gemini and OpenAI, searching the web
 
@@ -553,7 +560,7 @@ export function siteOfChunk(c) {
 // no read page behind it is left out; so is one the answer does not credit to this work (when a work is
 // asked about). A line is sure only when two sites agree on it; otherwise it is marked to check.
 // Returns { lines, dropped }: "dropped" counts the lines left out, by reason, for the trail.
-function webLines(kit, said, read, behind, have, work = null) {
+function webLines(kit, said, read, behind, have, work = null, refused = {}) {
   const dropped = {};
   const drop = (why) => { dropped[why] = (dropped[why] || 0) + 1; };
   if (!read.length) { drop("no page was read"); return { lines: [], dropped }; }   // an answer from memory is not kept
@@ -565,6 +572,8 @@ function webLines(kit, said, read, behind, have, work = null) {
     if (text.length < 20 || text.length > 400) { drop("too short or too long"); continue; }
     if (have.has(n)) { drop("already kept"); continue; }
     if (work && !fromThisWork(kit, work, q.from)) { drop("not said to be from this work"); continue; }
+    const ctx = { place: "helper" }, gate = S.isSaid({ text, by: kit.oneLine(q.by, 80) }, work, ctx);     // said.js
+    if (!gate.ok) { S.count(refused, gate.why); continue; }
     const pages = behind(n);
     const urls = [q.page, q.also].map((u) => kit.foundAt(u)).filter((u) => u && !/(^|\.)google\.com$/.test(hostOf(u)));
     const named = urls.filter((u) => told.some((r) => sameSite(hostOf(u), r.site)));
@@ -580,7 +589,7 @@ function webLines(kit, said, read, behind, have, work = null) {
     }
     const sites = new Set([...pages.map((p) => p.site).filter(Boolean), ...named.map(hostOf)]);
     lines.push({ text, by: kit.oneLine(q.by, 80), url, site, verify: sites.size < 2, theme: "", tone: "",
-      ...(q.work ? { work: kit.oneLine(q.work, 120), type: ["book", "film", "series"].includes(q.type) ? q.type : "classic" } : {}) });
+      ...(q.work ? { work: kit.oneLine(q.work, 120), type: ["book", "film", "series"].includes(q.type) ? q.type : "classic" } : {}), ctx });
     have.add(n);
   }
   return { lines, dropped };
@@ -815,7 +824,7 @@ export function openaiSearch(env, kit, state, prompt, ms = 25000) {
 async function fromHelper(env, kit, who, work, want, have, state, shape = "quotes") {
   const got = await (who === "gemini" ? geminiSearch : openaiSearch)(env, kit, state, question(work, want, shape));
   if (!got) return [];
-  const { lines, dropped } = webLines(kit, got.said, got.read, got.behind, have, work);
+  const { lines, dropped } = webLines(kit, got.said, got.read, got.behind, have, work, O.gateTally(state));
   const why = Object.entries(dropped).map(([k, v]) => `${v} ${k}`).join(", ");
   noteUse(state, who, lines.length ? "found" : "all rejected", { model: got.model, n: lines.length, ...(why ? { why } : {}) });
   step(state, who, lines.length ? "found" : "no line passed", { q: SHAPE_SAID[shape], model: got.model, n: lines.length,
@@ -842,6 +851,7 @@ const needsKnowing = (work) => {
 // What the title check learns is put on "item" itself (known, maybe, titleChecked), for keep() to save.
 async function lookUp(env, kit, item, need, about, taste, state) {
   state.trail = [];
+  state.refused = {};                              // what the gate (said.js) refused in this look, by reason
   state.feature = "lookup";
   if (needsKnowing(item) && state.spent + 4 <= (state.budget || BUDGET)) {
     try {
@@ -925,15 +935,34 @@ async function lookUp(env, kit, item, need, about, taste, state) {
     }
     await places[i].look();
   }
+  // The gate's second step (said.js): the new lines are judged by Nishiii in one question; when Nishiii cannot
+  // be asked, only lines whose page shows by its structure that they are said in the work stay.
+  const judged = await S.judge(env, kit, work, lines, { state });
+  lines = judged.kept;
+  const gate = gateNote(state, judged, lines.length);
   const all = [...kept(work), ...lines].slice(-KEEP);
   const steps = state.trail.slice();
   const out = { ...prior, v: LOOK_VERSION, at: Date.now(), added: lines.length, resume, page: where || prior.page || "", lines: all,
-    tries: all.length ? 0 : (prior.tries || 0) + 1, trail: { at: Date.now(), said: sayTrail(steps, lines.length), steps } };
+    tries: all.length ? 0 : (prior.tries || 0) + 1, trail: { at: Date.now(), said: sayTrail(steps, lines.length), steps, ...(gate ? { gate } : {}) } };
   if (resume === undefined) delete out.resume;
   keepTrail(state, work, steps, lines.length);
   keepCoarse(state, item, steps, lines.length);
   return out;
 }
+// The gate on the trail, beside the steps: how many lines it kept and refused, and why (counts only, no line).
+// { kept, refused: { why: n }, how, said }: "how" is "claude", "structure" or "".
+const GATE_HOW = { claude: "judged by Nishiii", structure: "Nishiii could not be asked: kept only lines the page itself shows are said in the work" };
+function gateNote(state, judged, n) {
+  const refused = O.gateTally(state);
+  for (const [k, v] of Object.entries(judged.refused || {})) refused[k] = (refused[k] || 0) + v;
+  const sum = S.tallySum(refused);
+  state.gate = !judged.how && !sum ? null : { kept: n, refused: { ...refused }, how: judged.how || "",
+    said: [`gate: ${n} kept, ${sum} refused${sum ? ` (${S.tallyText(refused)})` : ""}`, GATE_HOW[judged.how]].filter(Boolean).join("; ") };
+  return state.gate;
+}
+// The gate's record, coarse, for the open health record: counts by reason, reasons in plain lower-case words.
+const coarseGate = (g) => (g ? { kept: Number(g.kept) || 0, how: String(g.how || "").slice(0, 10),
+  refused: Object.fromEntries(Object.entries(g.refused || {}).filter(([why, v]) => DROP_WORDS.test(why) && Number.isFinite(v)).slice(0, 10)) } : null);
 // For the open health record (/api/health): the last look only, with no title and no line, only what each
 // step did and its counts, and whether the work was identified. So Nishith can see how it went without signing in.
 function keepCoarse(state, item, steps, n) {
@@ -941,7 +970,7 @@ function keepCoarse(state, item, steps, n) {
   const k = item.known || {};
   state.rec.coarse = { at: Date.now(), type: item.type, identified: !!item.known, kind: item.known ? k.kind || "" : "", year: item.known ? Number(k.year) || 0 : 0,
     kept: n, steps: steps.slice(0, 16).map((s) => ({ where: String(s.where || "").slice(0, 20), what: String(s.what || "").slice(0, 20),
-      ...(Number.isFinite(s.n) ? { n: s.n } : {}), ...(s.counts ? { counts: coarseCounts(s.counts) } : {}) })) };
+      ...(Number.isFinite(s.n) ? { n: s.n } : {}), ...(s.counts ? { counts: coarseCounts(s.counts) } : {}) })), ...(state.gate ? { gate: coarseGate(state.gate) } : {}) };
   state.dirty = true;
 }
 const DROP_WORDS = /^[a-z ]{3,40}$/;
@@ -959,13 +988,15 @@ export function coarseText(c) {
     const drops = Object.entries(k.dropped || {}).map(([why, v]) => `${v} ${why}`).join(", ");
     return `${s.where}: ${k.results ?? 0} results, ${k.read ?? 0} pages read, ${k.about ?? 0} about the work, ${k.tried ?? 0} candidates, ${s.n || 0} kept${drops ? ` (${drops})` : ""}${k.sites ? ` [${k.sites.join(" | ")}]` : ""}`;
   };
-  return [`work identified: ${c.identified ? `yes (${[c.kind, c.year].filter(Boolean).join(", ")})` : "no"}`, ...c.steps.map((s) => s.where === "title" ? `title check: ${s.what}` : step(s)), `lines kept: ${c.kept || 0}`].join("; ");
+  const g = c.gate, refused = g ? Object.entries(g.refused || {}) : [];
+  const gate = g ? [`gate: ${g.kept || 0} kept, ${refused.reduce((a, [, v]) => a + v, 0)} refused${refused.length ? ` (${refused.map(([why, v]) => `${v} ${why}`).join(", ")})` : ""}${g.how ? `, ${g.how === "claude" ? "judged by Nishiii" : "on the pages' structure"}` : ""}`] : [];
+  return [`work identified: ${c.identified ? `yes (${[c.kind, c.year].filter(Boolean).join(", ")})` : "no"}`, ...c.steps.map((s) => s.where === "title" ? `title check: ${s.what}` : step(s)), ...gate, `lines kept: ${c.kept || 0}`].join("; ");
 }
 // The last few trails, in data/lookups.json, for Nishith.
 export function keepTrail(state, work, steps, n) {
   if (!state.rec) return;
   const list = Array.isArray(state.rec.trails) ? state.rec.trails : [];
-  list.push({ title: String(work.title || "").slice(0, 120), type: work.type, at: Date.now(), n, steps });
+  list.push({ title: String(work.title || "").slice(0, 120), type: work.type, at: Date.now(), n, steps, ...(state.gate ? { gate: state.gate } : {}) });
   state.rec.trails = list.slice(-TRAILS);
   state.dirty = true;
 }
@@ -1061,7 +1092,9 @@ export async function refreshOne(env, kit, lib, { budget = 14, need = 10 } = {})
   const resumed = works.filter((w) => w.found && typeof w.found.resume === "number");
   const retry = works.filter((w) => w.found && w.found.at && !kept(w).length && typeof w.found.resume !== "number" && (w.found.v !== LOOK_VERSION || now >= retryAt(w.found))).sort((a, b) => a.found.at - b.found.at);
   const old = works.filter((w) => w.found && w.found.at && now - w.found.at > LOOK_AGAIN_DAYS * DAY).sort((a, b) => a.found.at - b.found.at);
-  const work = never[0] || resumed[0] || retry[0] || old[0];
+  // Looked up the older way, before every line passed the gate (said.js): looked at again, one a run.
+  const before = works.filter((w) => w.found && w.found.at && (w.found.v || 0) < LOOK_VERSION).sort((a, b) => a.found.at - b.found.at);
+  const work = never[0] || resumed[0] || retry[0] || old[0] || before[0];
   if (!work) return null;
   const state = { spent: 2, rec: null, dirty: false, began: now, limit: (Number(env.LOOKUP_SECONDS) || SECONDS) * 1000, budget };
   work.found = await lookUp(env, kit, work, need, "", null, state);
@@ -1096,12 +1129,17 @@ export async function searchWeb(env, kit, prompt, want, have, { allow = { gemini
     used[who] = (used[who] || 0) + 1;
     const got = await search(env, kit, state, prompt);
     if (!got) continue;
-    const { lines: more, dropped } = webLines(kit, got.said, got.read, got.behind, have);
+    const { lines: more, dropped } = webLines(kit, got.said, got.read, got.behind, have, null, O.gateTally(state));
     const why = Object.entries(dropped).map(([k, v]) => `${v} ${k}`).join(", ");
     noteUse(state, who, more.length ? "found" : "all rejected", { model: got.model, n: more.length, ...(why ? { why } : {}) });
     step(state, who, more.length ? "found" : "no line passed", { model: got.model, n: more.length, ...(why ? { why } : {}) });
     lines = lines.concat(more);
   }
+  // The gate's second step (said.js), for lines with no work of hers: each must be credited to someone and be
+  // said or written by them, never words about a work.
+  const judged = await S.judge(env, kit, null, lines, { state });
+  lines = judged.kept;
+  gateNote(state, judged, lines.length);
   if (state.rec && state.trail.length) keepTrail(state, { title: `(${feature})`, type: feature }, state.trail, lines.length);
   if (state.dirty) await saveRecord(env, kit, state);
   return { lines, spent: state.spent };
@@ -1148,6 +1186,110 @@ export function merge(kit, lib, kind, id, into) {
   return lib;
 }
 
+// ---------------------------------------------------------------- what was kept before the gate
+
+// A one-off clean-up, as a timed job: every line kept before the gate (said.js) existed goes through it once:
+// the works' kept lines in the Library, the engine's bank, the quotes she asked for, and the suggestions of
+// today and the week before that she has not used yet. What fails is dropped; what passes is marked ("is"),
+// so it is never judged again. One store, or one day of suggestions, a run; at most three questions to
+// Claude a run (a few lines each: about 6 outside calls), and the run's own reads and writes. Where it got to
+// is kept in data/linegate.json; once done, the job only reads that, about once a month.
+const CLEAN_V = 1, CLEAN_BATCH = 30, CLEAN_ASKS = 3;
+let cleanDone = false;
+const placeOfSite = (site) => (QUOTE_PAGES.has(site) ? "quotes" : site === "mydramalist.com" ? "mdl" : "page");
+// The work a kept suggestion or bank line is from, with what the Library knows of it.
+function workOf(kit, lib, title, type) {
+  if (!title || !["book", "film", "series"].includes(type)) return null;
+  const item = typed(lib).find((w) => kit.norm(w.title) === kit.norm(title));
+  return item ? withKnown(kit, item) : { title, type };
+}
+// Judges the unjudged lines of a list, a few works at a time. "list" holds { line, key, work }: "line" is
+// { text, by, site }. Returns a Map from key to the verdict ("drop" or the "is" to keep), or null when Claude
+// should have answered and did not (the run stops and tries again later).
+async function cleanBatch(env, kit, list, force = false) {
+  const groups = new Map();
+  for (const x of list) {
+    const k = x.work ? `${x.work.type}:${kit.norm(x.work.title)}` : "";
+    if (!groups.has(k)) { if (groups.size >= CLEAN_ASKS) continue; groups.set(k, { work: x.work, items: [] }); }
+    const g = groups.get(k);
+    if (g.items.length < CLEAN_BATCH) g.items.push(x);
+  }
+  const out = new Map(), refused = {};
+  for (const { work, items } of groups.values()) {
+    const lines = items.map((x) => ({ text: x.line.text, by: x.line.by || "", key: x.key, ctx: { place: placeOfSite(x.line.site), quoted: x.line.site === "mydramalist.com" } }));
+    const pass = lines.filter((l) => { const r = S.isSaid(l, work, l.ctx); if (!r.ok) { out.set(l.key, "drop"); S.count(refused, r.why); } return r.ok; });
+    const j = await S.judge(env, kit, work, pass);
+    if (j.how === "structure" && env.ANTHROPIC_API_KEY && !force) return null;   // Claude is resting or unreachable: later
+    const keptKeys = new Map(j.kept.map((l) => [l.key, l.is]));
+    for (const l of pass) out.set(l.key, keptKeys.get(l.key) || "drop");
+    for (const [k, v] of Object.entries(j.refused)) refused[k] = (refused[k] || 0) + v;
+  }
+  out.refused = refused;
+  return out;
+}
+const PHASES = ["library", "bank", "asked", "days"];
+const SUGGESTION_DAYS = 8;                     // today and the seven days before it, as Today shows them
+const dayOf = (n) => new Date(Date.now() + 5.5 * 3600 * 1000 - n * DAY).toISOString().slice(0, 10);
+async function cleanJob(env, kit) {
+  const mark = (await kit.loadDoc(env, "linegate", null)) || {};
+  if (mark.v === CLEAN_V && mark.done) { cleanDone = true; return null; }
+  const at = mark.v === CLEAN_V ? { phase: mark.phase || 0, day: mark.day || 0, refused: mark.refused || {}, dropped: mark.dropped || 0, judged: mark.judged || 0, waits: mark.waits || 0 }
+    : { phase: 0, day: 0, refused: {}, dropped: 0, judged: 0, waits: 0 };
+  const lib = (await kit.loadDoc(env, "library", null)) || { books: [], screen: [], quotes: [] };
+  const name = PHASES[at.phase];
+  const docName = name === "library" ? "library" : name === "bank" ? "engine/bank" : name === "asked" ? "asked" : `suggestions/${dayOf(at.day)}`;
+  const read = async () => (name === "library" ? kit.loadDoc(env, "library", null) : kit.loadDoc(env, docName, null));
+  // The lines still to judge in this store: { line, key, work }.
+  const todo = (d) => {
+    const out = [];
+    if (!d) return out;
+    if (name === "library") for (const w of typed(d)) kept(w).forEach((l, i) => { if (!l.is) out.push({ line: l, key: `${w.id}#${kit.norm(l.text)}`, work: withKnown(kit, w) }); });
+    else if (name === "bank") for (const l of Array.isArray(d.lines) ? d.lines : []) { if (!l.is) out.push({ line: l, key: kit.norm(l.text), work: workOf(kit, lib, l.work, l.type) }); }
+    else for (const it of Array.isArray(d) ? d : []) {
+      if (it.is || it.state === "used" || it.state === "rejected") continue;
+      const src = it.source || {};
+      out.push({ line: { text: it.text, by: it.author || "", site: src.site || "" }, key: it.id || kit.norm(it.text), work: workOf(kit, lib, src.title, src.type) });
+    }
+    return out;
+  };
+  const first = name === "library" ? lib : await read();
+  const list = todo(first);
+  if (list.length) {
+    // Claude resting or unreachable: tried again on later runs; after three such runs, the pages' structure decides.
+    const verdict = await cleanBatch(env, kit, list, at.waits >= 3);
+    if (!verdict) { at.waits += 1; await save(env, kit, at, false); return { waiting: true }; }
+    at.waits = 0;
+    // Read again just before writing, so anything changed meanwhile is not lost; then apply the verdicts.
+    const d = await read();
+    let dropped = 0, judged = 0;
+    const apply = (key, keep) => { const v = verdict.get(key); if (!v) return true; if (v === "drop") { dropped += 1; return false; } judged += 1; keep(v); return true; };
+    if (d && name === "library") for (const w of typed(d)) {
+      const item = [...(d.books || []), ...(d.screen || [])].find((x) => x.id === w.id);
+      if (item && item.found && Array.isArray(item.found.lines)) item.found.lines = item.found.lines.filter((l) => l.is || apply(`${w.id}#${kit.norm(l.text)}`, (v) => { l.is = v; }));
+    }
+    else if (d && name === "bank") d.lines = d.lines.filter((l) => l.is || apply(kit.norm(l.text), (v) => { l.is = v; }));
+    else if (Array.isArray(d)) { const kept_ = d.filter((it) => it.is || apply(it.id || kit.norm(it.text), (v) => { it.is = v; })); d.length = 0; d.push(...kept_); }
+    if (d) await kit.saveDoc(env, docName, d);
+    at.dropped += dropped; at.judged += judged;
+    for (const [k, v] of Object.entries(verdict.refused || {})) at.refused[k] = (at.refused[k] || 0) + v;
+    if (todo(d).length) return save(env, kit, at, false);        // more in this store: the next run carries on
+  }
+  // This store is done: the next one (or the next day of suggestions).
+  if (name === "days" && at.day + 1 < SUGGESTION_DAYS) at.day += 1;
+  else at.phase += 1;
+  return save(env, kit, at, at.phase >= PHASES.length);
+}
+async function save(env, kit, at, done) {
+  await kit.saveDoc(env, "linegate", { v: CLEAN_V, phase: at.phase, day: at.day, done, refused: at.refused, dropped: at.dropped, judged: at.judged, waits: at.waits || 0, at: Date.now() });
+  if (done) cleanDone = true;
+  return { phase: PHASES[at.phase] || "done", dropped: at.dropped, judged: at.judged };
+}
+export const jobs = [
+  // Every half hour while there is something left to clean; once done, about once a month (one read).
+  { name: "lines-gate", get everyHours() { return cleanDone ? 24 * 30 : 0.5; }, run: (env, kit) => cleanJob(env, kit) },
+];
+export const runClean = cleanJob;                // for the tests
+
 // ---------------------------------------------------------------- for Nishith
 
 // GET /api/lookups (signed in): the whole record of looking things up: today's counts, which models were
@@ -1156,9 +1298,12 @@ export function merge(kit, lib, kind, id, into) {
 export const routes = {
   lookups: async (request, env, parts, kit) => {
     if (request.method !== "GET" || parts.length !== 1) return kit.fail(404, "Not found.");
-    const rec = (await kit.loadDoc(env, "lookups", null)) || {};
-    const trails = (Array.isArray(rec.trails) ? rec.trails : []).slice().reverse().map((t) => ({ ...t, said: sayTrail(t.steps, t.n), text: stepsText(t.steps) }));
+    const [rec0, clean] = await Promise.all([kit.loadDoc(env, "lookups", null), kit.loadDoc(env, "linegate", null)]);
+    const rec = rec0 || {};
+    const trails = (Array.isArray(rec.trails) ? rec.trails : []).slice().reverse().map((t) => ({ ...t, said: sayTrail(t.steps, t.n), text: [stepsText(t.steps), t.gate && t.gate.said ? `${t.gate.said}.` : ""].filter(Boolean).join(" ") }));
     return kit.json({ day: rec.day || "", gemini: rec.gemini || {}, openai: rec.openai || {}, models: rec.models || {}, last: rec.last || {}, sites: rec.sites || {}, trails,
-      keys: { gemini: !!env.GEMINI_API_KEY, openai: !!env.OPENAI_API_KEY } });
+      keys: { gemini: !!env.GEMINI_API_KEY, openai: !!env.OPENAI_API_KEY },
+      // The one-off clean-up of lines kept before the gate (said.js): counts only.
+      cleanup: clean ? { done: !!clean.done, at: clean.at || 0, store: PHASES[clean.phase] || "done", dropped: clean.dropped || 0, judged: clean.judged || 0, refused: clean.refused || {} } : null });
   },
 };

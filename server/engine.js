@@ -30,6 +30,7 @@ import * as tags from "./tags.js";
 import * as scorer from "./scorer.js";
 import * as findlines from "./findlines.js";
 import { providers } from "./opensearch.js";
+import * as saidGate from "./said.js";            // the gate: a line said in a work, never one said about it
 
 const DAY = 24 * 3600 * 1000;
 // id, starting weight, K: the evidence at which the part counts half its weight (0: always full weight).
@@ -547,7 +548,8 @@ async function discoverJob(env, kit) {
   const used = { gemini: bank.used.gemini || 0, openai: bank.used.openai || 0 };
   const got = await findlines.searchWeb(env, kit, next.text, 8, have, { allow, used, feature: "discover", open: openQuery(next.q) });
   const th = next.q.startsWith("theme:") || next.q.startsWith("new:") ? next.q.split(":").pop() : "";
-  const lines = got.lines.filter((l) => l.by || l.work).map((l) => ({ text: l.text, by: l.by, work: l.work || "", type: l.type || "classic", url: l.url, site: l.site, verify: l.verify, th, to: "", from: "discover", q: next.q, at: now }));
+  // (Every line has passed the gate in searchWeb, said.js: "is" says how it was judged.)
+  const lines = got.lines.filter((l) => l.by || l.work).map((l) => ({ text: l.text, by: l.by, work: l.work || "", type: l.type || "classic", url: l.url, site: l.site, verify: l.verify, th, to: "", from: "discover", q: next.q, at: now, ...(l.is ? { is: l.is } : {}) }));
   addLines(bank, lines);
   bank.used.gemini = used.gemini; bank.used.openai = used.openai;
   await kit.saveDoc(env, "engine/bank", bank);
@@ -567,6 +569,7 @@ const ECHO_SYSTEM = `You identify quotes. Each numbered line was read off a post
 For each line, say whether it is a real, published quote by a nameable person or from a nameable book, film or series (it may be slightly reworded or shortened on the post).
 Reply with a JSON array only: [{"n": 1, "known": true or false, "text": "the original wording, exactly as published", "author": "who wrote or said it", "work": "the book, film or series, or an empty string", "type": "book, film, series or classic"}]
 - "known" is false when you do not recognise the line for certain, when it seems to be the page's own writing, or when it is commonly misattributed and the real source is unknown. Never guess an author.
+- "known" is false too for words about a work rather than from it: a headline, a review, a plot summary, a tagline, an episode or chapter title.
 - Never invent wording. If you are not sure of the exact original wording, known is false.`;
 
 async function echoJob(env, kit) {
@@ -590,8 +593,11 @@ async function echoJob(env, kit) {
     const by = kit.oneLine(a && a.author, 80), text = kit.flatten(a && a.text).replace(/^["“”]+|["“”]+$/g, "");
     if (!b || !a.known || !by || !text || text.length < 15 || /unknown|anonymous|unattributed/i.test(by)) continue;
     if (b.handle && low(by).replace(/[^a-z0-9._]/g, "") === b.handle.replace(/[^a-z0-9._]/g, "")) continue;     // the page itself: its own writing
-    out.push({ text, by, work: kit.oneLine(a.work, 120), type: ["book", "film", "series"].includes(a.type) ? a.type : "classic", url: "", site: "", verify: true, th: "", to: "",
-      from: "echo", of: b.handle, shared: b.shared, at: now });
+    // The gate (said.js): Claude has just named who said it; words about a work are still never kept.
+    const work = kit.oneLine(a.work, 120), type = ["book", "film", "series"].includes(a.type) ? a.type : "classic";
+    if (!saidGate.isSaid({ text, by }, work ? { title: work, type } : null, { place: "helper" }).ok) continue;
+    out.push({ text, by, work, type, url: "", site: "", verify: true, th: "", to: "",
+      from: "echo", of: b.handle, shared: b.shared, at: now, is: "said" });
   }
   // One of them checked on the web: the exact wording as a page gives it, and sure when two sites agree.
   const allow = { gemini: env.GEMINI_API_KEY ? A_DAY.gemini : 0, openai: env.OPENAI_API_KEY ? A_DAY.openai : 0 };

@@ -20,6 +20,8 @@ const WORKS = [
   { id: "w2", title: "Twisted love", list: "books" },
   { id: "w3", title: "Interstellar", kind: "film", expect: { year: 2014 } },
   { id: "w4", title: "When Life Gives You Tangerines", kind: "series", expect: { year: 2025, country: "South Korean" } },
+  // The owner's report (15 Nov): a cited headline from its Wikipedia references was offered as its quote.
+  { id: "w5", title: "True Beauty", kind: "series", expect: { year: 2020, country: "South Korean" } },
 ];
 const only = process.argv.slice(2).join(" ").toLowerCase();
 const cut = (v, n = 200) => String(v ?? "").replace(/\s+/g, " ").slice(0, n);
@@ -119,7 +121,10 @@ async function one(w, kit) {
   console.log(`  -- trail: ${cut(it.found && it.found.trail && it.found.trail.said, 600)}`);
   for (const s of (it.found && it.found.trail && it.found.trail.steps) || []) console.log(`     step ${cut(JSON.stringify(s), 300)}`);
   console.log(`  -- ${found.length} lines kept (${calls - before} outside calls, ${Math.round((Date.now() - t0) / 100) / 10}s):`);
-  for (const l of found) console.log(`     "${cut(l.text, 200)}"${l.by ? " (" + l.by + ")" : ""}  <- ${cut(l.url, 140)}${l.verify ? " [to check]" : ""}`);
+  // The gate (server/said.js): what it refused, by reason, and how each kept line was judged (with no key here,
+  // Claude is never asked: only lines whose page shows by its structure that they are said in the work stay).
+  console.log(`  -- gate: ${cut(it.found && it.found.trail && it.found.trail.gate && it.found.trail.gate.said, 400) || "nothing to judge"}`);
+  for (const l of found) console.log(`     [${l.is || "not judged"}] "${cut(l.text, 200)}"${l.by ? " (" + l.by + ")" : ""}  <- ${cut(l.url, 140)}${l.verify ? " [to check]" : ""}`);
   return { title: w.title, type, identified: !!it.known, year: Number(k.year) || 0, country: k.country || "", kind: k.kind || "", lines: found.length,
     pages: [...new Set(found.map((l) => l.site))], expect: w.expect || null, n: out ? out.items.length : 0 };
 }

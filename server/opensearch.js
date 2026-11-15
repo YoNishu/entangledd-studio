@@ -15,6 +15,7 @@
    keyless results pages off (the keyed ones stay, when their settings exist). Only titles, public facts about a work
    and public lines are ever searched for: nothing about her. */
 import * as F from "./findlines.js";
+import * as S from "./said.js";
 
 const UA = "DsStudio/1.0 (personal quotes app; a few pages per search)";
 export const PAGE_BYTES = 400 * 1024;          // the most read from one page
@@ -100,9 +101,14 @@ export async function fetchCapped(env, state, url, { accept = "text/html", ms = 
 }
 
 // A web page as plain text: no scripts, styles or menus; blocks on lines of their own.
+// Where text sat stays readable: a heading becomes a line "== Heading ==" (so a line under "References" or
+// "Episodes" is known for one, said.js), and a page's list of references, its citations, its footnote marks
+// and its picture captions are left out: none of them is ever a line from the work.
 export function pageText(html) {
   return F.plain(String(html)
-    .replace(/<(script|style|noscript|svg|head|nav|footer|form|iframe)\b[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<(script|style|noscript|svg|head|nav|footer|form|iframe|figcaption|caption)\b[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<ol\b[^>]*class="[^"]*\breferences\b[^"]*"[^>]*>[\s\S]*?<\/ol>|<sup\b[^>]*class="[^"]*\breference\b[^"]*"[^>]*>[\s\S]*?<\/sup>|<cite\b[^>]*class="[^"]*\bcitation\b[^"]*"[^>]*>[\s\S]*?<\/cite>/gi, " ")
+    .replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (m, n, inner) => { const t = inner.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(); return t ? `\n== ${t} ==\n` : "\n"; })
     .replace(/<\/?(p|div|li|h[1-6]|blockquote|tr|section|article|figcaption|dd|dt)\b[^>]*>/gi, "\n"))
     .replace(/[ \t ]+/g, " ").replace(/\s*\n\s*/g, "\n").trim();
 }
@@ -398,21 +404,22 @@ const knownName = (names, who) => names.find((n) => n && who && squash(n) === sq
 // credits the line to that is not one of the work's (a known author on a mixed list page).
 export function extractLines(text, { names = [], list = false } = {}) {
   const out = [], seen = new Set();
-  const add = (raw, by = "", other = "") => {
+  const add = (raw, by = "", other = "", ctx = {}) => {
     if (out.length >= MAX_CANDIDATES || seen.has(raw)) return;
     seen.add(raw);
     const t = String(raw).replace(/\s+/g, " ").replace(/^\s*\[[^\]]{0,80}\]\s*/, "").replace(/^[\s"'“”‘’]+|[\s"'“”]+$/g, "").trim();
     const n = sameWords(t);
     if (!lineLike(t) || seen.has(n)) return;
     seen.add(n);
-    out.push({ text: t, by, other, fromPage: true });
+    out.push({ text: t, by, other, fromPage: true, ctx });
   };
   const all = String(text).slice(0, 150000);                    // enough for any page of quotes; keeps the computing small
+  const parts = S.partsOf(all);                                 // the page's headings: where each line sat (said.js)
   for (const m of quotedSpans(all)) {
     if (out.length >= MAX_CANDIDATES) break;
     const inner = m.inner;
     const before = all.slice(Math.max(0, m.index - 70), m.index).split("\n").pop();
-    const after = all.slice(m.end, m.end + 50).split("\n")[0];
+    const after = all.slice(m.end, m.end + 140).split("\n")[0];
     if (!spanOk(inner, after)) continue;
     const known = names.filter((n) => n && n.length >= 3 && before.includes(n)).pop() || "";
     // (Each pattern only where its marks are there at all: most quotes have no speaker around them.)
@@ -421,7 +428,7 @@ export function extractLines(text, { names = [], list = false } = {}) {
     const said = known || (b && !NOT_SPEAKERS.test(b[1]) ? b[1] : "") || (a && !NOT_SPEAKERS.test(a[1]) ? a[1] : "");
     const mine = knownName(names, said);
     // A name after a dash that is none of the work's: the line is credited to someone else.
-    add(inner, mine || (said && !(a && said === a[1]) ? said : ""), a && !mine && said === a[1] ? a[1] : "");
+    add(inner, mine || (said && !(a && said === a[1]) ? said : ""), a && !mine && said === a[1] ? a[1] : "", { ...S.around(all, parts, m.index, m.end), quoted: true });
   }
   // "Luan Nian: You don’t have to be perfect to be worthy of love." in the middle of a review: after a known name,
   // the sentence up to its end. One pass over the colons, each checked against the names (little computing).
@@ -436,21 +443,22 @@ export function extractLines(text, { names = [], list = false } = {}) {
       const who = squashed.find(([, q]) => before.endsWith(q));
       if (!who) continue;
       const said = /^\s*[“"]?([^\n:：“”"]{20,300}?[.!?…])(?=["”]?(?:\s|$))/.exec(all.slice(m.index + 1, m.index + 330));
-      if (said) add(said[1], who[0]);
+      if (said) add(said[1], who[0], "", S.around(all, parts, m.index + 1, m.index + 1 + said[0].length));
     }
   }
-  let heading = "", started = !list;
+  let heading = "", started = !list, at = -1;
   for (const line of all.split("\n")) {
+    at += line.length + 1;
     if (out.length >= MAX_CANDIDATES) break;
     const h = /^={2,6}\s*(.*?)\s*={2,6}\s*$/.exec(line);
     if (h) { heading = h[1]; started = true; continue; }
     if (!started) continue;                                      // a page's opening words say what the work is
     const s = SPOKEN.exec(line);
     if (s && !NOT_SPEAKERS.test(s[1])) {
-      add(s[2], knownName(names, s[1]) || s[1]);
+      add(s[2], knownName(names, s[1]) || s[1], "", { part: S.partAt(parts, at - line.length) });
       continue;
     }
-    if (list && !/[“"«「]/.test(line) && !/^(quoting|describing|referring|speaking|said|after|while|when he|when she|on |about )/i.test(line.trim())) add(line, /^(season|series|episode|part|chapter|dialogue|act|book|volume)\b/i.test(heading) || /\d/.test(heading) ? "" : heading);
+    if (list && !/[“"«「]/.test(line) && !/^(quoting|describing|referring|speaking|said|after|while|when he|when she|on |about )/i.test(line.trim())) add(line, /^(season|series|episode|part|chapter|dialogue|act|book|volume)\b/i.test(heading) || /\d/.test(heading) ? "" : heading, "", { part: heading, list: true });
   }
   // A piece of dialogue inside a longer quote is not a line of its own; of two wordings of one line ("worthy
   // love" and "worthy of love"), the one the page has more often stays, else the longer.
@@ -494,7 +502,8 @@ Reply with a JSON array only: [{"page": the number of the page, "text": "...", "
 - Keep a line only when the page itself presents it as a quote and says who says or wrote it, or which work it is from.
 - "by": the character or person the page credits it to. "from": the book, film or series the page says it is from, or "".
 - Never add a line that is not on the pages, never complete or correct one, never guess who said it.
-- If a work is named in the request, keep only lines the page credits to that work: not lines about the words of its title, and not lines from other works.`;
+- If a work is named in the request, keep only lines the page credits to that work: not lines about the words of its title, and not lines from other works.
+- A line is what a character says in the work, or the work's own words (a sentence of the book, a voice-over). Never words about the work: an article or reference title, a headline, a review or rating, a plot summary, a tagline, an episode or chapter title. If a page has no such line, pick nothing from it.`;
 
 // The pages as passages for Claude: a short page whole; from a long one, the parts around where the work (or
 // "near" words) are named, and its start.
@@ -519,7 +528,7 @@ export function agrees(have, n, pg) {
 // does); each is kept only if its words are on the page it names (quote marks, dashes and spaces aside), it is
 // new, and (when a work is asked about) the page names the work and the line is not credited to another work or
 // person. { lines, dropped, how }.
-export async function pickLines(env, kit, pages, { work = null, want = 8, have = new Set(), about = "", ask = "", near = [] }) {
+export async function pickLines(env, kit, pages, { work = null, want = 8, have = new Set(), about = "", ask = "", near = [], refused = {} }) {
   const dropped = {};
   const drop = (why, text = "", site = "") => { dropped[why] = (dropped[why] || 0) + 1; say(env, "rejected", { why, site, text: String(text).slice(0, 120) }); };
   if (!pages.length) return { lines: [], dropped, how: "" };
@@ -543,8 +552,13 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
     if (work && from && !F.fromThisWork(kit, work, from)) return drop("from another work", text, pg.site);
     if (work && q.other && !knownName(names, q.other)) return drop("credited to someone else", text, pg.site);
     if (!work && !credited && !(from && words[i].includes(sameWords(from)))) return drop("no one named for it", text, pg.site);
+    // The gate (said.js): a line said in the work, never one said about it. Where it sat on the page counts.
+    const place = pg.site === "mydramalist.com" ? "mdl" : "page";
+    const ctx = q.ctx ? { ...q.ctx, place } : S.contextOf(pg, text, place);
+    const said = S.isSaid({ text, by: credited }, work, ctx);
+    if (!said.ok) { S.count(refused, said.why); return say(env, "rejected", { why: "gate: " + said.why, site: pg.site, text: text.slice(0, 120) }); }
     lines.push({ text, by: credited, url: pg.url, site: pg.site, verify: !!work, theme: kit.oneLine(q.theme, 30), tone: kit.oneLine(q.tone, 20),
-      ...(!work && from ? { work: from, type: "classic" } : {}) });
+      ...(!work && from ? { work: from, type: "classic" } : {}), ctx });
     have.add(n);
     if (have.kept) have.kept.set(n, lines[lines.length - 1]);
   };
@@ -566,12 +580,12 @@ export async function pickLines(env, kit, pages, { work = null, want = 8, have =
       for (const q of got) { if (lines.length >= want) break; take(q, i); }
     });
   }
-  return { lines, dropped, how, tried };
+  return { lines, dropped, how, tried, refused };
 }
 
 // Lines from the snippets alone: only a quoted line that two results on different sites carry in the same
 // words, and (for a work) whose snippets name the work. Always marked to check.
-export function snippetLines(kit, list, work, have = new Set()) {
+export function snippetLines(kit, list, work, have = new Set(), refused = {}) {
   const seen = new Map();
   for (const r of list) {
     const words = `${r.title} ${r.snippet}`;
@@ -579,7 +593,9 @@ export function snippetLines(kit, list, work, have = new Set()) {
     for (const m of String(r.snippet).matchAll(/[“"]([^”"]{20,300})[”"]/g)) {
       const text = kit.flatten(m[1]).trim(), n = kit.norm(text);
       if (n.split(" ").length < 5 || have.has(n)) continue;
-      const e = seen.get(n) || { text, hosts: new Set(), url: r.url, site: r.host };
+      const sn = String(r.snippet), end = m.index + m[0].length;
+      const e = seen.get(n) || { text, hosts: new Set(), url: r.url, site: r.host,
+        ctx: { before: sn.slice(Math.max(0, m.index - 120), m.index), after: sn.slice(end, end + 140), place: "snippet", quoted: true } };
       e.hosts.add(r.host);
       seen.set(n, e);
     }
@@ -587,7 +603,9 @@ export function snippetLines(kit, list, work, have = new Set()) {
   const out = [];
   for (const [n, e] of seen) {
     if (e.hosts.size < 2) continue;
-    out.push({ text: e.text, by: "", url: kit.foundAt(e.url) || e.url, site: e.site, verify: true, theme: "", tone: "", snippet: true });
+    const said = S.isSaid(e.text, work, e.ctx);                    // the gate (said.js)
+    if (!said.ok) { S.count(refused, said.why); continue; }
+    out.push({ text: e.text, by: "", url: kit.foundAt(e.url) || e.url, site: e.site, verify: true, theme: "", tone: "", snippet: true, ctx: e.ctx });
     have.add(n);
   }
   return out;
@@ -609,6 +627,9 @@ export function queriesFor(work) {
   if (work.original) out.push(`"${work.original}" quotes lines`);
   return [...new Set(out)];
 }
+
+// The tally of lines the gate refused in one look-up (said.js), kept on its state for the trail.
+export const gateTally = (state) => (state.refused = state.refused || {});
 
 // For a work (findlines.js): results, the pages that name it, Claude's picks from them, and lines two snippets
 // agree on. Returns { lines, pages, dropped }. "work" holds only public facts.
@@ -632,12 +653,12 @@ export async function linesForWork(env, kit, work, state, { want = 10, have = ne
   let lines = [];
   if (pages.length) {
     state.spent += 4;
-    const got = await pickLines(env, kit, pages, { work, want, have, about, near: names });
+    const got = await pickLines(env, kit, pages, { work, want, have, about, near: names, refused: gateTally(state) });
     lines = got.lines;
     counts.tried = got.tried;
     for (const [k, v] of Object.entries(got.dropped)) dropped[k] = (dropped[k] || 0) + v;
   }
-  if (lines.length < want) lines = lines.concat(snippetLines(kit, list, work, have).slice(0, want - lines.length));
+  if (lines.length < want) lines = lines.concat(snippetLines(kit, list, work, have, gateTally(state)).slice(0, want - lines.length));
   return { lines, pages, dropped, counts };
 }
 
@@ -648,7 +669,7 @@ export async function linesFor(env, kit, state, query, { want = 8, have = new Se
   const pages = await readPages(env, kit, state, rank(list, near), 3);
   if (!pages.length) return { lines: [], dropped: {} };
   state.spent += 4;
-  return pickLines(env, kit, pages, { want, have, ask, near });
+  return pickLines(env, kit, pages, { want, have, ask, near, refused: gateTally(state) });
 }
 
 // ---------------------------------------------------------------- an address the book texts use (worker.js)
