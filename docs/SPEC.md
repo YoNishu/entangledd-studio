@@ -197,6 +197,7 @@ lifetime and a cleaner.
 | `drafts/<fileId>` | A background or music file as she chose it, for drafts and made reels; a reel uses it as it is (`bgKey`, `music.key` in `job.json`) | While a draft or made reel names it; else removed after a day |
 | `data/draft.json` | The current draft in Create (`{ id, of, updated, snap }`; last save wins) | One; 30 days after its last change |
 | `data/made.json` | Reels made from the app and what each was made from (`{ id, jobId, made, snap, about, posted, postId }`) | 20 not posted, 30 days each; posted ones 7 days; then only the post's record |
+| `data/drafts.json` | Unfinished reels set aside when she starts something else (`{ id, of, updated, snap }`); shown under Drafts in Posts, removed by `DELETE /api/drafts/saved/<id>`; `PUT /api/drafts/current` answers with the id it set aside | 10, each 30 days |
 | `slides/<id>.jpg` | Carousel pictures | 7 days |
 | `data/stockcache/`, `data/musiccache/` | Search results | 2 days, 8 days |
 | `auth/` | Wrong-passcode counts and markers, used Face ID challenges | 1 day |
