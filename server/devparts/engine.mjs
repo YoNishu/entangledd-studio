@@ -81,6 +81,8 @@ export async function handle(req, res, url, tools) {
   if (p.startsWith("/__gemini/") && req.headers["x-goog-api-key"] !== tools.env.GEMINI_API_KEY) return send(400, { error: { message: "API key not valid." } });
   if (p.startsWith("/__openai/") && req.headers.authorization !== "Bearer " + tools.env.OPENAI_API_KEY) return send(401, { error: { message: "Incorrect API key provided." } });
   if (mode.web === "off") return send(429, { error: { message: "You exceeded your current quota." } });
+  // A model that is gone (GEMINI=gone at start, as devparts/findlines.mjs plays it) is gone for these questions too.
+  if (process.env.GEMINI === "gone" && p.includes("/models/gemini-3.8-flash:")) return send(404, { error: { code: 404, status: "NOT_FOUND", message: "This model models/gemini-3.8-flash is no longer available to new users. Please update your code to use a newer model." } });
   const lines = mode.web === "empty" ? [] : webLines(prompt);
   const text = JSON.stringify(lines);
   if (p.startsWith("/__gemini/")) {

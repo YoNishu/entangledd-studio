@@ -86,8 +86,11 @@ T = login(); calls()
 s, b, _ = check_quote(T, "The moon keeps the minutes of the sea, they say.", "Edda Marlowe")
 rec = doc("lookups") or {}
 check("a refused Gemini key: the check still answers", s == 200 and b["basis"] == "memory", b)
-check("the refusal is recorded as such, and the second model is not tried", rec["gemini"].get("off") == "refused" and rec["last"]["gemini"]["what"] == "refused"
-      and len(to(calls(), "gemini")) == 1, rec)
+# (the list of models the key may use already shows the refusal, so no question is spent on it)
+check("the refusal is recorded as such, and no model is tried", rec["gemini"].get("off") == "refused" and rec["last"]["gemini"]["what"] == "refused"
+      and len(to(calls(), "gemini")) == 0, rec)
+check("and it is on the trail of the check, with the service's own words", rec["uses"]["check"]["what"] == "key refused" and "API key not valid" in rec["uses"]["check"]["said"]
+      and rec["trails"][-1]["type"] == "check", rec.get("uses"))
 
 # ---- OpenAI as the second helper
 serve("WEBSEARCH=unset", "OPENAI=on")

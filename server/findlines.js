@@ -17,7 +17,15 @@
    - a site that turns the app away (403, a "prove you are human" page, a page without quotes) simply has
      nothing today; that is written in data/lookups.json, where the health record can show it later;
    - nothing personal ever goes to Gemini or OpenAI: only the title, the kind of work, the author and how
-     many lines are wanted. */
+     many lines are wanted, and the public facts of the work (its year, country, original title, lead actors).
+
+   Before the first look at a work the app does not know yet, its title is checked (verify.js), so that every
+   question says which work is meant ("the 2026 Chinese TV series ... with ...") and a title that is also a
+   plain phrase does not bring back lines about the phrase. Every look leaves a trail: what each place
+   answered, step by step. The last trail is kept on the work and the last few in data/lookups.json; she sees
+   one plain sentence of it, Nishith all of it (GET /api/lookups and the health line "Looking things up"). */
+
+import * as V from "./verify.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 export const KEEP = 30;                 // lines kept for one work
@@ -27,6 +35,79 @@ const BUDGET = 26;                      // outside calls one request may spend o
 const SECONDS = 22;                     // no new place is started after this long, so her phone is never left waiting
 const PICK = 12;                        // lines Nishiii may pick from one page
 const UA = "DsStudio/1.0 (personal quotes app; one search and one page per title)";
+const HOUR = 60 * 60 * 1000;
+const RETRY_HOURS = [2, 12, 48];        // a look that found nothing is tried again after this long, then after 30 days
+const MODEL_DAYS = 7;                   // the models a key may use are asked again after this long
+const QUESTIONS = 3;                    // questions to Gemini and OpenAI together for one look at one work
+const TRAILS = 10;                      // trails kept in data/lookups.json (looks, title checks, checks, engine searches)
+
+// ---------------------------------------------------------------- the trail of one look
+
+// One step of a look: where, what came of it ("found", "no page", "wrong work", "blocked", "key refused",
+// "may not search", "no model", "no line passed", ...), and for the search helpers the model, the status and
+// the service's own short words (with anything shaped like a key cut out).
+export function step(state, where, what, more = {}) {
+  if (!state.trail) state.trail = [];
+  if (state.trail.length < 30) state.trail.push({ where, what, ...more });
+}
+// How the last search for each feature went ("lookup" for a work, "discover" and "echo" for the engine,
+// "check" for "Who said this?", "title" for the title check), in data/lookups.json: which helper, its outcome
+// ("found", "all rejected", "no answer", "key refused", "may not search", "no model", "used up", "limit",
+// "resting"), the model, the status and the service's words. The health line shows one line per feature.
+export const FEATURES = ["lookup", "discover", "echo", "check", "title"];
+export function noteUse(state, who, what, more = {}) {
+  if (!state.rec) return;
+  const feature = state.feature || "lookup";
+  state.rec.uses = state.rec.uses || {};
+  const prev = state.rec.uses[feature];
+  // Resting after a refusal says less than the refusal itself, which stays shown for the day.
+  if (what === "resting" && prev && prev.who === who && prev.what !== "found" && Date.now() - prev.at < DAY) return;
+  state.rec.uses[feature] = { at: Date.now(), who, what, ...more };
+  state.dirty = true;
+}
+// A service's own words, safe to keep: one line, short, without the keys it was sent and without anything
+// shaped like a key or an address for mail (the same rule as health.js's hide()).
+export function tidy(text, env = {}, max = 160) {
+  let out = String(text ?? "").replace(/\s+/g, " ").trim();
+  for (const v of [env.GEMINI_API_KEY, env.OPENAI_API_KEY, env.ANTHROPIC_API_KEY]) if (v && String(v).length >= 8) out = out.split(String(v)).join("[hidden]");
+  return out.replace(/[A-Za-z0-9_|%-]{24,}/g, "[hidden]").replace(/\S+@\S+\.\S+/g, "[hidden]").slice(0, max);
+}
+const PLACE_NAME = { wikiquote: "Wikiquote", goodreads: "Goodreads", imdb: "IMDb", gemini: "Google", openai: "OpenAI" };
+const TRIED = new Set(["found", "no page", "wrong work", "no line passed"]);
+const andList = (a) => (a.length < 2 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}`);
+// The trail in one plain sentence for her: "Looked on Wikiquote, IMDb and Google: nothing yet."
+export function sayTrail(steps, n = 0) {
+  const asked = [], couldNot = [];
+  for (const s of steps || []) {
+    const name = PLACE_NAME[s.where];
+    if (!name) continue;
+    if (TRIED.has(s.what) || s.what === "answered") { if (!asked.includes(name)) asked.push(name); }
+    else if (s.what !== "models" && !couldNot.includes(name)) couldNot.push(name);
+  }
+  const off = couldNot.filter((x) => !asked.includes(x));
+  const first = asked.length ? `Looked on ${andList(asked)}: ${n ? `found ${n}` : "nothing yet"}.` : n ? `Found ${n}.` : "Nothing could be asked yet.";
+  return off.length ? `${first} ${andList(off)} couldn't be asked this time.` : first;
+}
+// The trail in full, for Nishith: every step, with the service's own words.
+export function stepsText(steps) {
+  return (steps || []).map((s) => {
+    const name = { ...PLACE_NAME, gemini: "Gemini", title: "Title check" }[s.where] || s.where;
+    const bits = [s.q && `asked for ${s.q}`, s.model, s.status && `status ${s.status}`, Number.isFinite(s.n) && s.what === "found" && `${s.n} lines`,
+      s.list && s.list.join(", "), s.read && s.read.length && `read ${s.read.join(", ")}`, s.why, s.said && `"${s.said}"`].filter(Boolean);
+    return `${name}: ${s.what}${bits.length ? ` (${bits.join("; ")})` : ""}.`;
+  }).join(" ");
+}
+
+// ---------------------------------------------------------------- what the work is
+
+// The words of a title that name the work, without what people add to say what it is: "The early spring
+// cdrama" and "The Early Spring (2026)" are both "early spring".
+const KIND_WORDS = /\s+(c|k|j|thai|chinese|korean|japanese|taiwanese)?\s?(drama|dramas|tv series|tv show|series|show|web series|film|movie|novel|book)$/;
+export function coreTitle(kit, t) {
+  let out = kit.norm(String(t || "").replace(/\s*\((\d{4}|tv series|series|film|novel|book|drama)\)\s*$/i, "")).replace(/^(the|a|an) /, "");
+  for (let i = 0; i < 2; i++) out = out.replace(KIND_WORDS, "").replace(/\s+(19|20)\d\d$/, "").trim();
+  return out;
+}
 
 const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const kept = (work) => (work.found && Array.isArray(work.found.lines) ? work.found.lines : []);
@@ -38,7 +119,32 @@ const surnameOf = (kit, work) => (work.type === "book" && work.author ? kit.norm
 function withKnown(kit, work) {
   const k = work.known;
   if (!k || kit.norm(k.title) !== kit.norm(work.title)) return work;
-  return { ...work, author: work.author || (work.type === "book" ? k.by || "" : ""), year: Number(k.year) || 0 };
+  const list = (v, n) => (Array.isArray(v) ? v : []).map((x) => kit.oneLine(x, 80)).filter(Boolean).slice(0, n);
+  return { ...work, author: work.author || (work.type === "book" ? k.by || "" : ""), year: Number(k.year) || 0,
+    real: kit.oneLine(k.real || k.title, 120), original: kit.oneLine(k.original, 80), country: kit.oneLine(k.country, 40),
+    cast: list(k.cast, 3), aka: list(k.aka, 4) };
+}
+// Every name the work goes by: her title, its proper title, its original title and other titles.
+const namesOf = (work) => [work.title, work.real, work.original, ...(work.aka || [])].filter(Boolean);
+// Does what a search answer says a line is from name this work? A line about the phrase in the title (spring,
+// for "The Early Spring") is credited to no work, or to another one.
+export function fromThisWork(kit, work, from) {
+  const said = String(from || "").trim();
+  if (!said) return false;
+  const core = coreTitle(kit, said);
+  return namesOf(work).some((name) => {
+    if (!/[a-z0-9]/i.test(name)) return said.includes(name);          // a title in another script, such as 早春晴朗
+    const want = coreTitle(kit, name);
+    return !!want && (core === want || (want.split(" ").length >= 2 && ` ${core} `.includes(` ${want} `)));
+  });
+}
+const KIND_NAME_ = { book: "book", film: "film", series: "TV series" };
+// The work as every question names it: 'the 2026 Chinese TV series "The Early Spring" (早春晴朗), with Jing Boran
+// and Sun Qian'. Only public facts about the work.
+export function describe(work) {
+  const lead = [work.year || "", work.country || "", KIND_NAME_[work.type] || "work"].filter(Boolean).join(" ");
+  return `the ${lead} "${work.real || work.title}"${work.original ? ` (${work.original})` : ""}${work.type === "book" && work.author ? ` by ${work.author}` : ""}`
+    + `${work.type !== "book" && work.cast && work.cast.length ? `, with ${andList(work.cast.slice(0, 2))}` : ""}`;
 }
 
 // ---------------------------------------------------------------- 0. what the Library already holds
@@ -64,10 +170,15 @@ function due(work, have, share, now) {
   if (!f || !f.at) return true;
   if (now - f.at > LOOK_AGAIN_DAYS * DAY) return true;
   if (have >= share) return false;
+  // A look that found nothing at all is tried again soon, a few times, before it waits the 30 days.
+  if (!kept(work).length) return typeof f.resume === "number" || now >= retryAt(f);
   // Running short: look again at once if the last look had to stop early or still turned up something new,
   // otherwise tomorrow.
   return typeof f.resume === "number" || f.added > 0 || now - f.at > DAY;
 }
+
+// When a look that found nothing may be tried again: after 2 hours, then 12, then 48, then the 30 days.
+export const retryAt = (f) => (f.at || 0) + (RETRY_HOURS[Math.max(0, (f.tries || 1) - 1)] ?? LOOK_AGAIN_DAYS * 24) * HOUR;
 
 // ---------------------------------------------------------------- the small record of how the looking went
 
@@ -89,14 +200,15 @@ export const newState = (env, seconds = SECONDS) => ({ spent: 0, rec: null, dirt
 export async function closeRecord(env, kit, state) { if (state.rec && state.dirty) await saveRecord(env, kit, state); }
 export async function saveRecord(env, kit, state) { state.spent += 1; state.dirty = false; await kit.saveDoc(env, "lookups", state.rec); }
 // A site answered: with lines (why is empty) or without (why says what came back instead).
-export function noteSite(state, site, why) {
+export function noteSite(state, site, why, blocked = false) {
   const s = (state.rec.sites[site] = state.rec.sites[site] || {});
+  if (why) step(state, site, blocked ? "blocked" : /without quotes/.test(why) ? "no line passed" : "no answer", { why: String(why).slice(0, 80) });
   if (why) { s.failed = Date.now(); s.why = String(why).slice(0, 80); state.dirty = true; }
   else if (!s.ok || s.why) { s.ok = Date.now(); delete s.why; delete s.failed; state.dirty = true; }
 }
 // A site that turned the app away is left alone until tomorrow.
 export const resting = (state, site) => { const s = state.rec.sites[site]; return !!(s && s.blocked && Date.now() - s.failed < DAY); };
-export function noteBlocked(state, site, why) { noteSite(state, site, why); state.rec.sites[site].blocked = true; }
+export function noteBlocked(state, site, why) { noteSite(state, site, why, true); state.rec.sites[site].blocked = true; }
 export async function page(state, url, accept, ms = 8000) {
   state.spent += 1;
   return fetch(url, { headers: { "User-Agent": UA, Accept: accept, "Accept-Language": "en" }, signal: AbortSignal.timeout(ms) });
@@ -121,12 +233,15 @@ function tagFits(tag, type) {
 // The pages from a search that could be this work, best first. A page for another kind of work with the same
 // name (the novel when she asked for the film) is never one of them.
 function candidates(kit, results, work, not) {
-  const want = bare(kit, work.title), out = [];
+  const want = new Set(namesOf(work).map((n) => coreTitle(kit, n)).filter(Boolean)), out = [];
   results.forEach((r, rank) => {
     const m = /^(.*?)\s*\(([^)]*)\)\s*$/.exec(r.title || "");
     const base = m ? m[1] : r.title || "", tag = m ? m[2] : "";
-    if (bare(kit, base) !== want || not.includes(r.title)) return;
+    if (!want.has(coreTitle(kit, base)) || not.includes(r.title)) return;
     if (tag && !tagFits(tag, work.type)) return;
+    // A page for the same title in another year is another work.
+    const tagYear = Number((/\b(1[89]\d\d|20\d\d)\b/.exec(tag) || [])[1]) || 0;
+    if (work.year && tagYear && Math.abs(tagYear - work.year) > 1) return;
     out.push({ title: r.title, tagged: !!tag, year: !!work.year && tag.includes(String(work.year)), full: (r.size || 0) >= 3000, rank });
   });
   return out.sort((a, b) => (b.year - a.year) || (b.tagged - a.tagged) || (b.full - a.full) || (a.rank - b.rank));
@@ -186,7 +301,7 @@ function sectionAbout(kit, text, title) {
 async function wikiquotePage(env, kit, work, state) {
   const not = (work.found && work.found.not) || [];
   const search = await wikiquote(env, state, { action: "query", list: "search", srnamespace: "0", srlimit: "10",
-    srsearch: `${work.title}${work.type === "book" && work.author ? " " + work.author : ""}` });
+    srsearch: `${work.real || work.title}${work.type === "book" && work.author ? " " + work.author : ""}` });
   const results = (search.query && search.query.search) || [];
   let pick = candidates(kit, results, work, not)[0], section = false;
   if (!pick && work.type === "book" && work.author) {
@@ -221,12 +336,12 @@ const wall = (html) => /captcha|verify you are human|are you a robot|unusual tra
 // Goodreads: its own list of suggestions for a title, then that book's quotes page.
 async function goodreadsPage(env, kit, work, state) {
   const base = env.GOODREADS_SITE || "https://www.goodreads.com";
-  let res = await page(state, `${base}/book/auto_complete?format=json&q=${encodeURIComponent(work.title)}`, "application/json");
+  let res = await page(state, `${base}/book/auto_complete?format=json&q=${encodeURIComponent(work.real || work.title)}`, "application/json");
   if (!res.ok) return void noteBlocked(state, "goodreads", "search answered " + res.status);
   let list;
   try { list = JSON.parse(await res.text()); } catch (e) { return void noteBlocked(state, "goodreads", "search was not a list"); }
-  const want = bare(kit, work.title), surname = surnameOf(kit, work), not = (work.found && work.found.not) || [];
-  const book = (Array.isArray(list) ? list : []).find((b) => b && b.workId && bare(kit, b.bookTitleBare || String(b.title || "").replace(/\s*\([^)]*\)\s*$/, "")) === want
+  const want = new Set(namesOf(work).map((n) => coreTitle(kit, n)).filter(Boolean)), surname = surnameOf(kit, work), not = (work.found && work.found.not) || [];
+  const book = (Array.isArray(list) ? list : []).find((b) => b && b.workId && want.has(coreTitle(kit, b.bookTitleBare || String(b.title || "").replace(/\s*\([^)]*\)\s*$/, "")))
     && (!surname || kit.norm((b.author || {}).name).split(" ").includes(surname)) && !not.includes("goodreads:" + b.workId));
   if (!book) return null;                                   // no such book there: nothing wrong with the site
   const id = String(book.workId).replace(/\D/g, "");
@@ -255,17 +370,18 @@ async function goodreadsPage(env, kit, work, state) {
 // IMDb: its own list of suggestions for a title, then that title's quotes page.
 const IMDB_KINDS = { film: ["movie", "tvMovie", "video", "short"], series: ["tvSeries", "tvMiniSeries"] };
 async function imdbPage(env, kit, work, state) {
-  const typedYear = (/\((\d{4})\)\s*$/.exec(work.title) || [])[1], title = work.title.replace(/\s*\(\d{4}\)\s*$/, "");
+  const typedYear = (/\((\d{4})\)\s*$/.exec(work.title) || [])[1], title = (work.real || work.title).replace(/\s*\(\d{4}\)\s*$/, "");
   let res = await page(state, `${env.IMDB_SUGGEST || "https://v3.sg.media-imdb.com"}/suggestion/x/${encodeURIComponent(title.toLowerCase())}.json`, "application/json");
   if (!res.ok) return void noteBlocked(state, "imdb", "search answered " + res.status);
   let list;
   try { list = JSON.parse(await res.text()).d; } catch (e) { return void noteBlocked(state, "imdb", "search was not a list"); }
-  const want = bare(kit, title), not = (work.found && work.found.not) || [];
-  const same = (Array.isArray(list) ? list : []).filter((t) => t && /^tt\d+$/.test(t.id || "") && bare(kit, t.l) === want && IMDB_KINDS[work.type].includes(t.qid)
+  const want = new Set([title, ...namesOf(work)].map((n) => coreTitle(kit, n)).filter(Boolean)), not = (work.found && work.found.not) || [];
+  const same = (Array.isArray(list) ? list : []).filter((t) => t && /^tt\d+$/.test(t.id || "") && want.has(coreTitle(kit, t.l)) && IMDB_KINDS[work.type].includes(t.qid)
     && (!typedYear || String(t.y) === typedYear) && !not.includes("imdb:" + t.id));
   const near = work.year ? same.filter((t) => Math.abs(Number(t.y) - work.year) <= 1).sort((a, b) => Math.abs(a.y - work.year) - Math.abs(b.y - work.year)) : [];
-  const hit = near[0] || same[0];
-  if (!hit) return null;
+  // With the year known (from the title check), a title of another year is another work.
+  const hit = work.year && !typedYear ? near[0] : near[0] || same[0];
+  if (!hit) { if (same.length) step(state, "imdb", "wrong work", { why: `only titles of other years (${same.map((t) => t.y).join(", ")})` }); return null; }
   res = await page(state, `${env.IMDB_SITE || "https://www.imdb.com"}/title/${hit.id}/quotes/`, "text/html");
   if (res.status !== 200) return void noteBlocked(state, "imdb", "quotes page answered " + res.status);
   const html = (await res.text()).slice(0, 3_000_000);
@@ -334,80 +450,227 @@ async function pickFrom(env, kit, work, pg, about, taste, have, state) {
 // ---------------------------------------------------------------- 3 and 4. Gemini and OpenAI, searching the web
 
 const KIND_NAME = { book: "book", film: "film", series: "TV series" };
-// Everything the two are told: the title, the kind of work, the author and how many lines. Nothing about her.
-const question = (work, want) => `Search the web for real quotes from the ${KIND_NAME[work.type]} "${work.title}"${work.type === "book" && work.author ? ` by ${work.author}` : ""}.
-Read pages that quote the work itself: quote pages (Goodreads, Wikiquote, IMDb, fan wikis), transcripts, reviews and articles.
-Reply with a JSON array only, no other text, of up to ${want} items:
-[{"text": "the line, word for word as the page has it", "by": "the character who says it, or the author for a book", "page": "the address of the page it is on", "also": "the address of a second page on another site that gives the same wording, or an empty string"}]
-Keep a line only when a page you read gives its wording and says it is from this work. Never fill gaps from memory and never guess. One to three sentences each, under 45 words. If you find nothing real, reply with [].`;
+const EAST = /^(chinese|korean|south korean|japanese|taiwanese|thai|hong kong|filipino|vietnamese)$/i;
+// What every question asks for, and the rules for each line.
+const ANSWER_SHAPE = (want) => `Reply with a JSON array only, no other text, of up to ${want} items:
+[{"text": "the line, word for word as the page has it", "by": "the character who says it, or the author for a book", "from": "the title of the work the page says the line is from", "page": "the address of the page it is on", "also": "the address of a second page on another site that gives the same wording, or an empty string"}]
+Keep a line only when a page you read gives its wording and says it is from this work. Lines about the words of the title, or from other works, are not wanted. Never fill gaps from memory and never guess. One to three sentences each, under 45 words. If you find nothing real, reply with [].`;
+// Where to read. A new work is quoted on social posts and fan blogs long before the quote sites have it.
+function whereToRead(work) {
+  const drama = work.type === "series" && EAST.test(work.country || "");
+  const fresh = !work.year || work.year >= new Date().getUTCFullYear() - 2;
+  return `Read pages that quote the work itself: quote pages (Goodreads, Wikiquote, IMDb${drama ? ", MyDramaList" : ""}, fan wikis), transcripts, reviews and articles${fresh ? ", and posts on Instagram, Pinterest, Tumblr and fan blogs" : ""}.`;
+}
+// Everything the two are told: the work, its public facts and how many lines. Nothing about her. Three ways of
+// asking: for its quotes; under its original title; for its best lines and dialogue.
+export const question = (work, want, shape = "quotes") => {
+  const d = describe(work);
+  const first = shape === "dialogue" ? `Search the web for the best lines and dialogue from ${d}.`
+    : shape === "original" ? `Search the web for English quotes from ${d}. Search under its original title "${work.original}" too.`
+    : `Search the web for real quotes from ${d}.`;
+  return `${first}\n${whereToRead(work)}\n${ANSWER_SHAPE(want)}`;
+};
+const SHAPE_SAID = { quotes: "its quotes", original: "its original title", dialogue: "its best lines" };
 
 export const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
-// Turns an answer into lines. "read" are the pages the service says it really read, "behind(n)" the ones it
-// says stand behind a piece of the answer. A page the model only names counts when it is on a site that was
-// read; a line with no read page behind it is left out. A line is sure only when two sites agree on it.
-function webLines(kit, said, read, behind, have) {
-  if (!read.length) return [];                    // nothing was read on the web: an answer from memory is not kept
+const sameSite = (host, site) => !!host && !!site && (host === site || host.endsWith("." + site) || site.endsWith("." + host));
+// The site a page Google read is on. Its links pass through Google (vertexaisearch.cloud.google.com), so the
+// site comes from the page's title, which is usually the site's own name ("instagram.com", or "Instagram").
+const BRANDS = { instagram: "instagram.com", pinterest: "pinterest.com", tumblr: "tumblr.com", facebook: "facebook.com", youtube: "youtube.com",
+  tiktok: "tiktok.com", reddit: "reddit.com", x: "x.com", twitter: "x.com", threads: "threads.net", quora: "quora.com", medium: "medium.com",
+  goodreads: "goodreads.com", wikiquote: "wikiquote.org", wikipedia: "wikipedia.org", imdb: "imdb.com", mydramalist: "mydramalist.com",
+  fandom: "fandom.com", "rotten tomatoes": "rottentomatoes.com", "azquotes": "azquotes.com", "brainyquote": "brainyquote.com", douban: "douban.com", weibo: "weibo.com" };
+export function siteOfChunk(c) {
+  for (const v of [c.domain, c.title]) {
+    const t = String(v || "").trim().toLowerCase().replace(/^www\./, "");
+    if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(t)) return t;
+    if (BRANDS[t]) return BRANDS[t];
+  }
+  const host = hostOf(c.uri);
+  return /(^|\.)google\.com$|(^|\.)googleusercontent\.com$/.test(host) ? "" : host;
+}
+
+// Turns an answer into lines. "read" are the pages the service says it really read ({ uri, site }, the site ""
+// when it could not be told), "behind(n)" the ones it says stand behind a piece of the answer. A line counts
+// when a read page stands behind it, or when the page the model names is on a site that was read. A line with
+// no read page behind it is left out; so is one the answer does not credit to this work (when a work is
+// asked about). A line is sure only when two sites agree on it; otherwise it is marked to check.
+// Returns { lines, dropped }: "dropped" counts the lines left out, by reason, for the trail.
+function webLines(kit, said, read, behind, have, work = null) {
+  const dropped = {};
+  const drop = (why) => { dropped[why] = (dropped[why] || 0) + 1; };
+  if (!read.length) { drop("no page was read"); return { lines: [], dropped }; }   // an answer from memory is not kept
   let answer;
-  try { answer = kit.parseJson(said); } catch (e) { return []; }
-  const lines = [];
+  try { answer = kit.parseJson(said); } catch (e) { drop("an answer that was not a list"); return { lines: [], dropped }; }
+  const lines = [], told = read.filter((r) => r.site);
   for (const q of Array.isArray(answer) ? answer : []) {
     const text = kit.flatten(q && q.text).replace(/^"+|"+$/g, ""), n = kit.norm(text);
-    if (text.length < 20 || text.length > 400 || have.has(n)) continue;
+    if (text.length < 20 || text.length > 400) { drop("too short or too long"); continue; }
+    if (have.has(n)) { drop("already kept"); continue; }
+    if (work && !fromThisWork(kit, work, q.from)) { drop("not said to be from this work"); continue; }
     const pages = behind(n);
-    const named = [q.page, q.also].map((u) => kit.foundAt(u)).filter((u) => u && read.some((r) => hostOf(u) === r.site || hostOf(u).endsWith("." + r.site)));
-    if (!pages.length && !named.length) continue;
-    const sites = new Set([...pages.map((p) => p.site), ...named.map(hostOf)]);
-    lines.push({ text, by: kit.oneLine(q.by, 80), url: named[0] || pages[0].uri, site: named[0] ? hostOf(named[0]) : pages[0].site, verify: sites.size < 2, theme: "", tone: "",
+    const urls = [q.page, q.also].map((u) => kit.foundAt(u)).filter((u) => u && !/(^|\.)google\.com$/.test(hostOf(u)));
+    const named = urls.filter((u) => told.some((r) => sameSite(hostOf(u), r.site)));
+    if (!pages.length && !named.length) { drop("no page behind it"); continue; }
+    // The page to show: one the model names on a site that was read; else a page behind the line (when Google
+    // did not say its site, the page the model names tells it, still to be checked).
+    let url = named[0], site = named[0] ? hostOf(named[0]) : "";
+    if (!url) {
+      const p = pages.find((x) => x.site);
+      if (p) { url = urls.find((u) => sameSite(hostOf(u), p.site)) || p.uri; site = p.site; }
+      else if (urls[0]) { url = urls[0]; site = hostOf(urls[0]); }
+      else url = pages[0].uri;
+    }
+    const sites = new Set([...pages.map((p) => p.site).filter(Boolean), ...named.map(hostOf)]);
+    lines.push({ text, by: kit.oneLine(q.by, 80), url, site, verify: sites.size < 2, theme: "", tone: "",
       ...(q.work ? { work: kit.oneLine(q.work, 120), type: ["book", "film", "series"].includes(q.type) ? q.type : "classic" } : {}) });
     have.add(n);
   }
-  return lines;
+  return { lines, dropped };
 }
+
+// ---------------------------------------------------------------- which models to ask
+
+// The newest flash models a Gemini key may use for generateContent, newest first (flash before flash-lite).
+const versionOf = (name) => Number((/-(\d+(?:\.\d+)?)-/.exec(name) || [])[1]) || 0;
+export function pickGemini(models) {
+  const names = (Array.isArray(models) ? models : []).filter((m) => m && (m.supportedGenerationMethods || []).includes("generateContent"))
+    .flatMap((m) => [m.baseModelId, String(m.name || "").replace(/^models\//, "")]).map((n) => String(n || ""))
+    .filter((n) => /^gemini-\d+(\.\d+)?-flash(-lite)?$/.test(n));
+  return [...new Set(names)].sort((a, b) => versionOf(b) - versionOf(a) || a.endsWith("-lite") - b.endsWith("-lite")).slice(0, 3);
+}
+// OpenAI: the models it offers, in the app's order of preference (cheapest that can search first); failing
+// those, the newest general GPT models it lists.
+export const OPENAI_PREFER = ["gpt-6-luna", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra"];
+export function pickOpenAI(models) {
+  const list = (Array.isArray(models) ? models : []).filter((m) => m && typeof m.id === "string");
+  const ids = new Set(list.map((m) => m.id));
+  const liked = OPENAI_PREFER.filter((id) => ids.has(id));
+  const other = list.filter((m) => /^gpt-\d+(\.\d+)?(-[a-z]+)?$/.test(m.id) && !/(realtime|image|audio|transcribe|tts|search|cyber|live|codex|chat|mini|nano)/.test(m.id) && !liked.includes(m.id))
+    .sort((a, b) => (b.created || 0) - (a.created || 0)).map((m) => m.id);
+  return [...liked, ...other].slice(0, 3);
+}
+const SETTING = { gemini: "GEMINI_MODEL", openai: "OPENAI_MODEL" };
+const names = (v) => String(v || "").split(",").map((m) => m.trim()).filter((m) => /^[a-z0-9.-]+$/i.test(m)).slice(0, 3);
+// Reads the list of models a key may use. Costs nothing and asks nothing. { list, status, said }.
+export async function listModels(env, who, ms = 8000) {
+  const res = who === "gemini"
+    ? await fetch(`${env.GEMINI_API || "https://generativelanguage.googleapis.com"}/v1beta/models?pageSize=1000`, { headers: { "x-goog-api-key": env.GEMINI_API_KEY }, signal: AbortSignal.timeout(ms) })
+    : await fetch(`${env.OPENAI_API || "https://api.openai.com"}/v1/models`, { headers: { Authorization: "Bearer " + env.OPENAI_API_KEY }, signal: AbortSignal.timeout(ms) });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) return { list: [], status: res.status, said: serviceSaid(text, env) };
+  let data = {};
+  try { data = JSON.parse(text); } catch (e) { return { list: [], status: res.status, said: "a list that could not be read" }; }
+  return { list: who === "gemini" ? pickGemini(data.models) : pickOpenAI(data.data), status: res.status, said: "" };
+}
+// The models to try, in order: the setting when there is one; else the ones the key may use, as asked within the
+// last week (the one that last worked first); else asked now; failing that, the built-in names.
+async function modelsFor(env, kit, state, who, fallback) {
+  if (env[SETTING[who]]) return { list: names(env[SETTING[who]]) };
+  const rec = state.rec, kept = (rec.models || {})[who];
+  if (kept && Array.isArray(kept.list) && kept.list.length && Date.now() - kept.at < MODEL_DAYS * DAY) {
+    return { list: [...new Set([kept.worked, ...kept.list].filter((m) => m && kept.list.includes(m)))] };
+  }
+  state.spent += 1;
+  let got;
+  try { got = await listModels(env, who); }
+  catch (e) { got = { list: [], status: 0, said: e && e.name === "TimeoutError" ? "no answer in time" : "could not be reached" }; }
+  if (got.list.length) {
+    rec.models = { ...(rec.models || {}), [who]: { list: got.list, at: Date.now() } };
+    state.dirty = true;
+    step(state, who, "models", { list: got.list });
+    return { list: got.list };
+  }
+  const how = got.status ? classify(who, got.status, got.said) : "no answer";
+  step(state, who, how === "key refused" ? how : "models unknown", { status: got.status || undefined, said: got.said || undefined, why: how === "key refused" ? undefined : "the built-in names are tried" });
+  if (how === "key refused") return { refused: true, status: got.status, said: got.said };
+  return { list: names(fallback) };
+}
+// The service's own short words about a refusal: its error message, tidied.
+function serviceSaid(text, env) {
+  let m = "";
+  try { const j = JSON.parse(text); m = (j.error && (j.error.message || j.error.status)) || j.message || ""; } catch (e) { m = String(text || "").replace(/<[^>]*>/g, " "); }
+  return tidy(m, env);
+}
+// What a refusal means: "used up" (the allowance), "key refused", "may not search" (this model, or this plan,
+// may not use the search tool: the next model is tried), "no model" (not offered: the next is tried), or
+// "no answer" (the service is unwell).
+function classify(who, status, said) {
+  const s = String(said || "");
+  if (status === 429) return "used up";
+  if (status === 401 || (status === 400 && /api[ _]?key/i.test(s))) return "key refused";
+  if ((status === 403 || status === 400) && /search|ground|tool/i.test(s)) return "may not search";
+  if (status === 403) return "key refused";
+  if (status === 404 || (status === 400 && /model/i.test(s))) return "no model";
+  if (status === 400) return "may not search";
+  return "no answer";
+}
+const OFF = { "used up": "used up", "key refused": "refused", "may not search": "may not search", "no model": "no model" };
 // Asks one of the two, trying its models in order. Counts every question against the day's limit first.
-// A refusal (the allowance is used up, the key is not accepted, the plan does not include searching) means
-// "not today": nothing more is asked of it until tomorrow. How the last question went is kept in "last", which
-// the health record shows (probes.js). Answers null when nothing came back.
-async function ask(env, kit, state, who, models, send, read) {
+// A refusal (the allowance is used up, the key is not accepted, no model may search) means "not today":
+// nothing more is asked of it until tomorrow. Every answer and refusal goes on the trail; how the last
+// question went is kept in "last" for the health record (probes.js). Answers null when nothing came back.
+async function ask(env, kit, state, who, fallback, send, read) {
   const rec = await openRecord(env, kit, state), use = rec[who];
   const outcome = (what) => { rec.last[who] = { at: Date.now(), what }; state.dirty = true; };
-  if (use.off) return null;
-  for (const model of String(models).split(",").map((m) => m.trim()).filter((m) => /^[a-z0-9.-]+$/i.test(m)).slice(0, 2)) {
-    if (use.calls >= A_DAY[who]) { outcome("limit"); return null; }
+  const limit = () => { outcome("limit"); step(state, who, "not asked", { why: `the app's limit of ${A_DAY[who]} a day` }); noteUse(state, who, "limit"); return null; };
+  if (use.off) { step(state, who, "not asked", { why: `resting until tomorrow: ${use.off}` }); noteUse(state, who, "resting", { why: use.off }); return null; }
+  if (use.calls >= A_DAY[who]) return limit();
+  const models = await modelsFor(env, kit, state, who, fallback);
+  if (models.refused) { use.off = "refused"; outcome("refused"); noteUse(state, who, "key refused", { status: models.status, said: models.said }); return null; }
+  let last = "";
+  for (const model of models.list) {
+    if (use.calls >= A_DAY[who]) return limit();
     use.calls += 1;
     await saveRecord(env, kit, state);               // counted before asking, so a question that never returns still counts
     let res;
     state.spent += 1;
-    try { res = await send(model); } catch (e) { outcome("no answer"); return null; }
-    // Google answers a key it does not know with 400, the same status as for a model that may not search.
-    const badKey = res.status === 400 && /api[ _]?key/i.test(await res.clone().text().catch(() => ""));
-    if ((res.status === 404 || res.status === 400) && !badKey) continue;     // this model is not offered, or may not search: try the next one
-    if (res.status === 429 || res.status === 401 || res.status === 403 || badKey) {
-      use.off = res.status === 429 ? "used up" : "refused"; outcome(use.off); return null;
+    try { res = await send(model); }
+    catch (e) {
+      const why = e && e.name === "TimeoutError" ? "no answer in time" : "could not be reached";
+      outcome("no answer"); step(state, who, "no answer", { model, why }); noteUse(state, who, "no answer", { model, why }); return null;
     }
-    if (!res.ok) { outcome("no answer"); return null; }
-    try { const got = read(await res.json()); outcome("worked"); return got; } catch (e) { outcome("no answer"); return null; }
+    if (res.ok) {
+      try {
+        const got = read(await res.json());
+        outcome("worked");
+        const m = (rec.models || {})[who];
+        if (m && m.worked !== model) { m.worked = model; state.dirty = true; }
+        noteUse(state, who, got.read.length ? "answered" : "all rejected", { model, ...(got.read.length ? {} : { why: "it read no page" }) });
+        return { ...got, model };
+      } catch (e) { outcome("no answer"); step(state, who, "no answer", { model, status: res.status, why: "an answer that could not be read" }); noteUse(state, who, "no answer", { model, why: "an answer that could not be read" }); return null; }
+    }
+    const said = serviceSaid(await res.text().catch(() => ""), env);
+    const how = classify(who, res.status, said);
+    step(state, who, how, { model, status: res.status, said });
+    noteUse(state, who, how, { model, status: res.status, said });
+    if (how === "no answer") { outcome("no answer"); return null; }
+    if (how === "used up" || how === "key refused") { use.off = OFF[how]; outcome(use.off); return null; }
+    last = how;                                       // this model may not search, or is not offered: the next one
   }
-  if (use.calls < A_DAY[who]) { use.off = "no model"; outcome("no model"); }
+  if (last && use.calls < A_DAY[who]) {
+    use.off = OFF[last]; outcome(use.off);
+    // None of the models worked: the list is asked again next time.
+    if (last === "no model" && rec.models && rec.models[who]) delete rec.models[who];
+  }
   return null;
 }
 
-// Gemini with Google Search. Google changes which models a key may search with (the 2.5 models are kept only
-// for keys that used them before), so the setting GEMINI_MODEL (one name, or two with a comma) can replace this
-// list without a change to the app.
+// Gemini with Google Search. The models are asked of Google (above); GEMINI_MODEL (one name, or up to three
+// with commas) can replace them without a change to the app, and these are tried when the list can't be read.
 export const GEMINI_MODELS = "gemini-3.8-flash,gemini-3.5-flash-lite";
-// One question to Gemini with Google Search: { said, read, behind } (the answer, the pages read, and for a
-// piece of the answer the pages behind it), or null.
+// One question to Gemini with Google Search: { said, read, behind, model } (the answer, the pages read, and
+// for a piece of the answer the pages behind it), or null.
 export function geminiSearch(env, kit, state, prompt, ms = 20000) {
-  const siteOf = (c) => { const t = String(c.title || "").trim().toLowerCase().replace(/^www\./, ""); return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(t) ? t : hostOf(c.uri); };
-  return ask(env, kit, state, "gemini", env.GEMINI_MODEL || GEMINI_MODELS,
+  return ask(env, kit, state, "gemini", GEMINI_MODELS,
     (model) => fetch(`${env.GEMINI_API || "https://generativelanguage.googleapis.com"}/v1beta/models/${model}:generateContent`, {
       method: "POST", headers: { "x-goog-api-key": env.GEMINI_API_KEY, "Content-Type": "application/json" }, signal: AbortSignal.timeout(ms),
       body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0.2 } }) }),
     (data) => {
       const cand = (data.candidates || [])[0] || {}, meta = cand.groundingMetadata || {};
-      const said = (((cand.content || {}).parts) || []).map((p) => p.text || "").join("");
+      const said = (((cand.content || {}).parts) || []).filter((p) => !p.thought).map((p) => p.text || "").join("");
       // The pages Google says were read. Its links to them pass through Google, so the site's name comes from the title.
-      const read = (meta.groundingChunks || []).map((c) => (c && c.web) || {}).map((c) => ({ uri: kit.foundAt(c.uri), site: siteOf(c) }));
+      const read = (meta.groundingChunks || []).map((c) => (c && c.web) || {}).map((c) => ({ uri: kit.foundAt(c.uri), site: siteOfChunk(c) }));
       const behind = (n) => {
         const at = new Set();
         for (const s of meta.groundingSupports || []) {
@@ -416,17 +679,13 @@ export function geminiSearch(env, kit, state, prompt, ms = 20000) {
         }
         return [...at].map((i) => read[i]);
       };
-      return { said, read: read.filter((r) => r.uri && r.site), behind };
+      return { said, read: read.filter((r) => r.uri), behind, queries: (meta.webSearchQueries || []).slice(0, 4).map((q) => kit.oneLine(q, 80)) };
     });
 }
-async function fromGemini(env, kit, work, want, have, state, text = question(work, want)) {
-  const got = await geminiSearch(env, kit, state, text);
-  return got ? webLines(kit, got.said, got.read, got.behind, have) : [];
-}
-// OpenAI with its web search tool (the Responses API). OPENAI_MODEL can replace the list, as for Gemini.
+// OpenAI with its web search tool (the Responses API). OPENAI_MODEL can replace the models, as for Gemini.
 export const OPENAI_MODELS = "gpt-6-luna,gpt-6.1-terra";
 export function openaiSearch(env, kit, state, prompt, ms = 25000) {
-  return ask(env, kit, state, "openai", env.OPENAI_MODEL || OPENAI_MODELS,
+  return ask(env, kit, state, "openai", OPENAI_MODELS,
     (model) => fetch(`${env.OPENAI_API || "https://api.openai.com"}/v1/responses`, {
       method: "POST", headers: { Authorization: "Bearer " + env.OPENAI_API_KEY, "Content-Type": "application/json" }, signal: AbortSignal.timeout(ms),
       body: JSON.stringify({ model, input: prompt, tools: [{ type: "web_search" }], tool_choice: "required", include: ["web_search_call.action.sources"], store: false }) }),
@@ -438,57 +697,100 @@ export function openaiSearch(env, kit, state, prompt, ms = 25000) {
       const cited = parts.flatMap((c) => (c.annotations || []).filter((a) => a.type === "url_citation").map((a) => ({ uri: kit.foundAt(a.url), site: hostOf(a.url), about: kit.norm(String(c.text || "").slice(a.start_index, a.end_index)) })));
       const opened = out.filter((o) => o.type === "web_search_call").flatMap((o) => (o.action && o.action.sources) || []).map((s) => ({ uri: kit.foundAt(s.url), site: hostOf(s.url) }));
       const behind = (n) => cited.filter((c) => c.uri && c.about && (c.about.includes(n) || (c.about.length >= 20 && n.includes(c.about))));
-      return { said, read: [...cited, ...opened].filter((r) => r.uri && r.site), behind };
+      const queries = out.filter((o) => o.type === "web_search_call").flatMap((o) => (o.action && (o.action.queries || [o.action.query])) || []).filter(Boolean).slice(0, 4).map((q) => kit.oneLine(q, 80));
+      return { said, read: [...cited, ...opened].filter((r) => r.uri && r.site), behind, queries };
     });
 }
-async function fromOpenAI(env, kit, work, want, have, state, text = question(work, want)) {
-  const got = await openaiSearch(env, kit, state, text);
-  return got ? webLines(kit, got.said, got.read, got.behind, have) : [];
+// One question about a work to one of the two, with the outcome on the trail.
+async function fromHelper(env, kit, who, work, want, have, state, shape = "quotes") {
+  const got = await (who === "gemini" ? geminiSearch : openaiSearch)(env, kit, state, question(work, want, shape));
+  if (!got) return [];
+  const { lines, dropped } = webLines(kit, got.said, got.read, got.behind, have, work);
+  const why = Object.entries(dropped).map(([k, v]) => `${v} ${k}`).join(", ");
+  noteUse(state, who, lines.length ? "found" : "all rejected", { model: got.model, n: lines.length, ...(why ? { why } : {}) });
+  step(state, who, lines.length ? "found" : "no line passed", { q: SHAPE_SAID[shape], model: got.model, n: lines.length,
+    read: [...new Set(got.read.map((r) => r.site || "a page Google did not name"))].slice(0, 5), ...(why ? { why } : {}) });
+  return lines;
 }
 
 // ---------------------------------------------------------------- the whole search for one request
 
+// Should the title be checked before this look? When the app does not know the work yet: never checked, or
+// checked more than a day ago without a result (and no "Did you mean ...?" waiting for her answer).
+const needsKnowing = (work) => !work.known && !work.maybe && (!work.titleChecked || Date.now() - work.titleChecked > DAY);
+
 // Looks one work up, place after place until there are enough lines, and returns what to keep on it.
 // A look that runs out of time or of calls stops there, and the next one carries on at the place it stopped.
-async function lookUp(env, kit, work, need, about, taste, state) {
-  work = withKnown(kit, work);
+// What the title check learns is put on "item" itself (known, maybe, titleChecked), for keep() to save.
+async function lookUp(env, kit, item, need, about, taste, state) {
+  state.trail = [];
+  state.feature = "lookup";
+  if (needsKnowing(item) && state.spent + 4 <= (state.budget || BUDGET)) {
+    try { Object.assign(item, await V.checkTitle(env, kit, item, item.type, state)); }
+    catch (e) { if (e instanceof kit.UserError && e.status !== 502) throw e; step(state, "title", "no answer", { why: tidy(e && e.message, env, 80) }); }
+  }
+  const work = withKnown(kit, item);
   const have = new Set(kept(work).map((l) => kit.norm(l.text)));
   const prior = work.found || {};
   let lines = [], where = "";
   // Reading a page: finds it, has Nishiii pick from it, and copes quietly when the site is unreachable.
   const read = async (site, find) => {
     await openRecord(env, kit, state);
-    if (resting(state, site)) return;
+    if (resting(state, site)) return void step(state, site, "not asked", { why: "it turned the app away earlier today" });
+    const before = state.trail.length;
     try {
       const pg = await find(env, kit, work, state);
-      if (!pg) return;
+      if (!pg) { if (state.trail.length === before) step(state, site, "no page", { why: `no page for ${work.real || work.title}` }); return; }
       const got = await pickFrom(env, kit, work, pg, about, taste, have, state);
       if (got.length) noteSite(state, site, "");
       if (got.length && !where) where = pg.name;
+      step(state, site, got.length ? "found" : "no line passed", { n: got.length, ...(got.length ? {} : { why: "no line on the page was picked" }) });
       lines = lines.concat(got);
     } catch (e) {
       if (e instanceof kit.UserError && e.status !== 502) throw e;      // Nishiii is switched off or at the day's limit: say so
       if (e.blocked) noteBlocked(state, site, e.blocked);
       else if (!(e instanceof kit.UserError)) noteSite(state, site, e.name === "TimeoutError" ? "no answer in time" : "could not be reached");
+      else step(state, site, "no answer", { why: "Nishiii could not read the page just now" });
     }
   };
   const more = () => Math.min(PICK, need - lines.length + 3);
+  const helper = (who, shape) => ({ cost: 3, name: who, look: async () => { lines = lines.concat(await fromHelper(env, kit, who, work, more(), have, state, shape)); } });
+  // The questions to the search helpers: each way of asking to Gemini, then to OpenAI, at most three in all.
+  const shapes = ["quotes", ...(work.original ? ["original"] : []), "dialogue"];
+  const helpers = [["gemini", env.GEMINI_API_KEY], ["openai", env.OPENAI_API_KEY]].filter(([, key]) => key).map(([who]) => who);
+  const asks = shapes.flatMap((shape) => helpers.map((who) => helper(who, shape))).slice(0, QUESTIONS);
   const places = [
-    { cost: 6, look: () => read("wikiquote", wikiquotePage) },
+    { cost: 6, name: "wikiquote", look: () => read("wikiquote", wikiquotePage) },
     // Goodreads and IMDb ask that robots don't read their pages; this step can be switched off with QUOTE_SITES=off.
-    { cost: 6, off: env.QUOTE_SITES === "off", look: () => read(work.type === "book" ? "goodreads" : "imdb", work.type === "book" ? goodreadsPage : imdbPage) },
-    { cost: 3, off: !env.GEMINI_API_KEY, look: async () => { lines = lines.concat(await fromGemini(env, kit, work, more(), have, state)); } },
-    { cost: 3, off: !env.OPENAI_API_KEY, look: async () => { lines = lines.concat(await fromOpenAI(env, kit, work, more(), have, state)); } },
+    { cost: 6, name: work.type === "book" ? "goodreads" : "imdb", off: env.QUOTE_SITES === "off", look: () => read(work.type === "book" ? "goodreads" : "imdb", work.type === "book" ? goodreadsPage : imdbPage) },
+    ...asks,
   ];
   let resume;
   for (let i = typeof prior.resume === "number" && Date.now() - prior.at < DAY ? prior.resume : 0; i < places.length && lines.length < need; i++) {
     if (places[i].off) continue;
-    if (state.spent + places[i].cost > (state.budget || BUDGET) || Date.now() - state.began > state.limit) { resume = i; break; }
+    const late = Date.now() - state.began > state.limit;
+    if (late || state.spent + places[i].cost > (state.budget || BUDGET)) {
+      resume = i;
+      step(state, places[i].name, "not asked", { why: late ? "out of time for now: the next look carries on here" : "out of calls for now: the next look carries on here" });
+      break;
+    }
     await places[i].look();
   }
-  const out = { ...prior, at: Date.now(), added: lines.length, resume, page: where || prior.page || "", lines: [...kept(work), ...lines].slice(-KEEP) };
+  const all = [...kept(work), ...lines].slice(-KEEP);
+  const steps = state.trail.slice();
+  const out = { ...prior, at: Date.now(), added: lines.length, resume, page: where || prior.page || "", lines: all,
+    tries: all.length ? 0 : (prior.tries || 0) + 1, trail: { at: Date.now(), said: sayTrail(steps, lines.length), steps } };
   if (resume === undefined) delete out.resume;
+  keepTrail(state, work, steps, lines.length);
   return out;
+}
+// The last few trails, in data/lookups.json, for Nishith.
+export function keepTrail(state, work, steps, n) {
+  if (!state.rec) return;
+  const list = Array.isArray(state.rec.trails) ? state.rec.trails : [];
+  list.push({ title: String(work.title || "").slice(0, 120), type: work.type, at: Date.now(), n, steps });
+  state.rec.trails = list.slice(-TRAILS);
+  state.dirty = true;
 }
 
 // Real lines for the works she named. "works" are Library items with a "type" (book, film or series);
@@ -529,7 +831,10 @@ async function keep(env, kit, lib, looked) {
   for (const work of looked) {
     for (const from of [now, lib]) {
       const item = [...(from.books || []), ...(from.screen || [])].find((x) => x.id === work.id);
-      if (item) item.found = work.found;
+      if (!item) continue;
+      item.found = work.found;
+      // What the title check learnt on the way, unless she changed the title meanwhile.
+      if (work.titleChecked && kit.norm(item.title) === kit.norm(work.title)) for (const k of ["titleChecked", "known", "maybe"]) if (k in work) item[k] = work[k];
     }
   }
   await kit.saveDoc(env, "library", now);
@@ -569,8 +874,9 @@ export async function refreshOne(env, kit, lib, { budget = 14, need = 10 } = {})
   const works = typed(lib).filter((w) => w.title);
   const never = works.filter((w) => !w.found || !w.found.at);
   const resumed = works.filter((w) => w.found && typeof w.found.resume === "number");
+  const retry = works.filter((w) => w.found && w.found.at && !kept(w).length && typeof w.found.resume !== "number" && now >= retryAt(w.found)).sort((a, b) => a.found.at - b.found.at);
   const old = works.filter((w) => w.found && w.found.at && now - w.found.at > LOOK_AGAIN_DAYS * DAY).sort((a, b) => a.found.at - b.found.at);
-  const work = never[0] || resumed[0] || old[0];
+  const work = never[0] || resumed[0] || retry[0] || old[0];
   if (!work) return null;
   const state = { spent: 2, rec: null, dirty: false, began: now, limit: (Number(env.LOOKUP_SECONDS) || SECONDS) * 1000, budget };
   work.found = await lookUp(env, kit, work, need, "", null, state);
@@ -582,14 +888,21 @@ export async function refreshOne(env, kit, lib, { budget = 14, need = 10 } = {})
 // as the look-ups above (a line is kept only with a page that was really read behind it; sure only when two
 // sites agree). "prompt" must hold nothing about her: only themes, titles, authors or a public line's words.
 // "allow" caps the questions this caller may put to each today ({ gemini, openai }), counted in "used".
-export async function searchWeb(env, kit, prompt, want, have, { allow = { gemini: 0, openai: 0 }, used = {} } = {}) {
-  const state = { spent: 0, rec: null, dirty: false, began: Date.now(), limit: 60000 };
+export async function searchWeb(env, kit, prompt, want, have, { allow = { gemini: 0, openai: 0 }, used = {}, feature = "discover" } = {}) {
+  const state = { spent: 0, rec: null, dirty: false, began: Date.now(), limit: 60000, feature, trail: [] };
   let lines = [];
-  for (const [who, key, from] of [["gemini", "GEMINI_API_KEY", fromGemini], ["openai", "OPENAI_API_KEY", fromOpenAI]]) {
+  for (const [who, key, search] of [["gemini", "GEMINI_API_KEY", geminiSearch], ["openai", "OPENAI_API_KEY", openaiSearch]]) {
     if (lines.length >= want || !env[key] || (used[who] || 0) >= (allow[who] || 0)) continue;
     used[who] = (used[who] || 0) + 1;
-    lines = lines.concat(await from(env, kit, null, want - lines.length, have, state, prompt));
+    const got = await search(env, kit, state, prompt);
+    if (!got) continue;
+    const { lines: more, dropped } = webLines(kit, got.said, got.read, got.behind, have);
+    const why = Object.entries(dropped).map(([k, v]) => `${v} ${k}`).join(", ");
+    noteUse(state, who, more.length ? "found" : "all rejected", { model: got.model, n: more.length, ...(why ? { why } : {}) });
+    step(state, who, more.length ? "found" : "no line passed", { model: got.model, n: more.length, ...(why ? { why } : {}) });
+    lines = lines.concat(more);
   }
+  if (state.rec && state.trail.length) keepTrail(state, { title: `(${feature})`, type: feature }, state.trail, lines.length);
   if (state.dirty) await saveRecord(env, kit, state);
   return { lines, spent: state.spent };
 }
@@ -602,3 +915,50 @@ export function setAside(work) {
   const f = work.found || {};
   work.found = { at: 0, added: 0, page: "", lines: [], not: [...(f.not || []), f.page].filter(Boolean).slice(-6) };
 }
+
+// "Look again", from the Library row: one work looked up now, whatever was found before (at most once a
+// minute for a work). Answers the Library with what was found on it.
+export async function lookAgain(env, kit, lib, kind, id) {
+  const item = (lib[kind] || []).find((x) => x.id === id);
+  if (!item) throw new kit.UserError(404, "That's no longer on the list.");
+  const f = item.found || {};
+  if (f.at && Date.now() - f.at < 60 * 1000) throw new kit.UserError(429, "Nishiii looked a moment ago. Try again in a minute.");
+  const work = { ...item, type: kind === "books" ? "book" : item.kind };
+  if (work.found) { delete work.found.resume; work.found.at = 0; }
+  const state = newState(env);
+  work.found = await lookUp(env, kit, work, 10, "", null, state);
+  await closeRecord(env, kit, state);
+  await keep(env, kit, lib, [work]);
+  return work.found;
+}
+// Two Library entries for one work ("The early spring" and "The early spring cdrama"): the second is folded
+// into the first, her choice, never on its own. Its found lines, facts and her own lines saved "from" it move over.
+export function merge(kit, lib, kind, id, into) {
+  const list = lib[kind] || [];
+  const from = list.find((x) => x.id === id), to = list.find((x) => x.id === into);
+  if (!from || !to || from === to) throw new kit.UserError(404, "That's no longer on the list.");
+  if (coreTitle(kit, from.title) !== coreTitle(kit, to.title)) throw new kit.UserError(409, "Those two are different works.");
+  const lines = [...kept(to), ...kept(from)], seen = new Set();
+  const all = lines.filter((l) => { const n = kit.norm(l.text); if (seen.has(n)) return false; seen.add(n); return true; }).slice(-KEEP);
+  if (all.length || from.found) to.found = { ...(to.found || from.found || {}), lines: all, at: Math.max((to.found || {}).at || 0, (from.found || {}).at || 0) };
+  if (!to.known && from.known) to.known = { ...from.known, title: to.title };
+  if (!to.author && from.author) to.author = from.author;
+  for (const q of lib.quotes || []) if (q.from && kit.norm(q.from) === kit.norm(from.title)) q.from = to.title;
+  lib[kind] = list.filter((x) => x !== from);
+  return lib;
+}
+
+// ---------------------------------------------------------------- for Nishith
+
+// GET /api/lookups (signed in): the whole record of looking things up: today's counts, which models were
+// chosen, how each site last answered, and the last few trails in full. It holds no key and nothing of hers
+// but the titles she asked about.
+export const routes = {
+  lookups: async (request, env, parts, kit) => {
+    if (request.method !== "GET" || parts.length !== 1) return kit.fail(404, "Not found.");
+    const rec = (await kit.loadDoc(env, "lookups", null)) || {};
+    const trails = (Array.isArray(rec.trails) ? rec.trails : []).slice().reverse().map((t) => ({ ...t, said: sayTrail(t.steps, t.n), text: stepsText(t.steps) }));
+    return kit.json({ day: rec.day || "", gemini: rec.gemini || {}, openai: rec.openai || {}, models: rec.models || {}, last: rec.last || {}, sites: rec.sites || {}, trails,
+      keys: { gemini: !!env.GEMINI_API_KEY, openai: !!env.OPENAI_API_KEY } });
+  },
+};

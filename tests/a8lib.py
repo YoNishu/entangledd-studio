@@ -3,14 +3,25 @@ Built on a6lib; every test starts a fresh server. Every work named in these test
 import time
 from a6lib import *
 
-def add_book(T, title, author=""):
+def mark_checked(wid):
+    """As the Library does at once for a title she adds: its title is checked (here: as if nothing was found), so
+    a look-up does not check it again first. Tests of the check before a look pass checked=False."""
+    lib = doc("library")
+    for x in lib["books"] + lib["screen"]:
+        if x["id"] == wid: x["titleChecked"] = int(time.time() * 1000)
+    putdoc("library", lib)
+def add_book(T, title, author="", checked=True):
     s, b, _ = http("POST", "/api/library/books", {"title": title, "author": author}, T)
     assert s == 200, (s, b)
-    return b["books"][-1]["id"]
-def add_screen(T, title, kind):
+    wid = b["books"][-1]["id"]
+    if checked: mark_checked(wid)
+    return wid
+def add_screen(T, title, kind, checked=True):
     s, b, _ = http("POST", "/api/library/screen", {"title": title, "kind": kind}, T)
     assert s == 200, (s, b)
-    return b["screen"][-1]["id"]
+    wid = b["screen"][-1]["id"]
+    if checked: mark_checked(wid)
+    return wid
 def ask(T, ids, count=5, about=None):
     """Asks for quotes from those Library items. Returns (status, the new quotes or the error text)."""
     before = {i["id"] for i in (http("GET", "/api/asked", token=T)[1] or {}).get("items", [])}
