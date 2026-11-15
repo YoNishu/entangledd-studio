@@ -201,8 +201,9 @@ async function anthropic(req, res, url, tools) {
       m("claude-haiku-6", "Claude Haiku 6", "2027-02-15T00:00:00Z"), m("claude-sonnet-5-5", "Claude Sonnet 5.5", "2026-09-21T00:00:00Z")] });
   }
   // A real question while the old model is gone: the old model is refused, the newer one answers
-  // (through the built-in pretend Claude, which only knows the old name).
-  if (req.method === "POST" && url.pathname === "/__anthropic/v1/messages" && mode.modelGone === "yes" && !req.headers["x-dev-forwarded"]) {
+  // (through the built-in pretend Claude, which only knows the old name). A request another stand-in passes
+  // on to the built-in one ("?plain") has been through here already.
+  if (req.method === "POST" && url.pathname === "/__anthropic/v1/messages" && mode.modelGone === "yes" && !req.headers["x-dev-forwarded"] && !url.searchParams.has("plain")) {
     const body = JSON.parse((await tools.readBody(req)).toString() || "{}");
     if (body.model !== NEWER) return send(res, 404, { type: "error", error: { type: "not_found_error", message: `model: ${body.model}` } });
     if (mode.newModelPlain === "yes" && body.output_config) {
@@ -255,7 +256,8 @@ export async function handle(req, res, url, tools) {
     if (p.startsWith("/__media/")) { ops.outside += 1; ops.what.push(`media ${req.method} ${p}`); }
     return false;
   }
-  if (!req.headers["x-dev-forwarded"]) {
+  // (A call one stand-in passes on to another, marked by a header or by "?plain", is the same call: counted once.)
+  if (!req.headers["x-dev-forwarded"] && !url.searchParams.has("plain")) {
     log.push({ service, method: req.method, path: p.replace(/^\/__\w+/, "") });
     ops.outside += 1; ops.what.push(`${service} ${req.method} ${p.replace(/^\/__\w+/, "")}`);
   }
