@@ -109,6 +109,39 @@ check(`none of the ${earlier.length} lines the earlier tests keep from real revi
 const wqPage = extractLines("Interstellar is a 2014 science fiction film about astronauts and a wormhole near Saturn.\n== Cooper ==\nMankind was born on Earth. It was never meant to die here.\n[to Murph] I don't care much for this, pretending we're back where we started.\n== Season 1 ==\nA line under a season heading, with nobody named.", { list: true });
 check("Wikiquote's own lines all pass, as its own list", wqPage.length === 3 && wqPage.every((l) => isSaid(l, film, { ...l.ctx, place: "quotes" }).ok), wqPage);
 
+// ---- 2b. real cases, as the pages had them on 15 Nov 2026: a film (Interstellar) and a book (Twisted Love)
+const FILM_PAGE = `Interstellar is a 2014 epic science fiction film directed by Christopher Nolan.
+== Plot ==
+In the near future, humanity faces extinction due to dust storms and widespread crop blights.
+== Reception ==
+Scott Foundas of Variety said the film is "as visually and conceptually audacious as anything Nolan has yet done." James Berardinelli called Interstellar "an amazing achievement."
+== Taglines ==
+"Mankind's next step will be our greatest."
+== References ==
+^ Fernandez, Jay A. (March 28, 2007). "Writer with real stars in his eyes". Los Angeles Times. Retrieved May 14, 2014.
+^ Fleming, Michael (June 14, 2006). "Space chase pic on Par launch pad". Variety. Retrieved October 1, 2014.
+^ Lawson, Richard (December 11, 2024). "So, Is 'Interstellar' a Masterpiece or Not?". Vanity Fair. Retrieved April 22, 2026.
+^ Clery, Daniel (November 6, 2014). "Physicist who inspired Interstellar spills the backstory—and the scene that makes him cringe". sciencemag.org. Retrieved December 31, 2015.`;
+const filmFound = extractLines(FILM_PAGE, { names: [...film.cast, ...film.characters] });
+check("film: the old reader takes Wikipedia's reference titles for Interstellar's lines too (the same hole)", filmFound.some((l) => l.text === "Writer with real stars in his eyes"), filmFound.map((l) => l.text));
+const filmPass = filmFound.filter((l) => isSaid(l, film, { ...l.ctx, place: "page" }).ok);
+cases += filmFound.length;
+check(`film: none of the ${filmFound.length} candidates on its Wikipedia page passes (references, tagline, reception)`, filmFound.length >= 4 && filmPass.length === 0, filmPass.map((l) => l.text));
+refused("film: the plot's first sentence, where it sat", "In the near future, humanity faces extinction due to dust storms and widespread crop blights.", film, { part: "Plot", place: "page" }, "a synopsis");
+refused("film: a reference title that names the film, even with nothing around it", "Inside 'Interstellar,' Christopher Nolan's emotional space odyssey", film, { place: "helper" });
+for (const [by, text] of [["Cooper", "This world's a treasure, but it's been telling us to leave for a while now."], ["Cooper", "Once you're a parent, you're the ghost of your children's future."],
+  ["Amelia Brand", "Love is the one thing that transcends time and space."], ["TARS", "I have a cue light I can use to show you when I'm joking, if you like."],
+  ["Cooper", "Murphy's law doesn't mean that something bad will happen. It means that whatever can happen will happen."]]) {
+  kept(`film: Wikiquote's line, on its page (${by})`, { text, by }, film, { place: "quotes" });
+  kept(`film: the same line from a search answer, with no page around it (${by})`, { text, by }, film, { place: "helper" });
+}
+for (const text of ["If you wanted, I would burn down the world for you.", "If you let lesser people determine your self-worth, you'll never reach higher than their limited imagination.",
+  "You don't have to work overtime to get people to love you, Ava. Love isn't earned, it's given.", "That's my girl. Hate me. Don't cry over me. Never cry over me. I'm not worth it.",
+  "I'd do anything for you. No matter how twisted or impossible.", "Consider it a lesson for the future. Pretty words and pretty faces don't equal pretty souls."]) {
+  kept(`book: Goodreads' line "${text.slice(0, 30)}...", on its page`, { text, by: "Ana Huang" }, book, { place: "quotes" });
+  kept(`book: the same line from a search answer`, { text, by: "Ana Huang" }, book, { place: "helper" });
+}
+
 // ---- 3. two search snippets that carry the same headline are no line either
 const snip = snippetLines(kit, [
   { url: "https://a.example/tb", host: "a.example", title: "True Beauty (2020) cast", snippet: 'Kwak (December 16, 2020). "K-dramas based on webtoons hailed by TV viewers". The Korea Times. True Beauty with Moon Ga-young' },
