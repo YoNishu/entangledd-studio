@@ -97,7 +97,13 @@ const kit = {
 
 // A new running copy of the server code, with its own memory (as a fresh start on Cloudflare has).
 let copies = 0;
-const copy = (root = REPO) => import(pathToFileURL(`${root}/server/lovenotes.js`).href + `?copy=${++copies}`);
+// Each copy starts as the app did before any delivery: what server/sealed.js holds today is sealed for the
+// real app's key, which nothing here has. (asDeployed keeps whatever that copy's own file holds.)
+const copy = async (root = REPO, asDeployed = false) => {
+  const made = await import(pathToFileURL(`${root}/server/lovenotes.js`).href + `?copy=${++copies}`);
+  if (!asDeployed) made.setDeliveries([]);
+  return made;
+};
 const box = await import(pathToFileURL(`${REPO}/server/sealbox.js`).href);
 
 const said = [];                     // every answer the server gave, as text
@@ -433,7 +439,7 @@ group("a deliveries file that isn't a list");
     await writeFile(`${dir}/server/sealed.js`, `export const SEALED = ${text};\n`);
     await mkdir(`${dir}/${i}/server`, { recursive: true });
     for (const f of ["lovenotes.js", "sealbox.js", "sealed.js"]) await cp(`${dir}/server/${f}`, `${dir}/${i}/server/${f}`);
-    try { loaded.push((await copy(`${dir}/${i}`)).jobs.length); } catch (e) { loaded.push("did not start: " + e.message); }
+    try { loaded.push((await copy(`${dir}/${i}`, true)).jobs.length); } catch (e) { loaded.push("did not start: " + e.message); }
   }
   ok(loaded.join() === "0,0,1", "the server still starts: null and a bare string mean no deliveries; in a mixed list only the text entries count", loaded);
   await rm(dir, { recursive: true, force: true });

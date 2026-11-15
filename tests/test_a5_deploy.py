@@ -8,7 +8,7 @@ will do it after the first deploy.
   4. the delivery is opened with nobody around (timed job), and the key address says so
 The other tests swap the deliveries through a hook; this one goes through the file itself, read
 when the server starts. It works on a COPY of the repo in /tmp, never on the worktree.
-Only made-up notes and a throwaway key. Uses port its own port; stops its server at the end.
+Only made-up notes and a throwaway key. Uses its own port; stops its server at the end.
 Run: python3 tests/test_a5_deploy.py"""
 import where as _W
 import json, os, re, shutil, subprocess, time
@@ -32,7 +32,7 @@ def start():
         if subprocess.run(["fuser", f"{PORT}/tcp"], capture_output=True).returncode != 0: break
         time.sleep(0.2)
     log = open(f"{_W.OUT}/deploy.log", "w")
-    subprocess.Popen(["node", "server/dev.mjs"], cwd=COPY, stdout=log, stderr=log, env={**os.environ, "PORT": str(PORT), "DEV_MEDIA": f"{_W.MEDIA}"})
+    subprocess.Popen(["node", "server/dev.mjs"], cwd=COPY, stdout=log, stderr=log, env={**os.environ, "DEV_SEALED": "file", "PORT": str(PORT), "DEV_MEDIA": f"{_W.MEDIA}"})
     for _ in range(40):
         try:
             if raw("GET", "/api/status")[0] == 200: return
@@ -66,7 +66,12 @@ try:
     shutil.rmtree(COPY, ignore_errors=True); os.makedirs(COPY)
     files = subprocess.run(["git", "ls-files"], capture_output=True, text=True, cwd=REPO, check=True).stdout
     subprocess.run(f"git ls-files -z | tar --null -T - -c | tar -x -C {COPY}", shell=True, cwd=REPO, check=True)
-    ok("server/sealed.js" in files and open(f"{COPY}/server/sealed.js").read().strip().endswith("export const SEALED = [];"), "the repo starts with no deliveries in server/sealed.js")
+    # The copy starts as the repo did before any delivery (the real file may hold real deliveries by now;
+    # they are sealed for the real app's key and are none of this rehearsal's business). Only the copy is changed.
+    sealed = open(f"{COPY}/server/sealed.js").read()
+    emptied = re.sub(r"export const SEALED = \[.*?\];", "export const SEALED = [];", sealed, flags=re.S)
+    open(f"{COPY}/server/sealed.js", "w").write(emptied)
+    ok("server/sealed.js" in files and emptied.strip().endswith("export const SEALED = [];"), "the copy starts with no deliveries in server/sealed.js")
 
     # ---------------- 1. live, no deliveries ----------------
     print("the first deploy: no deliveries yet")

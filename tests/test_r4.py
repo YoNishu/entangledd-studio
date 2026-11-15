@@ -30,7 +30,7 @@ with sync_playwright() as p:
     print("asked chips:", pg.locator("#asked-list .chip.info").count(), "of", cards.count(), "cards")
     pg.screenshot(path=S+"71_today_asked.png")
     # ---- author on/off
-    pg.locator("#asked-list .card", has_text="Interstellar").first.locator("text=Use this").click(); pg.wait_for_timeout(400)
+    pg.locator("#asked-list .card", has_text="From the film Interstellar").first.locator("text=Use this").click()   # a card that names who said it; pg.wait_for_timeout(400)
     pg.click("#tab-text"); pg.wait_for_timeout(200)
     blocks=lambda: [x["text"] for x in json.loads(pg.evaluate("localStorage.getItem('entangledd.draft.v1')"))["blocks"]]
     print("author row visible:", pg.evaluate("!document.getElementById('author-row').hidden"), "| blocks:", blocks())

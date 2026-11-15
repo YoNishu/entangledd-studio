@@ -1,5 +1,5 @@
 """"Check everything" in Settings, as she and Nishith see it on an iPhone-sized screen.
-Run: python3 tests/test_a3_ui.py   (starts its own fresh server on port its own port; screenshots in $STUDIO_OUT/shots)"""
+Run: python3 tests/test_a3_ui.py   (starts its own fresh server on its own port; screenshots in $STUDIO_OUT/shots)"""
 import where as _W
 import os, subprocess
 from playwright.sync_api import sync_playwright

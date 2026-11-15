@@ -9,7 +9,13 @@
 //                             can prove that no note was ever in it
 //   GET /__notes_ops          every storage read and write since this was last asked ("get data/x.json", ...),
 //                             so a test can prove that a quiet job really touches nothing
+//
+// The stand-in starts with no deliveries, whatever server/sealed.js holds: a real delivery is sealed for the
+// real app's key, which the stand-in never has, so it could only ever be counted as "couldn't be opened".
+// DEV_SEALED=file keeps the file's deliveries (for acting out a deploy from a copy of the repo).
 import { setDeliveries } from "../lovenotes.js";
+
+if (process.env.DEV_SEALED !== "file") setDeliveries([]);
 
 const realNow = Date.now.bind(Date);
 let shift = 0;

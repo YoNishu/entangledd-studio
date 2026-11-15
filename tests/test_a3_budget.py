@@ -1,6 +1,6 @@
 """What each timed run and each request of the health section costs: storage operations and outside calls, counted together.
 Cloudflare's free plan allows 50 per run; the aim for a health job is about 20, and the open address may cost one read and nothing else.
-Run: python3 tests/test_a3_budget.py   (starts its own fresh servers on port its own port)"""
+Run: python3 tests/test_a3_budget.py   (starts its own fresh servers on its own port)"""
 import where as _W
 import subprocess
 from a3lib import *

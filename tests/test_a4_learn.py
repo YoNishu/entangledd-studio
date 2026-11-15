@@ -1,5 +1,5 @@
 """Agent 4: the scorer learns silently, goes live by itself, ranks, keeps a wildcard and variety, and steps back.
-Run: python3 tests/test_a4_learn.py   (restarts the server on port its own port for every case)"""
+Run: python3 tests/test_a4_learn.py   (restarts the server on its own port for every case)"""
 import random
 from a4lib import *
 

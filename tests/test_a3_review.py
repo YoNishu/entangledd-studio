@@ -4,7 +4,7 @@
   - records that are damaged or the wrong shape can't trip the open address or stop the checks for good;
   - timers that never start are raised;
   - the open address answers odd requests without spending anything.
-Run: python3 tests/test_a3_review.py   (starts its own fresh servers on port its own port)"""
+Run: python3 tests/test_a3_review.py   (starts its own fresh servers on its own port)"""
 import where as _W
 import json, subprocess
 from a3lib import *

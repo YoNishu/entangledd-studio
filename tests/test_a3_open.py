@@ -1,5 +1,5 @@
 """The open address /api/health: tells little, leaks nothing, never calls outside; and the signed-in checkup's limits.
-Run: python3 tests/test_a3_open.py   (starts its own fresh servers on port its own port)"""
+Run: python3 tests/test_a3_open.py   (starts its own fresh servers on its own port)"""
 import where as _W
 import subprocess
 from a3lib import *

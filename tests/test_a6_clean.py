@@ -56,7 +56,7 @@ check("and deletes nothing", not any(w.startswith("delete") for w in cost2["what
 # Through the app itself: a wrong passcode leaves a count, and the cleaner removes it a day later.
 http("POST", "/api/login", {"passcode": "wrong"})
 tries = [k for k in keys("auth/")]
-check("a wrong passcode leaves a small count in storage", len(tries) == 2, tries)      # this one and challenge-new
+check("a wrong passcode leaves a small count and a marker in storage", len(tries) == 3 and len([k for k in tries if k.startswith("auth/try/")]) == 1, tries)      # the address's count, the hour's marker, and challenge-new
 age("auth/", 30)
 run_only("upkeep-clean")
 check("a day later the cleaner has removed it", keys("auth/") == [], keys("auth/"))

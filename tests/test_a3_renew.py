@@ -1,5 +1,5 @@
 """The Instagram sign-in renews itself: works and saves; a refusal keeps the old one; nothing leaks.
-Run: python3 tests/test_a3_renew.py   (starts its own fresh servers on port its own port)"""
+Run: python3 tests/test_a3_renew.py   (starts its own fresh servers on its own port)"""
 import where as _W
 import json, subprocess
 from a3lib import *

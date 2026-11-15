@@ -1,5 +1,5 @@
 """What she is told when a key fails while she is using the app, and what real use leaves for the health check.
-Run: python3 tests/test_a3_use.py   (starts its own fresh server on port its own port; two short renders are attempted)"""
+Run: python3 tests/test_a3_use.py   (starts its own fresh server on its own port; two short renders are attempted)"""
 import where as _W
 import subprocess, time
 from a3lib import *

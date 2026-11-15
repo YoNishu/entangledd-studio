@@ -70,7 +70,10 @@ m = re.search(r"--top-gap:\s*(\d+)px", css)
 check("--top-gap is 8 to 12 px", bool(m) and 8 <= int(m.group(1)) <= 12, m and m.group(0))
 TOP_GAP = int(m.group(1)) if m else 0
 check("chart colours and their surface are untouched", "#2A9D8A" in css and re.search(r"--tide:\s*#16303C", css) is not None and "#D9773F" in get("/insights.js"))
-check("the three add-on slots are still at the end of the stylesheet", css.rstrip().endswith("/* (little-notes styles go here) */") and "/* (health styles go here) */" in css and "/* (scorer styles go here) */" in css)
+# (The slots were filled when the add-on sections were merged: their styles now sit under three headings, last in the file.)
+heads = re.findall(r"^/\* ---- ([a-z ]+)", css[css.find("/* ==== Add-on sections"):], re.M)
+check("the three add-on sections keep their styles at the end of the stylesheet, each under its own heading",
+      "/* ==== Add-on sections" in css and [h.split(":")[0].strip().split(" ")[0] for h in heads] == ["health", "scorer", "little"], heads)
 check("reduced motion is respected", "prefers-reduced-motion: reduce" in css)
 
 with sync_playwright() as p:

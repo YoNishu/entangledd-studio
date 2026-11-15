@@ -1,7 +1,7 @@
 """The composer draws only when something changed (or a video is playing), never while it can't be seen, and
 what it saves is the same, byte for byte, as before the change: the picture, and the text layer sent for a reel.
 Also: the wait for a finished reel asks often and the reel is fetched once for preview, saving and handing over.
-Compares the code as it was at the start (served on :the next port from $STUDIO_OUT/base) with the code now (:its own port).
+Compares the code as it was at the start (served on the next port from $STUDIO_OUT/base) with the code now (its own port).
 Asserts; exits non-zero on failure."""
 import where as _W
 import hashlib, json, os, subprocess, sys, time, urllib.request

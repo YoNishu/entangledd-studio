@@ -23,6 +23,12 @@ def nishiii(pg):
     pg.wait_for_selector("#scorer-line", timeout=15000)
     pg.wait_for_timeout(400)
 
+def unfold(pg):
+    """The two Forget buttons are folded away under "Make Nishiii forget": open it if it is closed."""
+    fold = pg.locator("details.more", has=pg.locator("#forget-all"))
+    if not fold.evaluate("d => d.open"):
+        fold.locator("summary").click(); pg.wait_for_timeout(300)
+
 with sync_playwright() as p:
     print("A. learning: 20 picks")
     serve(); put_log(history(20, 1, likes_calm_short, seed=3)); run_job()
@@ -60,6 +66,7 @@ with sync_playwright() as p:
     pg.screenshot(path=S + "a4_live.png")
 
     print("C. Forget everything")
+    unfold(pg)
     pg.click("#forget-all"); pg.wait_for_timeout(500)
     pg.click("#confirm-yes")
     pg.wait_for_function("document.getElementById('scorer-line').textContent.includes('0 of 50')", timeout=15000)
@@ -70,7 +77,7 @@ with sync_playwright() as p:
     log, m = doc("scorer/log"), doc("scorer/model")
     check("the stored record is empty", log["rows"] == [] and not log.get("fold") and log.get("since", 0) > 0, str(log)[:200])
     check("the stored model is back to learning from nothing", m["state"] == "learning" and m["picks"] == 0 and m["passes"] == 0, str(m)[:200])
-    pg.click("#forget-all"); pg.wait_for_timeout(600)
+    unfold(pg); pg.click("#forget-all"); pg.wait_for_timeout(600)
     note = pg.text_content("#taste-note")
     check("a second Forget everything finds nothing left", note.startswith("There's nothing to forget") and not pg.locator("#confirm-yes").is_visible(), note)
     check("no page errors", not errs, str(errs))
@@ -81,7 +88,7 @@ with sync_playwright() as p:
     doc("taste", {"profile": {"summary": "You like quiet lines.", "loves": ["the sea"], "avoids": [], "voice": [], "look": [], "performs": []}, "notes": [], "updatedAt": int(time.time() * 1000)})
     b, pg, errs = open_app(p)
     nishiii(pg)
-    pg.click("#forget-profile"); pg.wait_for_selector("#confirm-yes", state="visible", timeout=10000)
+    unfold(pg); pg.click("#forget-profile"); pg.wait_for_selector("#confirm-yes", state="visible", timeout=10000)
     said = pg.text_content("#confirm-body")
     check("the profile pop-up promises only the profile", "written about your taste" in said and "picked" not in said, said)
     pg.screenshot(path=S + "a4_forget_profile_popup.png")
@@ -90,7 +97,7 @@ with sync_playwright() as p:
     pg.wait_for_timeout(1200)
     check("after Forget the profile the count is as it was", pg.text_content("#scorer-line") == "Learning from your picks: 20 of 50.", pg.text_content("#scorer-line"))
     check("and the stored record still holds her picks", sum(1 for r in doc("scorer/log")["rows"] if r["s"] == 1) == 20)
-    pg.click("#forget-all"); pg.wait_for_selector("#confirm-yes", state="visible", timeout=10000)
+    unfold(pg); pg.click("#forget-all"); pg.wait_for_selector("#confirm-yes", state="visible", timeout=10000)
     said = pg.text_content("#confirm-body")
     check("the Forget everything pop-up names the record of picks", "the record of every quote you picked, skipped or reworded" in said, said)
     pg.screenshot(path=S + "a4_forget_all_popup.png")

@@ -1,6 +1,6 @@
 """Agent 2: the redesign must not change what the composer makes.
 Makes the same picture (reel shape and post shape) and the same reel text layer in the app as it was before
-(commit d576d40, served from a scratch copy on port the next port) and as it is now (port its own port), and compares them byte for byte.
+(commit d576d40, served from a scratch copy on the next port) and as it is now (its own port), and compares them byte for byte.
 Run:  tests/serve && python3 tests/test_a2_export.py"""
 import where as _W
 import base64, hashlib, os, subprocess, sys, time, urllib.request
