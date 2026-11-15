@@ -120,7 +120,10 @@ with sync_playwright() as p:
     c.evaluate("Studio.setWords('a picture for the feed')")
     until(lambda: (lambda x: x if x and x["snap"]["shape"] == "post" and (x["snap"]["bg"] or {}).get("name") == "sky.jpg" and x["snap"]["bg"].get("file") else None)(doc("draft")))
     snap_c = c.evaluate("Studio.snapshot()")
-    c.reload(); c.wait_for_timeout(1500)
+    c.reload(); c.wait_for_timeout(2500)
+    if c.is_hidden("#view-create"):
+        check("opening on another section downloads nothing yet", c.evaluate("!Studio.draftFiles().bg"))
+        c.click("#nav-create")
     c.wait_for_function("Studio.draftFiles().bg && Studio.draftFiles().bg.name === 'sky.jpg'", timeout=20000)
     c.wait_for_timeout(500)
     check("a picture post (4:5) comes back after closing the app, with its photo", c.evaluate("Studio.snapshot()") == snap_c, c.evaluate("Studio.snapshot()"))

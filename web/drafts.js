@@ -228,8 +228,18 @@
     if (!cur) return;
     if (cur.id === mine.id) {
       // The same piece of work: the server has the files; the newer of the two has the words and settings.
-      if (mine.updated > cur.updated) open({ ...complete(S.snapshot(), S.draftFiles()), bg: cur.snap.bg, music: cur.snap.music, origin: cur.snap.origin, caption: cur.snap.caption }, { draftId: cur.id, of: mine.of });
-      else open(cur.snap, { draftId: cur.id, of: cur.of });
+      // Fetched only once she is in Create, so opening the app for Today never downloads a video.
+      const back = () => {
+        if (opening || S.draft().id !== cur.id) return;          // she has opened something else meanwhile
+        if (mine.updated > cur.updated) open({ ...complete(S.snapshot(), S.draftFiles()), bg: cur.snap.bg, music: cur.snap.music, origin: cur.snap.origin, caption: cur.snap.caption }, { draftId: cur.id, of: mine.of });
+        else open(cur.snap, { draftId: cur.id, of: cur.of });
+      };
+      if (!$("view-create").hidden) back();
+      else document.addEventListener("studio:view", function when(e) {
+        if (e.detail !== "create") return;
+        document.removeEventListener("studio:view", when);
+        setTimeout(back, 0);                                    // after an Edit that brought her here has begun
+      });
     } else if (S.isBlank() || cur.updated > mine.updated) offer(cur);
   });
 })();
