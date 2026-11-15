@@ -42,6 +42,8 @@ def age_found(wid, days):
     """Makes the lines kept for a work look as if they were found that many days ago."""
     lib = doc("library")
     for x in lib["books"] + lib["screen"]:
-        if x["id"] == wid: x["found"]["at"] -= int(days * DAY)
+        if x["id"] == wid:
+            x["found"]["at"] -= int(days * DAY)
+            if x["found"].get("first"): x["found"]["first"] -= int(days * DAY)      # when the work was first looked up (what "after 30 days" goes by)
     putdoc("library", lib)
 def texts(items): return [i["text"] for i in items]
