@@ -34,7 +34,11 @@ check("the app says it can see Instagram, so no tap is asked for", s == 200 and 
 http("GET", "/__posted_in_instagram?caption=" + urllib.parse.quote("some caption of her own, no quote in it") + "&ago=120&type=REELS")
 s, b, _ = http("GET", "/api/posts", None, T)
 mine = [p for p in b["posts"] if p["quote"].startswith("Happiness can be found")]
-check("opening Posts finds the reel and moves it to Posted, linked", s == 200 and len(mine) == 1 and mine[0]["state"] == "published" and mine[0]["permalink"] and not mine[0]["unlinked"], b)
+check("one waiting reel and a reel on the page with other words: not assumed to be it", s == 200 and not mine and len(http("GET", "/api/queue", None, T)[1]["queue"]) == 1, b)
+http("GET", "/__posted_in_instagram?caption=" + urllib.parse.quote("Happiness can be found even in the darkest of times. #quotes") + "&ago=30&type=REELS")
+s, b, _ = http("GET", "/api/posts", None, T)
+mine = [p for p in b["posts"] if p["quote"].startswith("Happiness can be found")]
+check("with its words in the caption, opening Posts finds the reel and moves it to Posted, linked", s == 200 and len(mine) == 1 and mine[0]["state"] == "published" and mine[0]["permalink"] and not mine[0]["unlinked"], b)
 check("and it has left the waiting list", http("GET", "/api/queue", None, T)[1]["queue"] == [])
 # two reels waiting and a reel on the page with neither quote in its caption: not guessed
 serve()

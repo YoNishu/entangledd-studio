@@ -2059,10 +2059,10 @@ async function adoptFromInstagram(env, ig, posts) {
     // Only hand-overs made before this reel was posted can be its source. If the caption she copied (or the quote)
     // is in the reel's caption, that settles it; otherwise it is the reel she handed over most recently.
     const before = left.filter((h) => h.at - 60000 < m.at);
-    // A reel only waiting here (not handed over) is taken for this one when its words are in the caption, or
-    // when it is the one and only reel waiting; a handed-over reel as before.
+    // A reel only waiting here (not handed over) is taken for this one only when its words are in the caption:
+    // never guessed, even when it is the only one waiting. A handed-over reel as before.
     const handed = before.filter((x) => !x.waiting);
-    const h = before.find((x) => fits(x, m)) || handed.sort((a, b) => b.at - a.at)[0] || (before.length === 1 && left.length === 1 ? before[0] : null);
+    const h = before.find((x) => fits(x, m)) || handed.sort((a, b) => b.at - a.at)[0] || null;
     if (!h) continue;
     left = left.filter((x) => x !== h);
     posts.push({ id: crypto.randomUUID(), jobId: h.jobId, via: "instagram", state: "published", error: null, caption: lines(m.caption, 2200),
