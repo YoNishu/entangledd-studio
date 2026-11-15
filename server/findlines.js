@@ -24,6 +24,7 @@ export const KEEP = 30;                 // lines kept for one work
 export const LOOK_AGAIN_DAYS = 30;      // kept lines are refreshed after this long
 export const A_DAY = { gemini: 40, openai: 20 };   // so a key can never run up a bill, whatever is attached to it
 const BUDGET = 26;                      // outside calls one request may spend on looking up (it has about 50 in all)
+const SECONDS = 22;                     // no new place is started after this long, so her phone is never left waiting
 const PICK = 12;                        // lines Nishiii may pick from one page
 const UA = "DsStudio/1.0 (personal quotes app; one search and one page per title)";
 
@@ -56,8 +57,9 @@ function due(work, have, share, now) {
   if (!f || !f.at) return true;
   if (now - f.at > LOOK_AGAIN_DAYS * DAY) return true;
   if (have >= share) return false;
-  // Running short: look again at once if the last look still turned up something new, otherwise tomorrow.
-  return f.added > 0 || now - f.at > DAY;
+  // Running short: look again at once if the last look had to stop early or still turned up something new,
+  // otherwise tomorrow.
+  return typeof f.resume === "number" || f.added > 0 || now - f.at > DAY;
 }
 
 // ---------------------------------------------------------------- the small record of how the looking went
@@ -85,7 +87,7 @@ const resting = (state, site) => { const s = state.rec.sites[site]; return !!(s 
 function noteBlocked(state, site, why) { noteSite(state, site, why); state.rec.sites[site].blocked = true; }
 async function page(state, url, accept) {
   state.spent += 1;
-  return fetch(url, { headers: { "User-Agent": UA, Accept: accept, "Accept-Language": "en" }, signal: AbortSignal.timeout(10000) });
+  return fetch(url, { headers: { "User-Agent": UA, Accept: accept, "Accept-Language": "en" }, signal: AbortSignal.timeout(8000) });
 }
 
 // HTML as plain text: line breaks kept, tags dropped, the common entities turned back into characters.
@@ -375,7 +377,7 @@ function fromGemini(env, kit, work, want, have, state) {
   const siteOf = (c) => { const t = String(c.title || "").trim().toLowerCase().replace(/^www\./, ""); return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(t) ? t : hostOf(c.uri); };
   return ask(env, kit, state, "gemini", env.GEMINI_MODEL || GEMINI_MODELS,
     (model) => fetch(`${env.GEMINI_API || "https://generativelanguage.googleapis.com"}/v1beta/models/${model}:generateContent`, {
-      method: "POST", headers: { "x-goog-api-key": env.GEMINI_API_KEY, "Content-Type": "application/json" }, signal: AbortSignal.timeout(25000),
+      method: "POST", headers: { "x-goog-api-key": env.GEMINI_API_KEY, "Content-Type": "application/json" }, signal: AbortSignal.timeout(20000),
       body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: question(work, want) }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0.2 } }) }),
     (data) => {
       const cand = (data.candidates || [])[0] || {}, meta = cand.groundingMetadata || {};
@@ -398,7 +400,7 @@ const OPENAI_MODELS = "gpt-6-luna,gpt-6.1-terra";
 function fromOpenAI(env, kit, work, want, have, state) {
   return ask(env, kit, state, "openai", env.OPENAI_MODEL || OPENAI_MODELS,
     (model) => fetch(`${env.OPENAI_API || "https://api.openai.com"}/v1/responses`, {
-      method: "POST", headers: { Authorization: "Bearer " + env.OPENAI_API_KEY, "Content-Type": "application/json" }, signal: AbortSignal.timeout(40000),
+      method: "POST", headers: { Authorization: "Bearer " + env.OPENAI_API_KEY, "Content-Type": "application/json" }, signal: AbortSignal.timeout(25000),
       body: JSON.stringify({ model, input: question(work, want), tools: [{ type: "web_search" }], tool_choice: "required", include: ["web_search_call.action.sources"], store: false }) }),
     (data) => {
       const out = Array.isArray(data.output) ? data.output : [];
@@ -415,12 +417,13 @@ function fromOpenAI(env, kit, work, want, have, state) {
 // ---------------------------------------------------------------- the whole search for one request
 
 // Looks one work up, place after place until there are enough lines, and returns what to keep on it.
+// A look that runs out of time or of calls stops there, and the next one carries on at the place it stopped.
 async function lookUp(env, kit, work, need, about, taste, state) {
   const have = new Set(kept(work).map((l) => kit.norm(l.text)));
+  const prior = work.found || {};
   let lines = [], where = "";
   // Reading a page: finds it, has Nishiii pick from it, and copes quietly when the site is unreachable.
   const read = async (site, find) => {
-    if (lines.length >= need || state.spent + 6 > BUDGET) return;
     await openRecord(env, kit, state);
     if (resting(state, site)) return;
     try {
@@ -436,26 +439,36 @@ async function lookUp(env, kit, work, need, about, taste, state) {
       else if (!(e instanceof kit.UserError)) noteSite(state, site, e.name === "TimeoutError" ? "no answer in time" : "could not be reached");
     }
   };
-  await read("wikiquote", wikiquotePage);
-  await read(work.type === "book" ? "goodreads" : "imdb", work.type === "book" ? goodreadsPage : imdbPage);
   const more = () => Math.min(PICK, need - lines.length + 3);
-  if (lines.length < need && env.GEMINI_API_KEY && state.spent + 3 <= BUDGET) lines = lines.concat(await fromGemini(env, kit, work, more(), have, state));
-  if (lines.length < need && env.OPENAI_API_KEY && state.spent + 3 <= BUDGET) lines = lines.concat(await fromOpenAI(env, kit, work, more(), have, state));
-  const prior = work.found || {};
-  return { ...prior, at: Date.now(), added: lines.length, page: where || prior.page || "", lines: [...kept(work), ...lines].slice(-KEEP) };
+  const places = [
+    { cost: 6, look: () => read("wikiquote", wikiquotePage) },
+    { cost: 6, look: () => read(work.type === "book" ? "goodreads" : "imdb", work.type === "book" ? goodreadsPage : imdbPage) },
+    { cost: 3, off: !env.GEMINI_API_KEY, look: async () => { lines = lines.concat(await fromGemini(env, kit, work, more(), have, state)); } },
+    { cost: 3, off: !env.OPENAI_API_KEY, look: async () => { lines = lines.concat(await fromOpenAI(env, kit, work, more(), have, state)); } },
+  ];
+  let resume;
+  for (let i = typeof prior.resume === "number" && Date.now() - prior.at < DAY ? prior.resume : 0; i < places.length && lines.length < need; i++) {
+    if (places[i].off) continue;
+    if (state.spent + places[i].cost > BUDGET || Date.now() - state.began > state.limit) { resume = i; break; }
+    await places[i].look();
+  }
+  const out = { ...prior, at: Date.now(), added: lines.length, resume, page: where || prior.page || "", lines: [...kept(work), ...lines].slice(-KEEP) };
+  if (resume === undefined) delete out.resume;
+  return out;
 }
 
 // Real lines for the works she named. "works" are Library items with a "type" (book, film or series);
 // "room" is how many quotes are still wanted and "also" how many other sources share that room.
 // Returns { items, short }: the quotes, and the works that did not get as many as their share.
 export async function forWorks(env, kit, lib, works, { room, also = 0, about = "", taste = null, seen, ranker = null }) {
-  const items = [], short = [], looked = [], state = { spent: 0, rec: null, dirty: false };
+  const items = [], short = [], looked = [];
+  const state = { spent: 0, rec: null, dirty: false, began: Date.now(), limit: (Number(env.LOOKUP_SECONDS) || SECONDS) * 1000 };
   const words = kit.norm(about).split(" ").filter((w) => w.length > 3);
   for (let i = 0; i < works.length && room > 0; i++) {
     const work = works[i];
     const share = Math.ceil(room / (works.length - i + also));
     let have = unused(kit, lib, work, seen);
-    if (state.spent + 6 <= BUDGET && due(work, have.n, share, Date.now())) {
+    if (state.spent + 6 <= BUDGET && Date.now() - state.began <= state.limit && due(work, have.n, share, Date.now())) {
       work.found = await lookUp(env, kit, work, Math.max(1, share - have.n), about, taste, state);
       looked.push(work);
       have = unused(kit, lib, work, seen);

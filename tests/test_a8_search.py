@@ -162,6 +162,20 @@ cost = ops(); outside = len(calls())
 total = cost["storage"] + cost["outside"] + outside
 check("a request that looks two works up everywhere stays under 45 calls in all", s == 200 and total <= 45, {"storage": cost["storage"], "claude": cost["outside"], "lookups": outside})
 
+# ---- a look that runs out of time stops there, and the next request carries on where it stopped
+serve("WEBSEARCH=unset", "GEMINI=on", "LOOKUP_SECONDS=1")
+T = login()
+a = add_book(T, "A Brand New Novel", "")
+lines_set(slow=700)
+calls()
+s, got = ask(T, [a], 3)
+log = [x["to"] for x in calls()]
+check("out of time after the free places: the request is answered with what there is", s == 200 and log == ["wikiquote", "goodreads"] and work(a)["found"].get("resume") == 2, (s, log, work(a)["found"]))
+lines_set(slow=0)
+s, got = ask(T, [a], 3)
+log = [x["to"] for x in calls()]
+check("the next request carries on at Gemini, without asking the free places again", s == 200 and log == ["gemini"] and "resume" not in work(a)["found"] and len(kept(a)) == 3, (s, log, work(a)["found"]))
+
 # ---- Anthropic's paid search comes last, and only when it is switched on
 serve("GEMINI=on", "OPENAI=on")
 T = login()

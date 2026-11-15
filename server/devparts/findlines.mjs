@@ -7,14 +7,15 @@
 //   SITES=ok|blocked|captcha|empty       how Goodreads and IMDb answer (default ok)
 //   WIKIQUOTE=ok|down                    Wikiquote answers, or turns everything away with 503
 //   GET /__lines_set?gemini=..&openai=..&sites=..&wikiquote=..   changes any of these while running ("off" takes a key away)
+//   GET /__lines_set?slow=700           every pretend service here waits that many milliseconds before answering
 //   GET /__lines_log                     every request these pretend services received, in order (?reset=1 empties it)
 const GEMINI_KEY = "dev-gemini-key", OPENAI_KEY = "dev-openai-key";
-const mode = { gemini: process.env.GEMINI || "off", openai: process.env.OPENAI || "off", sites: process.env.SITES || "ok", wikiquote: process.env.WIKIQUOTE || "ok" };
+const mode = { gemini: process.env.GEMINI || "off", openai: process.env.OPENAI || "off", sites: process.env.SITES || "ok", wikiquote: process.env.WIKIQUOTE || "ok", slow: "0" };
 let log = [];
 
 export function env(PORT) {
   const at = `http://localhost:${PORT}`;
-  return { WIKIQUOTE_API: at + "/__wikiquote", GOODREADS_SITE: at + "/__goodreads", IMDB_SUGGEST: at + "/__imdbsug", IMDB_SITE: at + "/__imdb",
+  return { ...(process.env.LOOKUP_SECONDS ? { LOOKUP_SECONDS: process.env.LOOKUP_SECONDS } : {}), WIKIQUOTE_API: at + "/__wikiquote", GOODREADS_SITE: at + "/__goodreads", IMDB_SUGGEST: at + "/__imdbsug", IMDB_SITE: at + "/__imdb",
     GEMINI_API: at + "/__gemini", OPENAI_API: at + "/__openai",
     ...(mode.gemini !== "off" ? { GEMINI_API_KEY: GEMINI_KEY } : {}), ...(mode.openai !== "off" ? { OPENAI_API_KEY: OPENAI_KEY } : {}) };
 }
@@ -267,6 +268,7 @@ export async function handle(req, res, url, tools) {
   if (!to) return false;
   const entry = { to: to === "imdbsug" ? "imdb" : to, path: p.replace(/^\/__[a-z]+/, ""), query: Object.fromEntries(url.searchParams), agent: req.headers["user-agent"] || "" };
   log.push(entry);
+  if (Number(mode.slow) > 0) await new Promise((done) => setTimeout(done, Number(mode.slow)));
   if (to === "wikiquote") return mode.wikiquote === "down" ? send(503, "Service unavailable", "text/plain") : send(200, wikiquote(url));
   if (to === "goodreads" || to === "imdb" || to === "imdbsug") {
     if (mode.sites === "blocked") return send(403, "<html><body>Forbidden</body></html>", "text/html");
