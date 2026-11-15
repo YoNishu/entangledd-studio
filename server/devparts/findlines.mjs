@@ -257,7 +257,7 @@ function openai(body) {
 export async function handle(req, res, url, tools) {
   const p = url.pathname;
   const send = (status, out, type = "application/json") => { res.writeHead(status, { "Content-Type": type }).end(typeof out === "string" ? out : JSON.stringify(out)); return true; };
-  if (p === "/__lines_log") { if (url.searchParams.get("reset")) log = []; return send(200, log); }
+  if (p === "/__lines_log") { const was = log; if (url.searchParams.get("reset")) log = []; return send(200, was); }
   if (p === "/__lines_set") {
     for (const [k, v] of url.searchParams) if (k in mode) mode[k] = v;
     for (const [k, name, key] of [["gemini", "GEMINI_API_KEY", GEMINI_KEY], ["openai", "OPENAI_API_KEY", OPENAI_KEY]]) { if (mode[k] === "off") delete tools.env[name]; else tools.env[name] = key; }

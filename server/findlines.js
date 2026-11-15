@@ -455,8 +455,8 @@ export async function forWorks(env, kit, lib, works, { room, also = 0, about = "
     const work = works[i];
     const share = Math.ceil(room / (works.length - i + also));
     let have = unused(kit, lib, work, seen);
-    if (have.n < share && state.spent + 6 <= BUDGET && due(work, have.n, share, Date.now())) {
-      work.found = await lookUp(env, kit, work, share - have.n, about, taste, state);
+    if (state.spent + 6 <= BUDGET && due(work, have.n, share, Date.now())) {
+      work.found = await lookUp(env, kit, work, Math.max(1, share - have.n), about, taste, state);
       looked.push(work);
       have = unused(kit, lib, work, seen);
     }

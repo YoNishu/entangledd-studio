@@ -331,7 +331,7 @@ function pretendClaude(req) {
       for (const raw of passage.split("\n")) {
         const line = raw.trim(), h = /^==+\s*(.*?)\s*==+$/.exec(line);
         if (h) { heading = /^(chapter|season|episode|quotes)\b/i.test(h[1]) ? "" : h[1]; open = true; continue; }
-        if (!open || line.startsWith("[") || line.length < 25) continue;
+        if (!open || /^\[[^\]]*\]$/.test(line) || line.length < 25) continue;
         const m = /^([A-Z][\w .'-]{1,30}): (.+)$/.exec(line);
         picks.push({ text: (m ? m[2] : line).replace(/^\[[^\]]*\]\s*/, ""), by: m ? m[1] : heading, theme: "sea", tone: "quiet" });
       }

@@ -1,0 +1,98 @@
+"""Real lines read straight from the big quote sites: Goodreads for books, IMDb for films and series.
+The right book (title and author) and the right title (name and kind); one search and one page at each site;
+and a site that turns the app away simply has nothing today, which is noted."""
+from a8lib import *
+
+HOUR_MS = 60 * 60 * 1000
+serve("WEBSEARCH=unset")
+T = login()
+
+# ---- a book that only Goodreads has
+book = add_book(T, "Glass Rivers", "Ana Vale")
+calls()
+s, got = ask(T, [book], 3)
+log = calls()
+check("a book on Goodreads gives its real lines", s == 200 and len(got) == 3 and all(i["source"].get("site") == "goodreads.com" for i in got), (s, got))
+check("with the book's quotes page and its author, and no checking needed", all(i["source"]["url"] == "https://www.goodreads.com/work/quotes/5550003" and i["author"] == "Ana Vale" and i["verify"] is False for i in got), got)
+check("Wikiquote was asked first", [x["to"] for x in log][:1] == ["wikiquote"], [x["to"] for x in log])
+check("then one search and one page at Goodreads", [x["path"] for x in to(log, "goodreads")] == ["/book/auto_complete", "/work/quotes/5550003"], log)
+check("the search carries only the title", to(log, "goodreads")[0]["query"] == {"format": "json", "q": "Glass Rivers"}, to(log, "goodreads")[0])
+check("with a User-Agent that says who is asking", all(x["agent"].startswith("DsStudio/") for x in log))
+check("IMDb is not asked about a book", to(log, "imdb") == [])
+check("the words are the page's own", "I was not lost. I was only between the names for where I was." in [l["text"] for l in kept(book)], kept(book))
+
+# ---- the right book among two of the same name; Wikiquote's few lines first, Goodreads for the rest
+salt = add_book(T, "The Salt Road", "Mira Kessel")
+calls()
+s, got = ask(T, [salt], 5)
+log = calls()
+found = kept(salt)
+words = " | ".join(l["text"] for l in found)
+check("Wikiquote's lines come first, Goodreads fills what is missing", s == 200 and len(got) == 5 and {l["site"] for l in found} == {"wikiquote.org", "goodreads.com"}, (s, [l["site"] for l in found]))
+check("only her author's book is read at Goodreads", [x["path"] for x in to(log, "goodreads")] == ["/book/auto_complete", "/work/quotes/5550001"], log)
+check("nothing from the other book of that name, or from another writer", "another book" not in words and "some other writer" not in words, words)
+check("nothing from the author's other book on Wikiquote", "orchard" not in words.lower() and "folding a letter" not in words, words)
+check("a line over two lines of the page is read as one", "Don't ask the road where it ends. Ask who you'll be when you get there." in words, words)
+check("signs in the page's code become the real characters", "She had learned that waiting is also a kind of travelling — slower, and with better company." in words, words)
+
+# ---- a series and a film of the same name on IMDb: each gets its own
+show = add_screen(T, "Quiet Harbour", "series")
+calls()
+s, got = ask(T, [show], 3)
+log = calls()
+check("a series on IMDb gives its real lines with who says them", s == 200 and len(got) == 3 and all(i["source"].get("site") == "imdb.com" and i["author"] in ("Ines", "Tobias", "Old Marit") for i in got), (s, got))
+check("from the series' page, not the film's", all(i["source"]["url"] == "https://www.imdb.com/title/tt7000002/quotes/" for i in got), got)
+check("one search and one page at IMDb", [x["path"] for x in to(log, "imdb")] == ["/suggestion/x/quiet%20harbour.json", "/title/tt7000002/quotes/"], log)
+check("Goodreads is not asked about a series", to(log, "goodreads") == [])
+check("the speaker's name is not part of the line", "The tide does not ask permission to come home." in [l["text"] for l in kept(show)], kept(show))
+movie = add_screen(T, "Quiet Harbour", "film")
+s, got = ask(T, [movie], 1)
+check("the film of the same name gets the film's line", s == 200 and got[0]["source"].get("url") == "https://www.imdb.com/title/tt7000001/quotes/" and got[0]["author"] == "Edvard", (s, got))
+rec = doc("lookups")
+check("sites that answered are noted as working", "ok" in rec["sites"]["goodreads"] and "ok" in rec["sites"]["imdb"] and "why" not in rec["sites"]["imdb"], rec)
+
+# ---- a site that turns the app away (403): nothing there today, noted, left alone until tomorrow
+serve("WEBSEARCH=unset", "SITES=blocked")
+T = login()
+book = add_book(T, "Glass Rivers", "Ana Vale")
+show = add_screen(T, "Quiet Harbour", "series")
+s, got = ask(T, [book], 2)
+rec = doc("lookups")
+check("a blocked Goodreads does not stop the answer (memory fills in)", s == 200 and len(got) == 2 and not any(i["source"].get("site") for i in got), (s, got))
+check("the block is noted for the health record", rec["sites"]["goodreads"].get("why") == "search answered 403" and rec["sites"]["goodreads"].get("blocked") is True, rec)
+s, got = ask(T, [show], 2)
+check("the same for IMDb", s == 200 and doc("lookups")["sites"]["imdb"].get("why") == "search answered 403", doc("lookups"))
+other = add_book(T, "The Salt Road", "Mira Kessel")
+calls()
+ask(T, [other], 5)
+check("a site that turned the app away is not asked again that day", to(calls(), "goodreads") == [])
+rec = doc("lookups"); rec["sites"]["goodreads"]["failed"] -= 25 * HOUR_MS; putdoc("lookups", rec)
+lines_set(sites="ok")
+age_found(book, 2)
+calls()
+s, got = ask(T, [book], 2)
+check("the next day it is asked again, and its lines are found", len(to(calls(), "goodreads")) == 2 and s == 200 and all(i["source"].get("site") == "goodreads.com" for i in got), (s, got))
+check("and the note says it works again", "why" not in doc("lookups")["sites"]["goodreads"], doc("lookups"))
+
+# ---- a "prove you are human" page instead of the quotes
+serve("WEBSEARCH=unset", "SITES=captcha")
+T = login()
+book = add_book(T, "Glass Rivers", "Ana Vale")
+show = add_screen(T, "Quiet Harbour", "series")
+s, got = ask(T, [book, show], 4)
+rec = doc("lookups")
+check("a captcha page is not read as quotes", s == 200 and kept(book) == [] and kept(show) == [], (s, got))
+check("and is noted", rec["sites"]["goodreads"].get("why") == "asked for proof of a person" and rec["sites"]["imdb"].get("why") == "asked for proof of a person", rec)
+
+# ---- a page without quotes: nothing here, but the site is not treated as having turned the app away
+serve("WEBSEARCH=unset", "SITES=empty")
+T = login()
+book = add_book(T, "Glass Rivers", "Ana Vale")
+s, got = ask(T, [book], 2)
+rec = doc("lookups")
+check("a page without quotes gives nothing and is noted", s == 200 and kept(book) == [] and rec["sites"]["goodreads"].get("why") == "a page without quotes" and not rec["sites"]["goodreads"].get("blocked"), rec)
+other = add_book(T, "The Salt Road", "Mira Kessel")
+calls()
+ask(T, [other], 5)
+check("the site is still asked about the next book", len(to(calls(), "goodreads")) == 2)
+finish()
