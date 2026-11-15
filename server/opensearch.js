@@ -604,7 +604,7 @@ export function queriesFor(work) {
   const chars = (work.characters || []).slice(0, 2).join(" ");
   const out = [[name, work.year || "", work.country || "", kind, work.type === "book" && work.author ? work.author : "", "quotes"].filter(Boolean).join(" ")];
   if (work.type !== "book" && chars) out.push(`${name} ${kind} quotes ${chars}`);
-  if (work.type !== "book" && EAST.test(work.country || "")) out.push(`${name} ${work.year || ""} mydramalist reviews`.replace(/\s+/g, " "));
+  if (work.type !== "book" && (EAST.test(work.country || "") || !work.country)) out.push(`${name} ${work.year || ""} mydramalist reviews`.replace(/\s+/g, " "));
   out.push(`${name} ${work.type === "book" && work.author ? work.author + " " : ""}memorable lines dialogue`);
   if (work.original) out.push(`"${work.original}" quotes lines`);
   return [...new Set(out)];
@@ -621,6 +621,11 @@ export async function linesForWork(env, kit, work, state, { want = 10, have = ne
   const read = await readPages(env, kit, state, rank(list, names, (work.found && work.found.not) || []));
   const pages = read.filter((p) => namesWork(kit, work, p.text, p));
   for (const p of read) say(env, "about the work", { url: p.url, yes: pages.includes(p) });
+  // For the coarse record: each result's site, whether its text came with the search, and what became of it.
+  counts.sites = list.slice(0, 10).map((r) => {
+    const pg = read.find((p) => p.url === r.url || p.site === r.host);
+    return `${r.host} ${r.raw && r.raw.length >= FULL ? "sent " + r.raw.length : "no text"}: ${pg ? (pages.includes(pg) ? "about it" : "not about it") : "not read"}`;
+  });
   const dropped = {};
   if (read.length > pages.length) dropped["pages not about this work"] = read.length - pages.length;
   Object.assign(counts, { read: read.length, about: pages.length });

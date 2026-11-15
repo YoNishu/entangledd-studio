@@ -730,7 +730,7 @@ export const open = {
     // The last look for quotes from a work, coarse: what each step did and its counts, no title, no line.
     const looks = env.MEDIA ? await kit.loadDoc(env, "lookups", null).catch(() => null) : null;
     const c = looks && looks.coarse;
-    const lastLookup = c && c.at ? { at: c.at, identified: !!c.identified, kind: c.kind || "", year: c.year || 0, kept: c.kept || 0, said: coarseText(c).slice(0, 900) } : null;
+    const lastLookup = c && c.at ? { at: c.at, identified: !!c.identified, kind: c.kind || "", year: c.year || 0, kept: c.kept || 0, said: coarseText(c).slice(0, 2400) } : null;
     return new Response(JSON.stringify({ ...openView(record), lastLookup }), {
       headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
     });

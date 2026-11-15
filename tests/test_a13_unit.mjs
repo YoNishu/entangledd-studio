@@ -100,7 +100,7 @@ check("a line found again on another site is no longer marked to check", have.ke
 // ---- the coarse record for the open health page
 const said = coarseText({ identified: true, kind: "series", year: 2026, kept: 2, steps: [{ where: "title", what: "known" }, { where: "wikiquote", what: "no page" },
   { where: "web", what: "found", n: 2, counts: { results: 5, read: 4, about: 3, tried: 12, dropped: { "not on the page": 9, "too short or too long": 1 } } }] });
-check("the coarse record in words: identified, each step and its counts", said === "work identified: yes (series, 2026); wikiquote: no page; web: 5 results, 4 pages read, 3 about the work, 12 candidates, 2 kept (9 not on the page, 1 too short or too long); lines kept: 2", said);
+check("the coarse record in words: identified, each step and its counts", said === "work identified: yes (series, 2026); title check: known; wikiquote: no page; web: 5 results, 4 pages read, 3 about the work, 12 candidates, 2 kept (9 not on the page, 1 too short or too long); lines kept: 2", said);
 
 console.log(failed ? `FAIL (${failed})` : "PASS");
 process.exit(failed ? 1 : 0);

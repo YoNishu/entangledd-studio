@@ -825,7 +825,8 @@ const thin = (k) => !k || (!Number(k.year) && !(k.cast || []).length && !(k.char
 const needsKnowing = (work) => {
   const since = Date.now() - (work.titleChecked || 0);
   if (!work.known) return !work.titleChecked || since > DAY || (!kept(work).length && since > 2 * HOUR && !!work.found);
-  return thin(work.known) && !kept(work).length && !!work.found && since > 2 * HOUR;
+  // Known only thinly (no year, cast or characters) and nothing kept: find out more before every look of hers.
+  return thin(work.known) && !kept(work).length && since > 2 * 60 * 1000;
 };
 
 // Looks one work up, place after place until there are enough lines, and returns what to keep on it.
@@ -935,6 +936,8 @@ function keepCoarse(state, item, steps, n) {
 }
 const DROP_WORDS = /^[a-z ]{3,40}$/;
 const coarseCounts = (c) => ({ ...Object.fromEntries(["results", "read", "about", "tried"].filter((k) => Number.isFinite(c[k])).map((k) => [k, c[k]])),
+  // which public sites the results were on and what became of each (no address, no title, no words of hers)
+  ...(Array.isArray(c.sites) ? { sites: c.sites.slice(0, 10).map((x) => String(x).replace(/[^a-z0-9 .:-]/gi, "").slice(0, 60)) } : {}),
   dropped: Object.fromEntries(Object.entries(c.dropped || {}).filter(([why, v]) => DROP_WORDS.test(why) && Number.isFinite(v)).slice(0, 8)) });
 // The coarse record in words: "title: identified (series, 2026); wikiquote: no page; web: 5 results, 3 pages about
 // the work, 12 candidates, 2 kept (9 not on the page, 1 too short or too long)".
@@ -944,9 +947,9 @@ export function coarseText(c) {
     const k = s.counts;
     if (!k) return `${s.where}: ${s.what}${Number.isFinite(s.n) && s.n ? ` (${s.n})` : ""}`;
     const drops = Object.entries(k.dropped || {}).map(([why, v]) => `${v} ${why}`).join(", ");
-    return `${s.where}: ${k.results ?? 0} results, ${k.read ?? 0} pages read, ${k.about ?? 0} about the work, ${k.tried ?? 0} candidates, ${s.n || 0} kept${drops ? ` (${drops})` : ""}`;
+    return `${s.where}: ${k.results ?? 0} results, ${k.read ?? 0} pages read, ${k.about ?? 0} about the work, ${k.tried ?? 0} candidates, ${s.n || 0} kept${drops ? ` (${drops})` : ""}${k.sites ? ` [${k.sites.join(" | ")}]` : ""}`;
   };
-  return [`work identified: ${c.identified ? `yes (${[c.kind, c.year].filter(Boolean).join(", ")})` : "no"}`, ...c.steps.filter((s) => s.where !== "title").map(step), `lines kept: ${c.kept || 0}`].join("; ");
+  return [`work identified: ${c.identified ? `yes (${[c.kind, c.year].filter(Boolean).join(", ")})` : "no"}`, ...c.steps.map((s) => s.where === "title" ? `title check: ${s.what}` : step(s)), `lines kept: ${c.kept || 0}`].join("; ");
 }
 // The last few trails, in data/lookups.json, for Nishith.
 export function keepTrail(state, work, steps, n) {
