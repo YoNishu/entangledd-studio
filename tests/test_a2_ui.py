@@ -52,7 +52,7 @@ check("every element id from before still exists", ids_before <= ids_now, sorted
 # (and, since, the places for drafts and made reels: web/drafts.js; and Posts in two parts, Posted and Drafts)
 check("the only new ids are the wordmark drawing, the worded chat button and the drafts' places", ids_now - ids_before == {"wm", "nishiii-chat",
       "draft-slot", "edit-reel", "made-wrap", "made-note", "list-made",
-      "posts-parts", "posts-part-posted", "posts-part-drafts", "drafts-count", "posts-drafts", "posts-posted",
+      "posts-parts", "save-draft-wrap", "save-draft", "save-draft-note", "posts-part-posted", "posts-part-drafts", "drafts-count", "posts-drafts", "posts-posted",
       "saved-wrap", "saved-note", "list-saved", "drafts-empty"}, sorted(ids_now - ids_before))
 sym = re.search(r'<symbol id="wm" viewBox="([^"]+)"', html)
 check("the wordmark's drawing starts at 0 0, so it needs no offsets", bool(sym) and sym.group(1).startswith("0 0 ") and html.count('<use href="#wm"/>') == 2, sym and sym.group(1))

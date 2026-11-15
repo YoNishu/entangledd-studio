@@ -73,13 +73,13 @@ with sync_playwright() as p:
 
     # ---- Posts: two parts; Drafts lists quote 1 ----
     pg.click("#drafts-more")
-    pg.wait_for_selector("#list-saved article", timeout=10000)
+    pg.wait_for_selector("#list-saved article:not(.open-now)", timeout=10000)
     check("the line goes to Posts, on Drafts", pg.is_visible("#view-posts") and pg.get_attribute("#posts-part-drafts", "aria-pressed") == "true"
           and pg.is_visible("#posts-drafts") and pg.is_hidden("#posts-posted"))
     check("both parts are there, in plain words", pg.inner_text("#posts-part-posted").strip() == "Posted"
           and pg.inner_text("#posts-part-drafts").replace("\n", " ").split()[0] == "Drafts", pg.inner_text("#posts-part-drafts"))
-    check("Drafts shows its count", pg.text_content("#drafts-count") == "1" and pg.is_visible("#drafts-count"), pg.text_content("#drafts-count"))
-    card = pg.locator("#list-saved article").first
+    check("Drafts shows its count (the one set aside and the one open in Create)", pg.text_content("#drafts-count") == "2" and pg.is_visible("#drafts-count"), pg.text_content("#drafts-count"))
+    card = pg.locator("#list-saved article:not(.open-now)").first
     text = card.inner_text()
     check("quote 1 is under Not finished yet, with her words", pg.is_visible("#saved-wrap") and "Not finished yet" in pg.inner_text("#saved-wrap") and mine in text, text)
     check("the card says when it changed and what is chosen", "Changed " in text and "Photo background" in text and "Music" in text, text)
@@ -96,7 +96,7 @@ with sync_playwright() as p:
 
     # ---- Continue: everything back; quote 2 is set aside ----
     q2_id = doc("draft")["id"]
-    pg.locator("#list-saved article").first.get_by_role("button", name="Continue").click()
+    pg.locator("#list-saved article:not(.open-now)").first.get_by_role("button", name="Continue").click()
     pg.wait_for_function("Studio.draftFiles().bg && Studio.draftFiles().music && !/Bringing back/.test(document.getElementById('draft-note').textContent)", timeout=20000)
     pg.wait_for_timeout(600)
     back = pg.evaluate("Studio.snapshot()")
@@ -108,20 +108,21 @@ with sync_playwright() as p:
     check("and quote 1 is no longer among the set-aside ones", until(lambda: all(x["id"] != d1["id"] for x in (doc("drafts") or []))), doc("drafts"))
     pg.screenshot(path=f"{SHOTS}/a15_4_continued.png")
     pg.click("#nav-posts")
-    pg.wait_for_selector("#list-saved article", timeout=10000)
+    pg.wait_for_selector("#list-saved article:not(.open-now)", timeout=10000)
     check("Posts opens on the part used last (Drafts)", pg.get_attribute("#posts-part-drafts", "aria-pressed") == "true")
-    pg.wait_for_function("document.querySelectorAll('#list-saved article').length === 1 && document.querySelector('#list-saved article').innerText.includes('Changed')", timeout=10000)
-    t2 = pg.inner_text("#list-saved article")
+    pg.wait_for_function("document.querySelectorAll('#list-saved article:not(.open-now)').length === 1 && document.querySelector('#list-saved article:not(.open-now)').innerText.includes('Changed')", timeout=10000)
+    t2 = pg.inner_text("#list-saved article:not(.open-now)")
     check("Drafts now lists quote 2", q2.split("\n")[0][:15] in t2 and mine not in t2, [q2, t2])
 
     # ---- Delete, after asking ----
-    pg.locator("#list-saved article").first.get_by_role("button", name="Delete").click()
+    pg.locator("#list-saved article:not(.open-now)").first.get_by_role("button", name="Delete").click()
     pg.wait_for_selector("#confirm:not([hidden])", timeout=5000)
     check("Delete asks first", "Delete this draft?" in pg.text_content("#confirm-title"))
     pg.click("#confirm-yes")
-    pg.wait_for_selector("#drafts-empty:not([hidden])", timeout=10000)
-    check("with nothing unfinished it says so plainly", pg.text_content("#drafts-empty") == "Nothing unfinished. A reel you start in Create is kept here by itself.")
-    check("the count has gone", pg.is_hidden("#drafts-count"))
+    pg.wait_for_function("document.querySelectorAll('#list-saved article:not(.open-now)').length === 0", timeout=10000)
+    check("only the one open in Create is left, marked so, with no Delete", pg.text_content("#drafts-count") == "1" and "Open in Create now" in pg.inner_text("#list-saved article.open-now")
+          and pg.is_hidden("#list-saved article.open-now .last"))
+    check("the empty words are in place for when nothing is left", pg.text_content("#drafts-empty") == "Nothing unfinished. A reel you start in Create is kept here by itself.")
     check("deleted on the server too", doc("drafts") == [], doc("drafts"))
     pg.screenshot(path=f"{SHOTS}/a15_5_empty.png", full_page=True)
 
@@ -134,7 +135,7 @@ with sync_playwright() as p:
     pg.click("#nav-today"); pg.click("#nav-posts")
     pg.wait_for_selector("#list-queue article", timeout=10000)
     check("a reel waiting for her tap opens Drafts", pg.get_attribute("#posts-part-drafts", "aria-pressed") == "true" and pg.is_visible("#list-queue article"), s)
-    check("the count includes it", pg.text_content("#drafts-count") == "1", pg.text_content("#drafts-count"))
+    check("the count includes it", pg.text_content("#drafts-count") == "2", pg.text_content("#drafts-count"))
     pg.screenshot(path=f"{SHOTS}/a15_6_waiting.png", full_page=True)
 
     # ---- a change made a moment before something new, or before closing the app, still arrives ----

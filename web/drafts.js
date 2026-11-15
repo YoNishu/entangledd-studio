@@ -244,26 +244,32 @@
   function savedCard(d) {
     const chosen = [d.snap.bg && (d.snap.bg.kind === "video" ? "Video background" : "Photo background"),
       d.snap.music && (d.snap.music.title ? `Music: ${d.snap.music.title}` : "Music")].filter(Boolean).join(" · ");
+    // The one open in Create right now is listed too (it is saved all the same): Continue only goes back to it.
+    const openNow = d.id === S.draft().id, isCurrent = !!(data.current && data.current.id === d.id);
     const go = el("button", { type: "button", className: "btn soft ic ic-create", textContent: "Continue" });
     go.addEventListener("click", () => {
       K.show("create");
       S.openOn("text");
-      open(JSON.parse(JSON.stringify(d.snap)), { draftId: d.id, of: d.of });
+      if (!openNow) open(JSON.parse(JSON.stringify(d.snap)), { draftId: d.id, of: d.of });
     });
-    const drop = el("button", { type: "button", className: "last", textContent: "Delete" });
+    const drop = el("button", { type: "button", className: "last", textContent: "Delete", hidden: openNow });
     drop.addEventListener("click", async () => {
       if (!(await confirmDialog({ title: "Delete this draft?", body: "It goes from the app for good.", yes: "Delete" }))) return;
-      try { data = await send("drafts/saved/" + d.id, "DELETE"); render(); } catch (e) { $("saved-note").textContent = friendly(e); }
+      try {
+        if (isCurrent) { await send("drafts/current", "DELETE"); await refresh(); }
+        else { data = await send("drafts/saved/" + d.id, "DELETE"); render(); }
+      } catch (e) { $("saved-note").textContent = friendly(e); }
     });
-    return el("article", { className: "card made", id: "saved-" + d.id },
+    return el("article", { className: "card made" + (openNow ? " open-now" : ""), id: "saved-" + d.id },
       el("p", { className: "q", textContent: firstWords(d.snap) || "A reel" }),
-      el("p", { className: "src", textContent: `Changed ${day(d.updated)}.` }),
+      el("p", { className: "src", textContent: openNow ? "Open in Create now." : `Changed ${day(d.updated)}.` }),
       chosen ? el("p", { className: "src", textContent: chosen }) : null,
       el("div", { className: "acts" }, go), el("div", { className: "links" }, drop));
   }
   function render() {
     if (!data) return;
-    const saved = (data.drafts || []).filter((d) => d.id !== S.draft().id);
+    const cur = data.current && data.current.words !== false && firstWords(data.current.snap) ? data.current : null;
+    const saved = (cur ? [cur] : []).concat((data.drafts || []).filter((d) => !cur || d.id !== cur.id));
     $("saved-wrap").hidden = !saved.length;
     $("list-saved").replaceChildren(...saved.map(savedCard));
     $("saved-note").textContent = `Up to ${data.limits.drafts} are kept, each for ${data.limits.draftDays} days after you last changed it.`;
@@ -275,6 +281,31 @@
     recount();
   }
   async function refresh() { await fetchData(); render(); }
+
+  // ---------- "Save as draft", at the end of Create: saved this moment, and shown where it is kept ----------
+  const keepBtn = $("save-draft"), keepNote = $("save-draft-note");
+  keepBtn.addEventListener("click", async () => {
+    const tell = (msg, link) => {
+      keepNote.replaceChildren(msg);
+      if (link) { const b = el("button", { type: "button", className: "draftline", textContent: "See your drafts" }); b.addEventListener("click", () => goToDrafts()); keepNote.append(" ", b); }
+      keepNote.hidden = false;
+    };
+    if (S.isBlank()) return tell("Add your words or a background first, then save.");
+    if (!S.server.on) return tell("Sign in to keep drafts.");
+    keepBtn.disabled = true;
+    tell("Saving…");
+    try {
+      const c = capture();
+      const waits = c ? [c.files.bg, c.files.music].filter((f) => f && !stored.has(f)).map((f) => storeFile(f)) : [];
+      const ok = await save();
+      if (!ok) throw new Error("not saved");
+      if (waits.length) { tell("Saving your background and music…"); await Promise.allSettled(waits); await save(); }
+      await refresh();
+      tell("Saved in Drafts, in Posts. You can close the app and carry on later.", true);
+    } catch (e) { tell("That didn't save. Check your connection and try again."); }
+    keepBtn.disabled = false;
+  });
+  document.addEventListener("studio:changed", () => { keepNote.hidden = true; });
 
   // ---------- Posts in two parts: Posted, and Drafts (everything not yet on Instagram) ----------
   const PART_KEY = "studio.postsPart.v1";
