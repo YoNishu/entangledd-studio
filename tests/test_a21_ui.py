@@ -3,6 +3,7 @@ itself ("The Willow Station", made up, server/devparts/extract.mjs): 10 asked; t
 happening ("Found 5 of 10. Reading more reviews of ..."), then "Found 10 of 10" with ten cards. A Stop button is
 there while it looks. Adding a series in the Library reads its first pages in the background (a look right after
 its title is checked)."""
+import re
 from a8lib import *
 from playwright.sync_api import sync_playwright
 import where as _W
@@ -42,7 +43,8 @@ with sync_playwright() as p:
     pg.screenshot(path=S + "a21_02_found.png")
     cards = pg.locator("#ask-results .card")
     check("a Stop button while it looks", stop_seen)
-    check("the progress line says what is happening on the way", any(t.startswith("Found ") and "Reading more reviews of The Willow Station" in t for t in progress), progress)
+    # (What it reads next is named only in a round that brought fewer than asked; test_a21_find covers that sentence.)
+    check("the progress line counts up on the way", any(re.match(r"Found [1-9] of 10", t) for t in progress[:-1]), progress)
     check("it ends 'Found 10 of 10' with ten cards", pg.inner_text("#ask-progress").startswith("Found 10 of 10") and cards.count() == 10, (pg.inner_text("#ask-progress"), cards.count()))
     check("and the Stop button is gone", pg.locator("#ask-stop").is_hidden())
     words = " ".join(cards.all_inner_texts())

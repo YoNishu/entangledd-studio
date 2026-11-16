@@ -28,6 +28,7 @@ import * as nudges from "./nudges.js";            // the words: one short, flirt
 const DOC = "reminders";            // data/reminders.json: the phones, each with its time and the day it was last reminded
 const KEY_DOC = "pushkeys";         // data/pushkeys.json: this server's signing key pair
 const MAX_PHONES = 10;
+const WRITTEN_KEPT = 40;
 const SAID_KEPT = 80;               // how many of the lines said lately are remembered, so none comes round again too soon
 const DEFAULT_TIME = "11:11";
 const DAILY = 5;                    // how many quotes Today shows (the same number worker.js uses)
@@ -109,6 +110,7 @@ async function load(env, kit) {
     tokens: ok && doc.tokens && typeof doc.tokens === "object" ? doc.tokens : {},
     last: ok && doc.last && typeof doc.last === "object" ? doc.last : null,
     said: ok && Array.isArray(doc.said) ? doc.said.filter((x) => typeof x === "string").slice(-SAID_KEPT) : [],   // the lines said lately (nudges.js), newest last
+    written: ok && Array.isArray(doc.written) ? doc.written.filter((x) => typeof x === "string").slice(-WRITTEN_KEPT) : [],   // the lines written for a day, so none is echoed
   };
 }
 // Reads the list, lets "change" alter it, and saves it. Read afresh every time, so that a change made
@@ -279,7 +281,7 @@ const notice = (sub, body, tag) => ({
 // One line from Nishiii (nudges.js), of the kind that fits the morning: she has been away two days, a reel is made
 // and waiting, she posted yesterday, or simply today's quotes. "said" is the lines said lately.
 const dayBefore = (day, n) => new Date(Date.parse(day + "T00:00:00Z") - n * 24 * 60 * MIN_MS).toISOString().slice(0, 10);
-async function wordsFor(env, kit, day, said = []) {
+async function wordsFor(env, kit, day, said = [], written = []) {
   const [posts, y1, y2, made, queue] = await Promise.all([kit.loadDoc(env, "posts", []), kit.loadDoc(env, `suggestions/${dayBefore(day, 1)}`, []),
     kit.loadDoc(env, `suggestions/${dayBefore(day, 2)}`, []), kit.loadDoc(env, "made", []), kit.loadDoc(env, "queue", [])]);
   const list = Array.isArray(posts) ? posts : [];
@@ -288,7 +290,10 @@ async function wordsFor(env, kit, day, said = []) {
   const opened = (l) => Array.isArray(l) && l.length > 0;                 // a day's list exists only when she opened Today that day
   const waiting = (Array.isArray(queue) && queue.length > 0) || (Array.isArray(made) && made.some((m) => m && !m.posted && !list.some((p) => p && p.jobId === m.jobId)));
   const kind = nudges.kindFor({ openedYesterday: opened(y1) || postedOn(dayBefore(day, 1)), openedDayBefore: opened(y2) || postedOn(dayBefore(day, 2)), waiting, postedYesterday: postedOn(dayBefore(day, 1)) });
-  return { ...nudges.pick(kind, day, said), kind };
+  const line = nudges.pick(kind, day, said);
+  // The lot of this kind has all been said: a fresh line is written for today (the lot again if that fails).
+  const fresh = line.again ? await nudges.writeLine(env, kit, kind, day, written) : null;
+  return { ...(fresh || line), kind };
 }
 
 // ---------------------------------------------------------------- the timer
@@ -316,7 +321,7 @@ export async function tick(env, kit, now = Date.now()) {
   const fresh = {};
   const words = new Map();
   try {                             // day -> what to say, or null: she has posted
-    for (const day of new Set(todo.map((o) => o.day))) words.set(day, await wordsFor(env, kit, day, before.said));
+    for (const day of new Set(todo.map((o) => o.day))) words.set(day, await wordsFor(env, kit, day, before.said, before.written));
     for (const o of todo) o.posted = words.get(o.day) === null;
     const sending = todo.filter((o) => !o.posted);
     if (sending.length) {
@@ -350,6 +355,8 @@ export async function tick(env, kit, now = Date.now()) {
     // The lines that went out are remembered, so the same one does not come round again soon.
     const went = [...new Set(todo.filter((o) => delivered(o.result || {})).map((o) => (words.get(o.day) || {}).id).filter(Boolean))];
     if (went.length) doc.said = [...(Array.isArray(doc.said) ? doc.said : []).filter((x) => !went.includes(x)), ...went].slice(-SAID_KEPT);
+    const wrote = [...new Set(todo.filter((o) => delivered(o.result || {})).map((o) => words.get(o.day)).filter((w) => w && String(w.id).startsWith("ai-")).map((w) => w.body))];
+    if (wrote.length) doc.written = [...(Array.isArray(doc.written) ? doc.written : []), ...wrote].slice(-WRITTEN_KEPT);
     doc.last = { day: todo[0].day, at: now, ...count };              // for the health check
   });
   return count;

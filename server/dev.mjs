@@ -269,10 +269,18 @@ const CANNED = [
 let cannedAt = 0;
 const MEMORY_ENDINGS = ["said beside the harbour at dusk", "written on the back of a ticket", "whispered before the long train left", "kept for the winter that followed", "told to nobody but the river", "left under a stone by the door", "sung once and never again", "found again years afterwards"];
 
+let nudgeAt = 0;
 function pretendClaude(req) {
   const system = req.system || "";
   if (req.model !== "claude-sonnet-5-5" || req.output_config?.effort !== "medium") return { status: 400, body: { error: { message: "wrong model or effort" } } };
   let text;
+  // The daily reminder's line (server/nudges.js writeLine): a new one each time; NUDGE=bad makes it unusable.
+  if (system.startsWith("You write one push notification")) {
+    nudgeAt += 1;
+    const said = process.env.NUDGE === "bad" ? "x" : process.env.NUDGE === "long" ? "Sunflower, ".repeat(30)
+      : `"Penguin, today's quotes keep asking for you, and so do I. Number ${nudgeAt}." #love`;
+    return { status: 200, body: { stop_reason: "end_turn", content: [{ type: "text", text: said }] } };
+  }
   if (system.startsWith("You are Nishiii, the chat assistant")) {
     if (!Array.isArray(req.tools) || req.tools.length < 8) return { status: 400, body: { error: { message: "tools missing" } } };
     const last = req.messages[req.messages.length - 1];

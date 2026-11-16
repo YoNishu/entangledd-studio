@@ -66,26 +66,36 @@ n4 = morning("2026-11-13")
 check("she posted yesterday: a line that says so", n4 and kind_of.get(n4["body"]) == "streak", n4)
 check("one plain sentence each: no quote pasted in, no second line", all("\n" not in x["body"] and "“" not in x["body"] for x in (n, n2, n3, n4)))
 
-# No line twice while others of its kind are unsaid: fourteen mornings of "today".
-seen = []
-for d in range(14, 28):
-    opened(f"2026-11-{d - 1}")
-    x = morning(f"2026-11-{d}")
-    seen.append(x["body"] if x else None)
-check("fourteen mornings, fourteen different lines", all(seen) and len(set(seen)) == 14 and all(kind_of.get(x) == "today" for x in seen), seen)
-check("the lines said are remembered with the reminders", len(doc("reminders").get("said") or []) >= 17, doc("reminders").get("said"))
-
-posts = doc("posts") + [{"id": "p2", "jobId": "77777777-7777-4777-8777-777777777777", "state": "published", "published": 1795750000000, "created": 1795750000000, "quote": "y"}]   # 27 Nov, late evening India time
-putdoc("posts", posts)
-clock("2026-11-27T05:41:01Z")
-day = doc("reminders")
-for sub in day["subs"]: sub["lastDay"] = ""
-putdoc("reminders", day)
+# No line twice while others of its kind are unsaid: the rest of the "today" lot, morning after morning.
+NAMES = ["Dhruuu", "penguin", "sunflower", "baby", "waifu"]
+check("every line of the lot uses one of the names he calls her", all(any(k.lower() in b.lower() for k in NAMES) for b in every), [b for b in every if not any(k.lower() in b.lower() for k in NAMES)])
 import datetime
-stamp = int(datetime.datetime(2026, 11, 27, 4, 0, tzinfo=datetime.timezone.utc).timestamp() * 1000)
-posts[-1]["published"] = posts[-1]["created"] = stamp; putdoc("posts", posts)
-cron()
-check("on a day she has already posted: no reminder", pushes() == [])
+def days(start, n): return [(datetime.date.fromisoformat(start) + datetime.timedelta(days=i)).isoformat() for i in range(n)]
+def a_morning(day):
+    opened((datetime.date.fromisoformat(day) - datetime.timedelta(days=1)).isoformat())
+    x = morning(day)
+    return x["body"] if x else None
+left_today = len(LINES["today"]) - 1                       # one went out above
+seen = [a_morning(d) for d in days("2026-11-14", left_today)]
+check("the whole lot goes out before anything else: every morning a different line of it", all(seen) and len(set(seen + [n2["body"]])) == len(LINES["today"]) and all(kind_of.get(x) == "today" for x in seen), seen)
+check("the lines said are remembered with the reminders", len(doc("reminders").get("said") or []) >= len(LINES["today"]) + 3, doc("reminders").get("said"))
+
+# The lot is finished: from now on a fresh line is written for each day.
+after = days("2026-11-14", left_today + 3)[-3:]
+w1, w2 = a_morning(after[0]), a_morning(after[1])
+check("once the lot is finished, a fresh line is written for the day", w1 and w1 not in kind_of and w1.startswith("Penguin, today's quotes keep asking for you"), w1)
+check("tidied for a notification: no quotation marks, no hashtag, short", w1 and '"' not in w1 and "#" not in w1 and len(w1) <= 130, w1)
+check("a different one the next day, and each is kept so it is not echoed", w2 and w2 != w1 and w2 not in kind_of and doc("reminders").get("written") == [w1, w2], (w2, doc("reminders").get("written")))
+asked = [c for c in http("GET", "/__claude_log")[1] if str(c.get("system", "")).startswith("You write one push notification")] if http("GET", "/__claude_log")[0] == 200 else None
+if asked is not None:
+    sent = json.dumps(asked)
+    check("what goes to Claude for it: the kind of morning and his names for her, nothing she wrote", "today's five quotes are ready" in sent and w1 in sent and "A line." not in sent and "letmein" not in sent, sent[:400])
+
+day = after[2]
+stamp = int(datetime.datetime.fromisoformat(day + "T04:00:00+00:00").timestamp() * 1000)
+putdoc("posts", doc("posts") + [{"id": "p2", "jobId": "77777777-7777-4777-8777-777777777777", "state": "published", "published": stamp, "created": stamp, "quote": "y"}])
+opened((datetime.date.fromisoformat(day) - datetime.timedelta(days=1)).isoformat())
+check("on a day she has already posted: no reminder", morning(day) is None)
 s, b, _ = http("POST", "/api/reminders/test", {"endpoint": phone.endpoint}, T)
 got = pushes()
 check("the test reminder reads as Nishiii too", bool(got) and phone.read(got[0])["notification"]["title"] == "Nishiii 💌", (s, b))
