@@ -710,6 +710,7 @@ function foundAt(v) {
 // those works comes back, not even one a word or two different; and it receives "said" when fewer came back
 // because nothing new is left to find. At most ASK_ROUND quotes per request: the phone asks again for more.
 const ASK_ROUND = 10;
+const KNOWN_BY_NISHIII = 2024;       // the latest year of a work Nishiii is asked to quote from memory
 async function suggestFrom(env, b, already, out = {}) {
   const date = todayIST();
   const count = Math.min(ASK_ROUND, Math.max(1, Number(b.count) || 5));
@@ -781,8 +782,14 @@ async function suggestFrom(env, b, already, out = {}) {
     fresh.push(...got.items);
     reading = got.reading || [];
     waiting = got.waiting || [];
-    // A work with pages still to read gets its lines from them in the next rounds, not from memory.
-    short = got.short.filter((w) => !reading.includes(w) && !waiting.some((x) => x.work === w));
+    // A work with pages still to read gets its lines from them in the next rounds, not from memory. Unless its
+    // pages have given next to nothing so far (real case: a well-known drama whose reviews quote no line): then
+    // Nishiii's memory fills this round while the reading goes on in the rounds after.
+    const pagesRead = (w) => { const m = (w.found && w.found.more) || {}; return (m.mdl ? Math.max(0, (m.mdl.next || 1) - 1) : 0) + (m.gr ? Math.max(0, (m.gr.next || 1) - 1) : 0) + (m.pages || []).filter((p) => p.read).length; };
+    const thin = (w) => ((w.found && w.found.lines) || []).length < 3 && pagesRead(w) >= 3;
+    short = got.short.filter((w) => (!reading.includes(w) || thin(w)) && !waiting.some((x) => x.work === w));
+    // Never from memory for a work newer than Nishiii can know: what came back would be invented, not remembered.
+    short = short.filter((w) => !(w.known && Number(w.known.year) > KNOWN_BY_NISHIII));
     if (reading.length) out.reading = got.said;
     dry = got.dry || [];
     searchedFor = { works: named.map((x) => x.title), paid: false,
@@ -791,7 +798,9 @@ async function suggestFrom(env, b, already, out = {}) {
   const want = count - fresh.length;
   const more = short.length + pages.length > 0 || !!about && !withText.length && !named.length;
   const pending = reading.length + waiting.length > 0;          // works whose lines come from pages still to read
-  if (want > 0 && fromWorks && (more || (!fresh.length && !pending))) {
+  // (With nothing at all and no work left to ask about, memory is asked only for books whose own text gave nothing:
+  // never a general question in the name of a work that was left out above.)
+  if (want > 0 && fromWorks && (more || (!fresh.length && !pending && withText.length > 0))) {
     const fallback = !more ? withText : [];            // the text gave nothing usable: fall back to memory for those books
     const ask = Math.min(10, want + 3);                // a few more than needed, so the engine has a choice
     const brief = {
