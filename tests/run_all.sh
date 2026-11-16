@@ -70,6 +70,7 @@ run posted_by_hand ""                     ""                test_posted_by_hand.
 run ask_looks_again ""                    ""                test_ask_looks_again.py
 run save_draft_ui ""                     ""                test_save_draft_ui.py
 run sites_first    ""                     ""                test_sites_first.py
+run nudges         ""                     ""                test_nudges.py
 run wrong_pages    ""                     ""                test_wrong_pages.py
 run asides         ""                     ""                test_asides.mjs
 run bottom_gap     ""                     ""                test_bottom_gap.py

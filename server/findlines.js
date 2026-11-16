@@ -1371,9 +1371,9 @@ export const runClean = cleanJob;                // for the tests
 // without her phone. Bounded: PROOF_ROUNDS rounds a title for each PROOF_V, whoever calls, and never two within
 // 15 seconds; after that it only reads back what it has. It holds nothing of hers: the titles are fixed, the works
 // are kept apart from the Library (data/proof.json), and no taste or note is used.
-export const PROOF_V = 3;
-const PROOF_ROUNDS = 5;
-const PROOF_WORKS = [["The early spring", "series"], ["True beauty", "series"]];
+export const PROOF_V = 4;
+const PROOF_ROUNDS = 4;
+const PROOF_WORKS = [["True beauty", "series"], ["The early spring", "series"]];
 function proofView(rec, note, look = null) {
   // How the search helpers stand today (counts and the services' own short words; no key, nothing of hers).
   const svc = (u) => (u ? { calls: u.calls || 0, answered: u.answered || 0, refused: u.refused || 0, off: u.off || "", skip: u.skip || [] } : null);

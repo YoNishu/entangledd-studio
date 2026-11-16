@@ -26,6 +26,9 @@ export const OPEN_A_DAY = { results: 60, pages: 120, tavily: 30, serper: 20, ext
 export const EXTRACT_MAX = 20;                 // addresses in one question to Tavily's Extract (its own limit)
 export const EXTRACT_MS = 8000;
 export const ROUND_PAGES = 5;                  // pages read for a work in one more round
+// Of those, a work's own review or quotes pages: fewer at once. (Real run, 16 Nov 2026: of five review pages
+// asked of Extract together, the first two or three came back right and the rest as a short other page.)
+export const ROUND_OWN = 3;
 const RESULTS_MS = 6000, PAGE_MS = 6000;
 // Sites that show nothing without signing in (their snippets are still used), and the search sites themselves.
 const SKIP = /(^|\.)(instagram\.com|pinterest\.[a-z.]+|facebook\.com|tiktok\.com|x\.com|twitter\.com|threads\.net|linkedin\.com|duckduckgo\.com|bing\.com|google\.[a-z.]+|youtube\.com|weibo\.com|douban\.com|imdb\.com)$/;
@@ -239,7 +242,7 @@ export function providers(env) {
 
 // Results for the queries (best first), from the first providers that answer. { list, via }, each result
 // { url, title, snippet, host, via, raw? }. At most MAX_RESULT_PAGES keyless pages in all.
-export async function results(env, kit, state, queries, { enough = 6 } = {}) {
+export async function results(env, kit, state, queries, { enough = 6, always = 1 } = {}) {
   await F.openRecord(env, kit, state);
   const list = [], seen = new Set(), via = [], asked = [];
   let keyless = 0;
@@ -250,8 +253,11 @@ export async function results(env, kit, state, queries, { enough = 6 } = {}) {
   // then to Tavily, then to the public results pages. The first that answers a question is enough for it.
   const count = {}, dead = new Set(), told = new Set();
   const tell = (id, why) => { if (!told.has(id)) { told.add(id); F.step(state, id, "not asked", { why }); } };
-  for (const query of queries) {
-    if (full() || Date.now() - state.began > state.limit) break;
+  // The first "always" questions are asked whatever the earlier ones gave: the sites where lines are written down
+  // hold nothing for some works (real case: a drama whose reviews quote no line), and only a plain search finds
+  // the fan pages that do.
+  for (const [at, query] of queries.entries()) {
+    if (Date.now() - state.began > state.limit || (at >= always && full())) break;
     const q = textOf(query);
     let order = providers(env).filter(([id]) => typeof query === "string" || id === "tavily");
     if (typeof query === "string") order = [...order.filter(([id]) => id === "serper"), ...order.filter(([id]) => id !== "serper")];
@@ -846,7 +852,8 @@ export const gateTally = (state) => (state.refused = state.refused || {});
 export async function linesForWork(env, kit, work, state, { want = 10, have = new Set(), about = "" } = {}) {
   if (!providers(env).length) return { lines: [], pages: [], dropped: {}, off: true };
   const more = state.more || (state.more = newMore());
-  const found = await results(env, kit, state, [siteQuery(work), ...queriesFor(work)]);
+  // With Google's key set, the first plain question always goes out beside the question for the line sites.
+  const found = await results(env, kit, state, [siteQuery(work), ...queriesFor(work)], { always: env.SERPER_API_KEY ? 2 : 1 });
   for (const q of found.asked || []) noteAsked(more, q);
   const list = found.list.filter((r) => !NO_LINES.test(r.host));
   const counts = { results: list.length, read: 0, about: 0, tried: 0 };
@@ -963,8 +970,9 @@ export async function readOn(env, kit, work, state, { want = 30, have = new Set(
   // Pages that came back wrong are asked again first (more thoroughly), then the next ones.
   const take = (o, site, addr) => {
     if (!o) return;
-    for (const n of retries(o)) if (picks.length < ROUND_PAGES && !picks.some((p) => p.o === o && p.n === n)) picks.push({ o, n, url: addr(n), site, again: true });
-    if (!o.done) for (let n = o.next; picks.length < ROUND_PAGES && (!o.last || n <= o.last); n++) if (!picks.some((p) => p.o === o && p.n === n)) picks.push({ o, n, url: addr(n), site });
+    const mine = () => picks.filter((p) => p.o === o).length;
+    for (const n of retries(o)) if (mine() < ROUND_OWN && !picks.some((p) => p.o === o && p.n === n)) picks.push({ o, n, url: addr(n), site, again: true });
+    if (!o.done) for (let n = o.next; mine() < ROUND_OWN && (!o.last || n <= o.last); n++) if (!picks.some((p) => p.o === o && p.n === n)) picks.push({ o, n, url: addr(n), site });
   };
   if (more.mdl) take(more.mdl, "mydramalist", (n) => mdlReviews(more.mdl.path, n));
   if (more.gr && env.QUOTE_SITES !== "off") take(more.gr, "goodreads", (n) => grQuotes(more.gr.id, n));

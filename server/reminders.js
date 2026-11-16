@@ -23,9 +23,12 @@
    This file is one of the app's add-on sections (see SECTIONS in worker.js).
    Handlers are called as handler(request, env, parts, kit). */
 
+import * as nudges from "./nudges.js";            // the words: one short, flirty line a day, by how things stand
+
 const DOC = "reminders";            // data/reminders.json: the phones, each with its time and the day it was last reminded
 const KEY_DOC = "pushkeys";         // data/pushkeys.json: this server's signing key pair
 const MAX_PHONES = 10;
+const SAID_KEPT = 80;               // how many of the lines said lately are remembered, so none comes round again too soon
 const DEFAULT_TIME = "11:11";
 const DAILY = 5;                    // how many quotes Today shows (the same number worker.js uses)
 const GRACE_MINUTES = 60;           // a reminder that could not go out on time is still sent this much later, then dropped for the day
@@ -105,6 +108,7 @@ async function load(env, kit) {
     subs: ok && Array.isArray(doc.subs) ? doc.subs.filter(isSub) : [],
     tokens: ok && doc.tokens && typeof doc.tokens === "object" ? doc.tokens : {},
     last: ok && doc.last && typeof doc.last === "object" ? doc.last : null,
+    said: ok && Array.isArray(doc.said) ? doc.said.filter((x) => typeof x === "string").slice(-SAID_KEPT) : [],   // the lines said lately (nudges.js), newest last
   };
 }
 // Reads the list, lets "change" alter it, and saves it. Read afresh every time, so that a change made
@@ -268,31 +272,23 @@ const gone = (r) => r.status === 404 || r.status === 410;
 // older phones hand the very same words to the app's service worker (web/sw.js), which shows them.
 const notice = (sub, body, tag) => ({
   web_push: 8030,
-  notification: { title: "D's Studio", body, navigate: `${sub.origin || SUBJECT}/`, tag, lang: "en" },
+  notification: { title: nudges.TITLE, body, navigate: `${sub.origin || SUBJECT}/`, tag, lang: "en" },
 });
 
-// How a quote begins, for the reminder: up to its first pause if that comes early, otherwise seven words.
-function opening(quote) {
-  const words = String(quote || "").replace(/\s+/g, " ").replace(/^["“”'‘’\s]+|["“”'‘’\s]+$/g, "").split(" ").filter(Boolean);
-  const pause = words.findIndex((w, i) => i >= 3 && i < 9 && /[,;:.!?—–]$/.test(w));
-  let out = words.slice(0, pause >= 0 ? pause + 1 : 7).join(" ");
-  if (out.length > 60) out = out.slice(0, 60).replace(/\s+\S*$/, "");
-  const cut = out.length < words.join(" ").length;
-  return out ? `“${out.replace(/[\s,;:.!?…-]+$/, "")}${cut ? "…" : ""}”` : "";
-}
-
-// What to say on a given day (India time), or null when she has already posted that day.
-async function wordsFor(env, kit, day) {
-  const [posts, list] = await Promise.all([kit.loadDoc(env, "posts", []), kit.loadDoc(env, `suggestions/${day}`, [])]);
-  const posted = (Array.isArray(posts) ? posts : []).some((p) => p && (p.state === "published" || p.state === "processing") &&
-    dayIST(Number(p.published || p.created) || 0) === day);
-  if (posted) return null;
-  const five = (Array.isArray(list) ? list : []).filter((i) => i && !i.askedFor).slice(0, DAILY);
-  const waiting = five.filter((i) => i.state !== "used" && i.state !== "rejected");
-  if (!five.length) return "Your studio is ready when you are ✨";
-  if (!waiting.length) return "A good moment to post today ✨";
-  const first = opening(waiting[0].text);
-  return `${waiting.length === DAILY ? "Today's five are ready" : "Today's quotes are ready"} ✨${first ? `\n${first}` : ""}`;
+// What to say on a given day (India time): { id, body, kind }, or null when she has already posted that day.
+// One line from Nishiii (nudges.js), of the kind that fits the morning: she has been away two days, a reel is made
+// and waiting, she posted yesterday, or simply today's quotes. "said" is the lines said lately.
+const dayBefore = (day, n) => new Date(Date.parse(day + "T00:00:00Z") - n * 24 * 60 * MIN_MS).toISOString().slice(0, 10);
+async function wordsFor(env, kit, day, said = []) {
+  const [posts, y1, y2, made, queue] = await Promise.all([kit.loadDoc(env, "posts", []), kit.loadDoc(env, `suggestions/${dayBefore(day, 1)}`, []),
+    kit.loadDoc(env, `suggestions/${dayBefore(day, 2)}`, []), kit.loadDoc(env, "made", []), kit.loadDoc(env, "queue", [])]);
+  const list = Array.isArray(posts) ? posts : [];
+  const postedOn = (d) => list.some((p) => p && (p.state === "published" || p.state === "processing") && dayIST(Number(p.published || p.created) || 0) === d);
+  if (postedOn(day)) return null;
+  const opened = (l) => Array.isArray(l) && l.length > 0;                 // a day's list exists only when she opened Today that day
+  const waiting = (Array.isArray(queue) && queue.length > 0) || (Array.isArray(made) && made.some((m) => m && !m.posted && !list.some((p) => p && p.jobId === m.jobId)));
+  const kind = nudges.kindFor({ openedYesterday: opened(y1) || postedOn(dayBefore(day, 1)), openedDayBefore: opened(y2) || postedOn(dayBefore(day, 2)), waiting, postedYesterday: postedOn(dayBefore(day, 1)) });
+  return { ...nudges.pick(kind, day, said), kind };
 }
 
 // ---------------------------------------------------------------- the timer
@@ -318,9 +314,9 @@ export async function tick(env, kit, now = Date.now()) {
   // Whatever goes wrong from here on (storage, the signing key), every phone still gets an outcome,
   // so a day that was marked above is never left marked with nothing sent.
   const fresh = {};
-  try {
-    const words = new Map();                             // day -> what to say, or null: she has posted
-    for (const day of new Set(todo.map((o) => o.day))) words.set(day, await wordsFor(env, kit, day));
+  const words = new Map();
+  try {                             // day -> what to say, or null: she has posted
+    for (const day of new Set(todo.map((o) => o.day))) words.set(day, await wordsFor(env, kit, day, before.said));
     for (const o of todo) o.posted = words.get(o.day) === null;
     const sending = todo.filter((o) => !o.posted);
     if (sending.length) {
@@ -329,7 +325,7 @@ export async function tick(env, kit, now = Date.now()) {
       // One signed note per push service, made before the phones are served side by side.
       for (const audience of new Set(sending.map((o) => new URL(o.endpoint).origin))) await tokenFor(keys, before.tokens, fresh, audience, now);
       await Promise.all(sending.map(async (o) => {
-        o.result = await push(keys, before.tokens, fresh, subOf(o), notice(subOf(o), words.get(o.day), "daily-reminder"), { ttl: REMINDER_TTL, topic: "daily-reminder" }, now);
+        o.result = await push(keys, before.tokens, fresh, subOf(o), notice(subOf(o), words.get(o.day).body, "daily-reminder"), { ttl: REMINDER_TTL, topic: "daily-reminder" }, now);
       }));
     }
   } catch (e) {
@@ -351,6 +347,9 @@ export async function tick(env, kit, now = Date.now()) {
       sub.trouble = o.result.reason || (o.result.status ? `status ${o.result.status}` : "no answer");
       if ((sub.tries || 0) < TRIES_A_DAY) sub.lastDay = o.was;       // not sent: the next timer run tries again
     }
+    // The lines that went out are remembered, so the same one does not come round again soon.
+    const went = [...new Set(todo.filter((o) => delivered(o.result || {})).map((o) => (words.get(o.day) || {}).id).filter(Boolean))];
+    if (went.length) doc.said = [...(Array.isArray(doc.said) ? doc.said : []).filter((x) => !went.includes(x)), ...went].slice(-SAID_KEPT);
     doc.last = { day: todo[0].day, at: now, ...count };              // for the health check
   });
   return count;
@@ -387,7 +386,7 @@ async function sendTest(env, kit, endpoint) {
   if (now - (sub.lastTest || 0) < TEST_GAP_MS) throw new kit.UserError(429, "Sent a moment ago. Give it a few seconds.");
   const fresh = {};
   const result = await push(await keysFor(env, kit), doc.tokens, fresh, sub,
-    notice(sub, "This is how your reminder will look ✨", "reminder-test"), { ttl: TEST_TTL, topic: "reminder-test" }, now);
+    notice(sub, nudges.SAMPLE, "reminder-test"), { ttl: TEST_TTL, topic: "reminder-test" }, now);
   await update(env, kit, (latest) => {
     Object.assign(latest.tokens, fresh);
     if (gone(result)) latest.subs = latest.subs.filter((s) => s.endpoint !== endpoint);

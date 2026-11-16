@@ -23,14 +23,14 @@ def ask_round(T, w, n):
     assert s == 200, (s, b)
     fresh = [next(i for i in b["items"] if i["id"] == f) for f in b.get("fresh") or []]
     return fresh, b.get("said") or "", b.get("left"), b.get("reading") or "", o["storage"] + o["outside"]
-def find(T, w, want, rounds=24):
+def find(T, w, want, rounds=40):
     """As the Find quotes sheet does: rounds of five until she has the number, or nothing is left."""
     got, saids, readings, costs, empty = [], [], [], [], 0
     for _ in range(rounds):
         fresh, said, left, reading, cost = ask_round(T, w, min(ROUND, want - len(got)))
         got += fresh; saids.append(said); readings.append(reading); costs.append(cost)
         empty = 0 if fresh else empty + 1
-        if len(got) >= want or (not fresh and not left) or empty >= 6: break
+        if len(got) >= want or (not fresh and not left) or empty >= 12: break
     return got, saids, readings, costs
 
 REMARK_WORDS = ["SO good", "really just happen", "top-notch", "one more episode", "how original", "happy for once", "Quiet Hit"]
@@ -55,8 +55,9 @@ check("none of them a reviewer's own remark or a headline", not [t for t in ta i
 check("none twice", len(set(ta)) == len(ta), ta)
 ext = [e for e in log1 if "urls" in e]
 pages = [u for e in ext for u in e["urls"]]
-check("the review pages are read through Extract: page 1, then 2 to 6, ...", any(u.endswith("/reviews") for u in pages) and all(f"/reviews?page={n}" in " ".join(pages) for n in range(2, 7)), pages)
-check("one Extract call for several pages (never more than 20 a call)", any(len(e["urls"]) >= 5 for e in ext) and all(len(e["urls"]) <= 20 for e in ext), [len(e["urls"]) for e in ext])
+# (Three of a work's own pages a round: asked for five at once, the real service sent the last ones back wrong.)
+check("the review pages are read through Extract: page 1, then 2, 3, 4, ...", any(u.endswith("/reviews") for u in pages) and all(f"/reviews?page={n}" in " ".join(pages) for n in range(2, 5)), pages)
+check("one Extract call for several pages (never more than 20 a call)", any(len(e["urls"]) >= 3 for e in ext) and all(len(e["urls"]) <= 20 for e in ext), [len(e["urls"]) for e in ext])
 check("Extract is asked as its reference says (basic, at most 20 addresses)", all(e["body"].get("extract_depth") == "basic" and e["body"].get("format") in ("markdown", "text") for e in ext), [e["body"] for e in ext][:1])
 own = [e["own"] for e in log1 if "own" in e]
 check("the app's own fetch of the site that refused it is not tried again", len(own) <= 1, own)
@@ -72,7 +73,7 @@ check("still none a remark or a headline", not [t for t in tb if bad(t)], [t for
 
 # ---- 3. on until every page is read, then the plain honest sentence
 allgot, last_said, rounds = ta + tb, "", 0
-for _ in range(10):
+for _ in range(30):
     c, s3, _, k = find(T, w, 10)
     allgot += texts(found(c)); rounds += len(k); last_said = s3[-1]
     if len(c) < 10: break

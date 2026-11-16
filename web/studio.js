@@ -355,7 +355,7 @@
   // has the number she asked for, while a round brings something or the server says there are pages left to read
   // ("left"), and says what it is doing ("Found 6 of 10. Reading more reviews of …"). It ends saying why: every
   // page read and nothing more, a service resting until tomorrow, or her own "Stop".
-  const ROUNDS = 24, EMPTY_ROUNDS = 6;
+  const ROUNDS = 40, EMPTY_ROUNDS = 10;    // three of a work's own pages a round, and many pages hold no line: it keeps going while pages are left
   function stopButton() {
     let b = $("ask-stop");
     if (!b) {

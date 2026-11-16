@@ -8,7 +8,7 @@
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
-const FALLBACK = { title: "D's Studio", body: "A good moment to post today ✨", tag: "daily-reminder", url: "/" };
+const FALLBACK = { title: "Nishiii 💌", body: "Psst. Your quotes are ready. I'm ready. The only thing missing is you.", tag: "daily-reminder", url: "/" };
 
 // Only ever opens a page of this app.
 function ownPage(address) {
