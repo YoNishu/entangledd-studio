@@ -301,7 +301,15 @@ export function rank(list, names = [], not = []) {
   const low = names.map((n) => String(n).toLowerCase()).filter((n) => n.length >= 2);
   const score = (r) => {
     const t = `${r.title} ${r.snippet}`.toLowerCase();
-    return (low.some((n) => t.includes(n)) ? 4 : 0) + (GOOD.test(r.host) ? 2 : 0) + (/quote|lines|dialogue/.test(t) ? 1 : 0);
+    // A page that says in its own title or address that it holds quotes comes first, whatever its site: a fan's
+    // "best quotes" page before a forum thread or a news item on a site that is usually good. (Real case, 16 Nov
+    // 2026: a drama's forum threads and a news article were read while the quote pages Google found waited.)
+    let where = "";
+    try { where = decodeURIComponent(new URL(r.url).pathname).toLowerCase(); } catch (e) { where = ""; }
+    const named = /\bquot(e|es|ed)\b|\blines\b|\bdialogues?\b|\bsayings\b/;
+    const beside = /(^|\.)mydramalist\.com$/.test(r.host || "") && !/\/reviews\b/.test(where);      // its forum, news, lists and profiles
+    return (low.some((n) => t.includes(n)) ? 4 : 0) + (named.test(String(r.title || "").toLowerCase()) || /quot|dialogue/.test(where) ? 4 : named.test(t) ? 1 : 0)
+      + (GOOD.test(r.host) && !beside ? 2 : 0) - (beside ? 1 : 0);
   };
   return list.map((r, i) => ({ r, i, s: score(r) })).filter((x) => x.r.host && !SKIP.test(x.r.host) && !not.includes(x.r.url))
     .sort((a, b) => b.s - a.s || a.i - b.i).map((x) => x.r);
@@ -984,7 +992,7 @@ export async function readOn(env, kit, work, state, { want = 30, have = new Set(
       const found = await results(env, kit, state, [q], { enough: 8 });
       const list = found.list.filter(readable);
       learnPlaces(kit, work, more, list);
-      notePages(more, list, () => false);
+      notePages(more, rank(list, [work.real || work.title, work.original].filter(Boolean)), () => false);
       if (more.mdl) take(more.mdl, "mydramalist", (n) => mdlReviews(more.mdl.path, n));
       rest = more.pages.filter((p) => !p.read).slice(0, ROUND_PAGES - picks.length);
     }

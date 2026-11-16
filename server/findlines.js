@@ -1371,9 +1371,9 @@ export const runClean = cleanJob;                // for the tests
 // without her phone. Bounded: PROOF_ROUNDS rounds a title for each PROOF_V, whoever calls, and never two within
 // 15 seconds; after that it only reads back what it has. It holds nothing of hers: the titles are fixed, the works
 // are kept apart from the Library (data/proof.json), and no taste or note is used.
-export const PROOF_V = 4;
+export const PROOF_V = 5;
 const PROOF_ROUNDS = 4;
-const PROOF_WORKS = [["True beauty", "series"], ["The early spring", "series"]];
+const PROOF_WORKS = [["True beauty", "series"], ["Twisted love", "book"], ["Harry Potter", "film"]];
 function proofView(rec, note, look = null) {
   // How the search helpers stand today (counts and the services' own short words; no key, nothing of hers).
   const svc = (u) => (u ? { calls: u.calls || 0, answered: u.answered || 0, refused: u.refused || 0, off: u.off || "", skip: u.skip || [] } : null);
@@ -1381,6 +1381,8 @@ function proofView(rec, note, look = null) {
     open: look.open || {}, sites: Object.fromEntries(Object.entries(look.sites || {}).map(([k, v]) => [k, { ok: v.ok || 0, failed: v.failed || 0, why: v.why || "", until: v.until || 0 }])) } } : {}), works: rec.works.map((w) => ({ title: w.title, type: w.type, rounds: w.rounds, done: !!w.done,
     known: w.item && w.item.known ? { real: w.item.known.real || "", year: w.item.known.year || 0, country: w.item.known.country || "", characters: (w.item.known.characters || []).length } : null,
     kept: kept(w.item || {}).length, left: !!w.left, log: w.log,
+    listed: (((w.item || {}).found || {}).more || { pages: [] }).pages.map((p) => ({ site: p.site, title: String(p.title || "").slice(0, 70), read: !!p.read, got: p.got || 0 })),
+    own: ((((w.item || {}).found || {}).more || {}).mdl) || null,
     lines: kept(w.item || {}).map((l) => ({ text: l.text, by: l.by || "", site: l.site || "", check: !!l.verify })) })) };
 }
 async function proofRound(env, kit) {
