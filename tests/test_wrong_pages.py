@@ -28,7 +28,7 @@ asked = [u for e in ext for u in e["urls"]]
 again = [e for e in ext if e["body"].get("extract_depth") == "advanced"]
 check("the pages that came back wrong were asked for again", all(sum(1 for u in asked if u.endswith(f"reviews?page={n}")) >= 2 for n in (2, 4, 9)), [u for u in asked if u.endswith(("page=2", "page=4", "page=9"))])
 check("the second time more thoroughly, and only those pages", len(again) >= 1 and all(u.endswith(("page=2", "page=4", "page=9")) for e in again for u in e["urls"]), [e["urls"] for e in again])
-check("a wrong page is no sign that the reviews are over: all 30 pages are read", mdl.get("done") and mdl["next"] == 31 and not mdl.get("bad"), mdl)
+check("a wrong page is no sign that the reviews are over: they are read to where they stop giving lines", mdl.get("done") and mdl["next"] >= 27 and not mdl.get("bad"), mdl)
 check("so every real line is found, the ones on those pages too: all 40", len(work["found"]["lines"]) == 40, len(work["found"]["lines"]))
 check("nothing from the wrong page is offered as a line", not any("relief" in l["text"] or "Hundred Days" in l["text"] for l in work["found"]["lines"]))
 finish()

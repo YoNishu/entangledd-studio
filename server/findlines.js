@@ -991,6 +991,7 @@ async function lookUp(env, kit, item, need, about, taste, state) {
   // be asked, only lines whose page shows by its structure that they are said in the work stay.
   const judged = await S.judge(env, kit, work, lines, { state });
   lines = judged.kept;
+  O.settleQuiet(state, lines);                     // a page whose "lines" were all refused gave nothing
   const gate = gateNote(state, judged, lines.length);
   const all = [...kept(work), ...lines].slice(-KEEP);
   const steps = state.trail.slice();

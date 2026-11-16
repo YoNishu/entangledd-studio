@@ -965,6 +965,25 @@ export function readingWhat(work, more) {
   return `Reading more pages about ${title}…`;
 }
 
+// "Quiet" pages are pages that gave no line that was KEPT: counted again here after the judge, because a page of
+// reviewers' remarks in quotation marks gives candidates and not one line. (Real case, 16 Nov 2026: a drama whose
+// 46 review pages quote nothing would have been read to the end.) QUIET such pages in a row end the reading.
+export function settleQuiet(state, keptLines) {
+  const more = state.more;
+  if (!more) return;
+  for (const o of [more.mdl, more.gr].filter(Boolean)) {
+    const mine = (state.justRead || []).filter((p) => p.o === o).sort((a, b) => a.n - b.n);
+    if (mine.length) {
+      let q = o.q0 || 0;
+      for (const p of mine) q = keptLines.some((l) => addressKey(l.url) === addressKey(p.url)) ? 0 : q + 1;
+      o.quiet = q;
+      if (q >= QUIET) o.done = true;
+    }
+    delete o.q0;
+  }
+  delete state.justRead;
+}
+
 // One more round for a work: up to ROUND_PAGES pages not read yet: its next MyDramaList review pages, its next
 // Goodreads quotes pages, then the search results not read yet (best first); when none is left, the next question
 // not asked yet (one more search at most). Review and quotes pages are read by the app itself while their site lets
@@ -1029,6 +1048,9 @@ export async function readOn(env, kit, work, state, { want = 30, have = new Set(
   };
   await pick(pagesRead, true);
   await pick(aboutIt, false);
+  // For settleQuiet (below), once the judge has spoken: the own pages read in this round, and how quiet it was before.
+  state.justRead = picks.filter((p) => !p.again && pagesRead.some((x) => x.pick === p)).map((p) => ({ o: p.o, n: p.n, url: p.url }));
+  for (const o of [more.mdl, more.gr].filter(Boolean)) o.q0 = o.quiet || 0;
   // What each page gave; three review pages in a row with nothing new end the reviews; a page past the last ends them too.
   const gave = (u) => lines.filter((l) => addressKey(l.url) === addressKey(u)).length;
   for (const o of [more.mdl, more.gr].filter(Boolean)) {
