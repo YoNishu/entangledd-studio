@@ -39,7 +39,8 @@ const PICK = 12;                        // lines Nishiii may pick from one page
 const UA = "DsStudio/1.0 (personal quotes app; one search and one page per title)";
 const HOUR = 60 * 60 * 1000;
 // Raised whenever the way of looking changes, so that works looked up the old way are looked up afresh.
-const LOOK_VERSION = 7;                // 6: every line through the gate (said.js); 7: a reading list, read on round by round
+const LOOK_VERSION = 8;                // 6: every line through the gate (said.js); 7: a reading list, read on round by round;
+                                       // 8: reading lists made before 16 Nov's fixes start afresh (the old rules closed them too soon)
 const RETRY_HOURS = [2, 12, 48];        // a look that found nothing is tried again after this long, then after 30 days
 const MODEL_DAYS = 7;                   // the models a key may use are asked again after this long
 const QUESTIONS = 3;                    // questions to Gemini and OpenAI together for one look at one work
@@ -964,7 +965,7 @@ async function lookUp(env, kit, item, need, about, taste, state) {
   const readMore = { cost: 7, name: "more", get off() { return !O.leftToRead(env, work, state.more); }, look: async () => {
     try {
       const got = await O.readOn(env, kit, work, state, { want: 30, have, about });
-      if (got.waiting) { waiting = got.waiting; step(state, "more", "not asked", { why: got.waiting.why === "limit" ? "the app's daily limit of pages read through Tavily" : "Tavily's page reader is resting" }); return; }
+      if (got.waiting) { waiting = got.waiting; step(state, "more", got.waiting.why === "unread" ? "no answer" : "not asked", { why: got.waiting.why === "limit" ? "the app's daily limit of pages read through Tavily" : got.waiting.why === "unread" ? "the pages could not be read just now" : "Tavily's page reader is resting" }); return; }
       step(state, "more", got.lines.length ? "found" : got.read ? "no line passed" : "no page", { n: got.lines.length, pages: got.read });
       if (got.lines.length && !where) where = got.lines[0].url;
       lines = lines.concat(got.lines);
@@ -1395,6 +1396,7 @@ async function proofRound(env, kit) {
   rec.at = Date.now();
   await kit.saveDoc(env, "proof", rec);                    // stamped first, so two calls at once do not both run a round
   const state = newState(env);
+  state.proof = true;                                      // its pages are counted apart from her day's
   state.keepRefused = [];                                  // (the proving run alone keeps what the judge refused, to be read here)
   state.keepPages = [];                                    // (and a look at the pages that came back through Extract)
   const item = w.item || { id: w.id, title: w.title, type: w.type };

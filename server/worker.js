@@ -853,8 +853,10 @@ async function suggestFrom(env, b, already, out = {}) {
   // Pages left to read, but the service that reads them rests until tomorrow: said plainly, naming it.
   if (fresh.length < count && waiting.length) {
     const w = waiting[0].wait;
-    const why = w.why === "limit" ? "I've read as many pages as I may today" : w.why === "used up" ? "Tavily, which reads the pages for me, has used up today's allowance" : "Tavily, which reads the pages for me, is resting";
-    out.said = [out.said, `${why}. I'll read more of ${andTitles(waiting.map((x) => x.work.title))} ${w.why === "resting" && w.until - Date.now() < 3 * 3600 * 1000 ? "soon" : "tomorrow"}.`].filter(Boolean).join(" ");
+    const why = w.why === "limit" ? "I've read as many pages as I may today" : w.why === "used up" ? "Tavily, which reads the pages for me, has used up today's allowance"
+      : w.why === "unread" ? "The pages wouldn't open just now" : "Tavily, which reads the pages for me, is resting";
+    out.said = [out.said, w.why === "unread" ? `${why}. Try ${andTitles(waiting.map((x) => x.work.title))} again in a few minutes: there is more to read.`
+      : `${why}. I'll read more of ${andTitles(waiting.map((x) => x.work.title))} ${w.why === "resting" && w.until - Date.now() < 3 * 3600 * 1000 ? "soon" : "tomorrow"}.`].filter(Boolean).join(" ");
     out.waiting = waiting.map((x) => x.work.id);
   }
   // Nothing this round, but pages are left to read (or wait for tomorrow): no error, the phone goes on or says why.

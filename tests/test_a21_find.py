@@ -119,8 +119,8 @@ http("GET", "/__extract_set?mode=ok")
 rec = doc("lookups") or {}
 day = (rec.get("open") or {})
 print("  pages read through Extract today:", day.get("extract"))
-check("the day's count of pages read through Extract is kept, and within its cap", 0 < day.get("extract", 0) <= 150, day)
-day["extract"] = 150; rec["open"] = day; rec["sites"].pop("extract", None); putdoc("lookups", rec)
+check("the day's count of pages read through Extract is kept, and within its cap", 0 < day.get("extract", 0) <= 300, day)
+day["extract"] = 300; rec["open"] = day; rec["sites"].pop("extract", None); putdoc("lookups", rec)
 w3 = another("The Willow Station (2026)")
 xlog()
 c, s7, _, _ = find(T, w3, 10)
@@ -128,5 +128,5 @@ check("at the day's cap, Extract is not asked", not [e for e in xlog() if "urls"
 check("and she is told the day's pages are read", "as many pages as I may today" in s7[-1], s7)
 items, _ = part_now(T, "services")
 line = items["lookups"]["line"]
-check("the health record names Tavily's page reader and today's count", "Tavily's page reader: 150 of 150 pages read today" in line, line[:500])
+check("the health record names Tavily's page reader and today's count", "Tavily's page reader: 300 of 300 pages read today" in line, line[:500])
 finish()

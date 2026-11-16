@@ -22,7 +22,7 @@ export const PAGE_BYTES = 400 * 1024;          // the most read from one page
 export const MAX_RESULT_PAGES = 2;             // results pages asked for one search
 export const MAX_PAGES = 4;                    // pages fetched for one search
 export const KEYED_QUERIES = 2;                // questions to Tavily or Serper for one search
-export const OPEN_A_DAY = { results: 60, pages: 120, tavily: 30, serper: 20, extract: 150 };   // Tavily: 1,000 credits a month (Extract: 1 per 5 pages read); Serper: 2,500 once
+export const OPEN_A_DAY = { results: 60, pages: 120, tavily: 30, serper: 20, extract: 300 };   // Tavily: 1,000 credits a month (Extract: 1 per 5 pages read); Serper: 2,500 once
 export const EXTRACT_MAX = 20;                 // addresses in one question to Tavily's Extract (its own limit)
 export const EXTRACT_MS = 8000;
 export const ROUND_PAGES = 5;                  // pages read for a work in one more round
@@ -368,7 +368,11 @@ export async function readPages(env, kit, state, list, max = MAX_PAGES) {
 // This is the one way a page that turns the app away is read: never by pretending to be a browser, never by
 // asking again and again. Markdown is asked for, so a page's links (a review page's "?page=N") stay readable.
 export const canExtract = (env, state) => !!env.TAVILY_API_KEY && !!state.rec && !F.resting(state, "extract") && !extractCapped(state);
-const extractCapped = (state) => { const c = state.rec && state.rec.open; return !!(c && c.day === state.rec.day && (c.extract || 0) >= OPEN_A_DAY.extract); };
+// (The proving run counts its pages apart, state.proof: it must never use up her day. Real case, 16 Nov 2026: it did.)
+const PROOF_PAGES_A_DAY = 60;
+const capKey = (state) => (state.proof ? "extractProof" : "extract");
+const capMax = (state) => (state.proof ? PROOF_PAGES_A_DAY : OPEN_A_DAY.extract);
+const extractCapped = (state) => { const c = state.rec && state.rec.open; return !!(c && c.day === state.rec.day && (c[capKey(state)] || 0) >= capMax(state)); };
 // An address as Extract may give it back (with or without a slash at its end).
 export const addressKey = (u) => String(u || "").replace(/#.*$/, "").replace(/\/+$/, "");
 // The first moment of tomorrow, India time (the day the app counts by).
@@ -391,7 +395,7 @@ export async function extractPages(env, kit, state, urls, depth = "basic") {
   await F.openRecord(env, kit, state);
   const s0 = state.rec.sites.extract;
   if (F.resting(state, "extract")) { F.step(state, "extract", "not asked", { why: s0 && s0.used ? "Tavily's allowance is used up until tomorrow" : "it turned the app away earlier" }); return out; }
-  const cap = capOf(state.rec, kit), room = OPEN_A_DAY.extract - (cap.extract || 0);
+  const cap = capOf(state.rec, kit), room = capMax(state) - (cap[capKey(state)] || 0);
   if (room <= 0) { F.step(state, "extract", "not asked", { why: "the app's daily limit of pages read through Tavily" }); return out; }
   const ask = [...new Set(urls.map(String).filter((u) => /^https:\/\//.test(u)))].slice(0, Math.min(EXTRACT_MAX, room));
   if (!ask.length) return out;
@@ -421,7 +425,7 @@ export async function extractPages(env, kit, state, urls, depth = "basic") {
       }
     }
     const failed = Array.isArray(data.failed_results) ? data.failed_results.length : 0;
-    cap.extract = (cap.extract || 0) + out.size;            // only pages that were read count (and cost)
+    cap[capKey(state)] = (cap[capKey(state)] || 0) + out.size;            // only pages that were read count (and cost)
     state.dirty = true;
     state.extracted = (state.extracted || 0) + out.size;
     F.step(state, "extract", out.size ? "read" : "no page", { n: out.size, ...(failed ? { why: `${failed} could not be read` } : {}) });
@@ -1037,6 +1041,9 @@ export async function readOn(env, kit, work, state, { want = 30, have = new Set(
   const wait = extractWait(env, state);
   // Nothing could be read because Extract rests (or the day's pages are read): the list stays as it was.
   if (!pagesRead.length && !others.length && wait) return { lines: [], pages: [], read: 0, waiting: wait };
+  // Pages were asked for and not one came back (the reader failed on them): that is not "nothing more to find".
+  // A page that keeps failing is given up after TRIES (its count goes up below); the round says it could not read.
+  const unread = !pagesRead.length && !others.length && (picks.length > 0 || rest.length > 0);
   const names = [work.real || work.title, work.original].filter(Boolean);
   const aboutIt = others.filter((p) => namesWork(kit, work, p.text, p));
   const lines = [];
@@ -1068,7 +1075,13 @@ export async function readOn(env, kit, work, state, { want = 30, have = new Set(
       if (o.quiet >= QUIET || (o.last && o.next > o.last)) o.done = true;
     }
   }
-  for (const p of rest) { p.read = true; p.got = gave(p.url); }
+  // A result page that could not be read is tried once more in a later round, then left.
+  for (const p of rest) {
+    const came = others.some((x) => addressKey(x.url) === addressKey(p.url));
+    if (!came && !p.tried) { p.tried = 1; continue; }
+    p.read = true; p.got = gave(p.url);
+  }
+  if (unread) return { lines: [], pages: [], read: 0, waiting: { who: "extract", why: "unread", until: Date.now() + 2 * 60 * 1000 } };
   say(env, "read on", { title: work.title, own: picks.map((p) => p.url), pages: rest.map((p) => p.url), read: pagesRead.length + others.length, lines: lines.length });
   return { lines, pages: [...pagesRead, ...aboutIt], read: pagesRead.length + others.length };
 }

@@ -186,6 +186,7 @@ export async function handle(req, res, url, tools) {
   log.push(entry);
   if (req.headers.authorization !== "Bearer " + KEY || mode.extract === "badkey") return send((entry.status = 401), { detail: { error: "Unauthorized: missing or invalid API key." } });
   if (mode.extract === "used") return send((entry.status = 432), { detail: { error: "This request exceeds your plan's set usage limit." } });
+  if (mode.extract === "down") return send((entry.status = 500), { detail: { error: "Internal server error" } });
   if (mode.extract === "slow") return send((entry.status = 429), { detail: { error: "Rate limit exceeded." } }, "application/json", { "Retry-After": "30" });
   if (!urls.length || urls.length > 20) return send((entry.status = 400), { detail: { error: "Between 1 and 20 URLs." } });
   const results = [], failed_results = [];

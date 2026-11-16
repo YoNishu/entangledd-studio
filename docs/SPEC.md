@@ -439,10 +439,10 @@ What: for a named work, more of the pages that hold its lines are read, a round 
   the key is set and (a) the site refuses the app (403, 202, 429, a "prove you are human" page) or rests as blocked
   for the day, or (b) a search result came without its text. One call for up to 20 addresses, 8 s, 400 KB a page
   kept. Nothing else ever gets round a site's refusal: no other route, no browser pretence, no retries.
-- Its limits: `OPEN_A_DAY.extract` = 150 pages a day (30 credits; only pages read count). 401: rests a day; 429:
+- Its limits: `OPEN_A_DAY.extract` = 300 pages a day (60 credits; only pages read count; the proving run counts its own 60 apart). 401: rests a day; 429:
   rests for its Retry-After (1 to 60 minutes); 432/433 (allowance used up): rests until tomorrow (India time). The
   trail says "Read through Tavily: 5 pages"; the health line "Looking things up" says "Tavily's page reader: n of
-  150 pages read today", and when it rests, until when.
+  300 pages read today", and when it rests, until when.
 - The reading list, kept on the work with its lines (`found.more`): `{ pages: [{ url, site, title, read, got }],
   mdl: { path, next, last, quiet, done }, gr: { id, next, last, quiet, done }, asked: [question] }`. MyDramaList's
   address comes from a Tavily result on mydramalist.com that names the work, or its search page (read through
