@@ -4,7 +4,9 @@
      change; a background or music file is sent once and then named by its id.
    - When a reel is made, what it was made from goes with it (PUT /api/drafts/keep/<job>), and the server keeps
      it under "Made, not posted" in Posts the moment the reel is ready.
-   - Edit (on that list, on the waiting and hand-over cards, and on the finished reel) puts everything back exactly.
+   - Edit (on that list, on the waiting and hand-over cards, and on the finished reel) puts everything back exactly:
+     her words and settings at once, the background and the music as they arrive from the server, piece by piece
+     (see "brought back to this phone" below). Nothing waits for a file, and a file never lands on other work.
    - Starting something new never loses the earlier piece: what is still waiting to be saved is sent first, and the
      server sets the earlier draft aside. Those are listed in Posts, Drafts ("Not finished yet"), with Continue.
      Hiding or closing the app sends what is waiting to be saved at once.
@@ -25,6 +27,9 @@
     "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm", "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/mp4": "m4a",
     "audio/x-m4a": "m4a", "audio/aac": "aac", "audio/wav": "wav", "audio/x-wav": "wav", "audio/ogg": "ogg", "audio/flac": "flac" };
   const nameFor = (file) => (/\.[a-z0-9]{2,5}$/i.test(file.name || "") ? file.name : `file.${TYPES[file.type] || "bin"}`);
+  // The kind of a file by its name's ending (an iPhone plays a video only when its kind is said).
+  const KINDS = { ...Object.fromEntries(Object.entries(TYPES).reverse().map(([type, ext]) => [ext, type])), jpeg: "image/jpeg", m4v: "video/mp4" };
+  const kindFor = (name) => KINDS[((String(name || "").match(/\.([a-z0-9]{2,5})$/i) || [])[1] || "").toLowerCase()] || "";
   async function upload(file) {
     const tell = (pct) => { const f = listeners.get(file); if (f) f(pct); };
     const start = await send("drafts/files", "POST", { size: file.size, name: nameFor(file) });
@@ -75,7 +80,14 @@
     if (!ready || !S.server.on || S.isBlank()) return null;  // a blank composer never overwrites a draft
     const files = S.draftFiles(), d = S.draft();
     // words: false when the words are still a style's sample; what follows keeps the same background and music.
-    return { files, body: { id: d.id, of: d.of, words: !S.isBlank(true), snap: complete(S.snapshot(), files) } };
+    return { files, body: { id: d.id, of: d.of, words: !S.isBlank(true), snap: stillNamed(complete(S.snapshot(), files)) } };
+  }
+  // While a draft's background or music is on its way back to this phone (open(), below), the composer has none
+  // yet: what is saved meanwhile keeps naming the kept file, so the draft never loses it. Not once she has chosen
+  // or removed one herself.
+  function stillNamed(snap) {
+    for (const k of ["bg", "music"]) if (!snap[k] && coming(k)) snap[k] = pending.snap[k];
+    return snap;
   }
   // Saves are sent one after another, each with the composer as it was when it was asked for. A file still on its
   // way does not hold up the saves after it.
@@ -103,7 +115,9 @@
   // and before another draft or reel is opened here.
   function flush() { return timer || unsaved ? save() : chain; }
   // Only a style's sample words: the new piece keeps the background and music, so there is nothing to send.
-  S.beforeNew = () => (S.isBlank(true) ? chain : flush());
+  // A draft still being brought back is saved as it is (its files stay named) and then left: nothing of it may
+  // arrive in the new piece. (It did: a quote from Today was overwritten by the draft. Her case, 17 Nov 2026.)
+  S.beforeNew = () => { const sent = S.isBlank(true) ? chain : flush(); cancelOpen(); note(""); return sent; };
   // Hiding or closing the app: the request is made so that it is still sent as the page goes.
   function flushOnHide() {
     if (!(timer || unsaved)) return;
@@ -147,32 +161,125 @@
   }
   carry.addEventListener("click", () => { if (offered) open(offered.snap, { draftId: offered.id, of: offered.of }); });
 
-  async function fetchFile(f) {
-    if (!f || !f.file) return null;
-    try {
-      const blob = await (await S.api("drafts/files/" + f.file)).blob();
-      const file = new File([blob], f.name || nameFor({ name: "", type: f.type }), { type: f.type || blob.type });
-      known(file, f.file);
-      return file;
-    } catch (e) { return null; }
+  // ---------- a draft's background and music, brought back to this phone ----------
+  // Piece by piece (GET drafts/files/<id>?from=&len=): a dropped connection costs one piece, which is asked for
+  // again, and she sees how far it is. A file brought back once is kept for the next time (the last few).
+  const PIECE = 2 * 1024 * 1024, PIECE_TRIES = 4, PIECE_WAIT_MS = 60000, KEEP_FILES = 4;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const brought = new Map();          // file id -> File
+  async function bring(f, signal, tell) {
+    if (brought.has(f.file)) return brought.get(f.file);
+    const parts = [];
+    let got = 0, total = Infinity;
+    while (got < total) {
+      let piece = null, last = null;
+      for (let t = 0; t < PIECE_TRIES && !piece; t++) {
+        if (signal.aborted) throw new Error("left");
+        const ctl = new AbortController(), stop = () => ctl.abort(), timer = setTimeout(stop, PIECE_WAIT_MS);
+        signal.addEventListener("abort", stop);
+        try {
+          const res = await S.api(`drafts/files/${f.file}?from=${got}&len=${PIECE}`, { signal: ctl.signal });
+          const size = Number(res.headers.get("X-File-Size")), blob = await res.blob();
+          if (!(size > 0) || !blob.size) throw new Error("empty");
+          total = size; piece = blob;
+        } catch (e) {
+          if (e.status === 404 || e.status === 401 || signal.aborted) throw e;      // gone, signed out, or left
+          last = e;
+          await sleep(700 * (t + 1));
+        } finally { clearTimeout(timer); signal.removeEventListener("abort", stop); }
+      }
+      if (!piece) throw last;
+      parts.push(piece); got += piece.size;
+      tell(Math.min(1, got / total));
+    }
+    const name = f.name || nameFor({ name: "", type: f.type });
+    const file = new File(parts, name, { type: f.type || kindFor(name) });
+    known(file, f.file);
+    brought.set(f.file, file);
+    while (brought.size > KEEP_FILES) brought.delete(brought.keys().next().value);
+    return file;
   }
-  let opening = 0;
+
+  // The piece being brought back: { id, snap, ticket, bg, music } with bg and music one of
+  //   "coming" (being fetched), "failed" (the connection; it can be tried again), or "" (here, gone, or never there).
+  let opening = 0, pending = null, leave = null;
+  const NAMES = { bg: "background", music: "music" };
+  // Is this file of the open piece still to come (and has she left that part of the composer alone)?
+  const coming = (k) => !!pending && !!pending[k] && pending.id === S.draft().id && S.asks()[k] === pending.ticket[k];
+  function cancelOpen() {
+    opening++;
+    if (leave) leave.abort();
+    leave = null; pending = null;
+  }
+  const both = (ks) => ks.map((k) => NAMES[k]).join(" and ");
+  // What Create says while files come back, and after.
+  function tellComing(pct, words) {
+    const on = ["bg", "music"].filter((k) => pending && pending[k] === "coming" && coming(k));
+    const failed = ["bg", "music"].filter((k) => pending && pending[k] === "failed" && coming(k));
+    const gone = pending ? pending.gone : [];
+    const lost = gone.length === 2 ? "The background and the music are no longer kept. Choose them again."
+      : gone[0] === "bg" ? "The background is no longer kept. Choose it again in Background."
+      : gone[0] === "music" ? "The music is no longer kept. Choose it again in Music." : "";
+    if (on.length) { note(`Bringing back your ${both(on)}…${pct > 0 ? ` ${Math.round(pct * 100)}%` : ""}`); return; }
+    if (failed.length) {
+      note(`Your ${both(failed)} didn't come through. Check your connection.`);
+      const again = el("button", { type: "button", className: "draftline", id: "draft-again", textContent: "Try again" });
+      again.addEventListener("click", () => { if (pending) fetchInto(pending, opening, failed, words); });
+      // Never a dead end: she can also go on without, and the draft is saved that way from then on.
+      const without = el("button", { type: "button", className: "draftline", id: "draft-without", textContent: failed.length > 1 ? "Carry on without them" : "Carry on without it" });
+      without.addEventListener("click", () => { if (!pending) return; for (const k of failed) pending[k] = ""; tellComing(0, words); soon(); });
+      say.append(" ", again, " ", without);
+      return;
+    }
+    note([lost, words].filter(Boolean).join(" "));
+  }
+  // Fetches the named files of the piece p and puts each into the composer as it arrives.
+  async function fetchInto(p, mine, kinds, words) {
+    const signal = leave.signal, far = {};
+    const show = () => { if (mine === opening) tellComing(kinds.reduce((t, k) => t + (far[k] || 0), 0) / kinds.length, words); };
+    for (const k of kinds) { p[k] = "coming"; far[k] = 0; }
+    show();
+    await Promise.all(kinds.map(async (k) => {
+      let file = null, why = "";
+      try { file = await bring(p.snap[k], signal, (part) => { far[k] = part; show(); }); }
+      catch (e) { why = e.status === 404 ? "gone" : "failed"; }
+      if (mine !== opening) return;
+      far[k] = 1;
+      if (!file) {
+        if (why === "gone") { p[k] = ""; p.gone.push(k); if (p.id === S.draft().id) soon(); }     // saved without it from now on
+        else p[k] = "failed";
+        show();
+        return;
+      }
+      if (!coming(k)) { p[k] = ""; show(); return; }            // she chose or removed one herself meanwhile: hers stays
+      const failed = await S.attach(p.ticket, p.snap, { [k]: file });
+      if (mine !== opening) return;
+      p[k] = failed.length ? "failed" : "";
+      show();
+    }));
+  }
   async function open(snap, ids, words) {
     flush();                                       // the piece open now is saved first, and so set aside
-    const mine = ++opening;
+    cancelOpen();
+    const mine = opening;
+    leave = new AbortController();
     hideCarry();
-    note(snap.bg || snap.music ? "Bringing back your background and music…" : "");
-    const [bg, music] = await Promise.all([fetchFile(snap.bg), fetchFile(snap.music)]);
-    if (mine !== opening) return;
     K.setOrigin(snap.origin);
     caption = snap.caption || "";
     $("post-caption").value = caption;
-    const missing = await S.restore(snap, { bg, music }, ids);
-    const lost = missing.length === 2 ? "The background and the music are no longer kept. Choose them again."
-      : missing[0] === "background" ? "The background is no longer kept. Choose it again in Background."
-      : missing[0] === "music" ? "The music is no longer kept. Choose it again in Music." : "";
-    note([lost, words].filter(Boolean).join(" "));
+    // Her words and settings are back at once; the background and the music follow as they arrive.
+    const ticket = S.restore(snap, ids);
+    const kinds = ["bg", "music"].filter((k) => snap[k] && snap[k].file);
+    pending = { id: ticket.id, snap, ticket, bg: "", music: "", gone: ["bg", "music"].filter((k) => snap[k] && !snap[k].file) };
+    if (kinds.length) await fetchInto(pending, mine, kinds, words);
+    else tellComing(0, words);
   }
+  // Asked by the composer before a reel is made: never without a background or music that is still on its way.
+  S.filesComing = () => {
+    const on = ["bg", "music"].filter((k) => coming(k) && pending[k] === "coming"), failed = ["bg", "music"].filter((k) => coming(k) && pending[k] === "failed");
+    return on.length ? `Your ${both(on)} ${on.length > 1 ? "are" : "is"} still coming back. Give it a moment, then create the reel.`
+      : failed.length ? `Your ${both(failed)} didn't come through. Tap "Try again" at the top, or choose ${failed.length > 1 ? "them" : "it"} again.` : "";
+  };
 
   // Edit on a made reel: everything as it was, on the Text tab. If her draft already goes on from this reel, that is
   // what opens (it is newer). Making it again replaces it in Posts, unless it is waiting elsewhere or was posted.

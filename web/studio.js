@@ -881,7 +881,7 @@
           { from: "library", title: item.title, artist: item.artist, licence: item.licence, credit: item.credit });
         $("tune-sheet").hidden = true;
         tuneStatus("");
-      } catch (e) { tuneStatus(friendly(e)); }
+      } catch (e) { tuneStatus(e.stale ? "" : friendly(e)); }
       finally { use.disabled = false; }
     });
     return el("li", {}, el("div", {}, el("p", { className: "main", textContent: item.title }),
@@ -966,7 +966,7 @@
         await S.loadBackground(new File([blob], `stock-${item.id}.${video ? "mp4" : "jpg"}`, { type: video ? "video/mp4" : "image/jpeg" }), { from: "search", words: stock.q, credit: item.credit || "" });
         $("stock-sheet").hidden = true;
         status("");
-      } catch (e) { if (mine === pickNo) status(friendly(e)); }
+      } catch (e) { if (mine === pickNo) status(e.stale ? "" : friendly(e)); }
       finally { b.removeAttribute("aria-busy"); if (mine === pickNo) fetching = false; }
     });
     return b;

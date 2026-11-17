@@ -26,6 +26,7 @@ const HANDOFF_HOURS = 72;                         // as in worker.js: a hand-ove
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PART_SIZE = 8 * 1024 * 1024;                // as for a reel's background: equal parts of at least 5 MB
 const MAX_FILE_BYTES = 500 * 1024 * 1024;
+const MAX_PIECE_BYTES = 8 * 1024 * 1024;          // the most given back in one piece (see GET drafts/files/<id>?from=&len=)
 const MAX_SNAP_CHARS = 64 * 1024;
 const MAX_THUMB_BYTES = 300 * 1024;
 const FILE_TYPES = /^(bin|jpg|jpeg|png|heic|heif|webp|gif|mp4|mov|m4v|webm|mp3|m4a|aac|wav|ogg|oga|flac)$/;
@@ -152,9 +153,22 @@ async function fileRoutes(request, env, parts, kit) {
   }
   if (!UUID.test(id || "")) return kit.fail(404, "No such file.");
   if (parts.length === 3 && method === "GET") {
+    // ?from=<byte>&len=<bytes>: one piece of the file. The phone brings a file back piece by piece, so a dropped
+    // connection costs one piece, not the whole video, and she sees how far it is. X-File-Size is the whole file's.
+    const from = Number(url.searchParams.get("from")), len = Number(url.searchParams.get("len"));
+    if (url.searchParams.has("from")) {
+      if (!(Number.isInteger(from) && from >= 0 && Number.isInteger(len) && len > 0)) return kit.fail(400, "That piece of the file can't be given.");
+      const head = await env.MEDIA.head(fileKey(id));
+      if (!head) return kit.fail(404, "That file is no longer kept.");
+      if (from >= head.size) return kit.fail(416, "The file ends before that.");
+      const length = Math.min(len, MAX_PIECE_BYTES, head.size - from);
+      const piece = await env.MEDIA.get(fileKey(id), { range: { offset: from, length } });
+      if (!piece) return kit.fail(404, "That file is no longer kept.");
+      return new Response(piece.body, { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(length), "X-File-Size": String(head.size), "Cache-Control": "no-store" } });
+    }
     const obj = await env.MEDIA.get(fileKey(id));
     if (!obj) return kit.fail(404, "That file is no longer kept.");
-    return new Response(obj.body, { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(obj.size), "Cache-Control": "no-store" } });
+    return new Response(obj.body, { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(obj.size), "X-File-Size": String(obj.size), "Cache-Control": "no-store" } });
   }
   if (parts.length === 4 && parts[3] === "complete" && method === "POST") {
     const b = await kit.body(request);

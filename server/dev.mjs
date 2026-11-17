@@ -254,6 +254,7 @@ async function pretendGraph(method, url, form) {
 }
 const openverseLog = [];
 const outsidePosts = [];     // reels "posted from the Instagram app itself", added by /__posted_in_instagram
+const filesMode = { slow: 0, fail: 0, down: 0, asked: 0 };      // see /__files_set
 const MEDIA_DIR = process.env.DEV_MEDIA || "";   // folder holding sea.mp4 and sky.jpg for the pretend Pexels
 
 const CANNED = [
@@ -667,6 +668,17 @@ http.createServer(async (req, res) => {
         : url.pathname.endsWith(".mp3") ? "audio/mpeg" : url.pathname.endsWith(".m4a") ? "audio/mp4" : "image/jpeg";
       res.writeHead(200, { "Content-Type": type, "Content-Length": data.length }).end(data);
       return;
+    }
+    // GET /__files_set?slow=<ms>&fail=<n>&down=1|0   a draft's file coming back: each piece waits that long; the next
+    // n pieces fail (the connection drops); down: every piece fails until it is set back.
+    if (url.pathname === "/__files_set") {
+      for (const k of ["slow", "fail", "down"]) if (url.searchParams.has(k)) filesMode[k] = Number(url.searchParams.get(k)) || 0;
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(filesMode)); return;
+    }
+    if (req.method === "GET" && /^\/api\/drafts\/files\/[0-9a-f-]{36}$/.test(url.pathname)) {
+      filesMode.asked++;
+      if (filesMode.slow) await new Promise((r) => setTimeout(r, filesMode.slow));
+      if (filesMode.down || filesMode.fail > 0) { if (filesMode.fail > 0) filesMode.fail--; req.socket.destroy(); return; }
     }
     if (url.pathname.startsWith("/api/")) {
       const hasBody = !["GET", "HEAD"].includes(req.method);

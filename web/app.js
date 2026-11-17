@@ -520,43 +520,71 @@
     $("done").hidden = true;
   }
   // "info" says where the file came from: { from: "search", words } for one picked from the photo and video search.
-  function loadBackground(file, info) {
+  // Only the background asked for last takes effect (bgAsk), and a file that never opens is given up after
+  // MEDIA_WAIT_MS: a load that hung once left the whole composer waiting (her case, 17 Nov 2026).
+  // opts (for a draft's own background coming back, see attach): { still } says whether it is still wanted;
+  // { keepLength } leaves the reel's length as the draft has it.
+  const MEDIA_WAIT_MS = 20000;
+  const staleError = () => Object.assign(new Error("Something else was chosen meanwhile."), { stale: true });
+  let bgAsk = 0;
+  function loadBackground(file, info, opts = {}) {
     const origin = { from: (info && info.from) || "own", words: (info && info.words) || "", credit: (info && info.credit) || "" };
+    const mine = ++bgAsk;
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
       const isVideo = file.type.startsWith("video/") || /\.(mov|mp4|m4v|webm)$/i.test(file.name);
-      const fail = () => {
+      let over = false, v = null;
+      const wanted = () => mine === bgAsk && (!opts.still || opts.still());
+      const fail = (err) => {
+        if (over) return;
+        over = true; clearTimeout(timer);
+        if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
         URL.revokeObjectURL(url);
-        reject(new Error(`This ${isVideo ? "video" : "photo"} couldn't be opened. Try a different file.`));
+        reject(err && err.stale ? err : new Error(`This ${isVideo ? "video" : "photo"} couldn't be opened. Try a different file.`));
+      };
+      const timer = setTimeout(fail, MEDIA_WAIT_MS);
+      const use = (el, kind) => {
+        if (over) return;
+        if (!wanted()) { fail(staleError()); return; }
+        over = true; clearTimeout(timer);
+        clearBackground();
+        state.bg = { kind, el, url, name: file.name, file, ...origin };
+        if (kind === "video") {
+          if (!opts.keepLength && isFinite(el.duration)) state.length = Math.round(Math.min(30, Math.max(5, el.duration)));
+          el.play().catch(() => {});
+        }
+        syncBackgroundPane();
+        saveDraft();
+        resolve();
       };
       if (isVideo) {
-        const v = document.createElement("video");
-        v.muted = true; v.loop = true; v.playsInline = true; v.setAttribute("playsinline", "");
-        v.addEventListener("loadeddata", () => {
-          clearBackground();
-          state.bg = { kind: "video", el: v, url, name: file.name, file, ...origin };
-          if (isFinite(v.duration)) state.length = Math.round(Math.min(30, Math.max(5, v.duration)));
-          v.play().catch(() => {});
-          syncBackgroundPane();
-          saveDraft();
-          resolve();
-        }, { once: true });
-        v.addEventListener("error", fail, { once: true });
+        v = document.createElement("video");
+        v.muted = true; v.loop = true; v.playsInline = true; v.preload = "auto";
+        v.setAttribute("playsinline", ""); v.setAttribute("muted", "");
+        // An iPhone says "loadeddata" only for a video that is playing, and plays one only when it likes (not at all
+        // in Low Power Mode until she taps): the video's size and length ("loadedmetadata") are enough to begin.
+        for (const name of ["loadedmetadata", "loadeddata", "canplay"]) v.addEventListener(name, () => use(v, "video"), { once: true });
+        v.addEventListener("error", () => fail(), { once: true });
         v.src = url; v.load();
+        v.play().catch(() => {});
       } else {
         const img = new Image();
-        img.onload = () => { clearBackground(); state.bg = { kind: "image", el: img, url, name: file.name, file, ...origin }; syncBackgroundPane(); saveDraft(); resolve(); };
-        img.onerror = fail;
+        img.onload = () => use(img, "image");
+        img.onerror = () => fail();
         img.src = url;
       }
     });
   }
+  // A background video that the phone paused (the app was away, Low Power Mode) plays again at her next tap.
+  const wakeBackground = () => { const b = state.bg; if (b && b.kind === "video" && b.el.paused) b.el.play().catch(() => {}); };
+  document.addEventListener("pointerdown", wakeBackground, { passive: true });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) wakeBackground(); });
   $("file").addEventListener("change", () => {
     const file = $("file").files[0];
     $("file").value = "";
-    if (file) loadBackground(file).catch((e) => say(e.message));
+    if (file) loadBackground(file).catch((e) => { if (!e.stale) say(e.message); });
   });
-  $("clear-bg").addEventListener("click", () => { clearBackground(); saveDraft(); });
+  $("clear-bg").addEventListener("click", () => { bgAsk++; clearBackground(); saveDraft(); });
 
   // ---------- music that becomes part of the reel: your own file, or a track from the free library ----------
   const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -594,20 +622,36 @@
     $("tune-vol").value = Math.round(m.volume * 100); $("tune-vol-out").textContent = Math.round(m.volume * 100) + "%";
   }
   // "info" describes a library track: { from: "library", title, artist, licence, credit }. Without it, the file is her own.
-  function loadMusic(file, info) {
+  // As for the background: only the music asked for last takes effect, and a file that never opens is given up.
+  // info.start and info.volume (a draft's own music coming back) are kept; opts.still as for loadBackground.
+  let musicAsk = 0;
+  function loadMusic(file, info, opts = {}) {
+    const mine = ++musicAsk;
     return new Promise((resolve, reject) => {
       if (file.size > 40 * 1024 * 1024) { reject(new Error("That file is over 40 MB. Pick a shorter or smaller one.")); return; }
       const ext = ((file.name.match(/\.([a-z0-9]{2,5})$/i) || [])[1] || TUNE_TYPES[file.type] || "").toLowerCase();
       if (!/^(mp3|m4a|aac|wav|ogg|oga|flac|mp4|mov|m4v|webm)$/.test(ext)) { reject(new Error("That file type can't be used for music. Use an MP3, M4A or WAV file, or a video that has sound.")); return; }
       const url = URL.createObjectURL(file), el = new Audio();
       el.preload = "auto";
-      const fail = () => { URL.revokeObjectURL(url); reject(new Error("That file couldn't be opened as music. Try an MP3 or M4A file, or a video that has sound.")); };
-      el.onerror = fail;
+      let over = false;
+      const fail = (err) => {
+        if (over) return;
+        over = true; clearTimeout(timer);
+        el.onerror = el.onloadedmetadata = null; el.removeAttribute("src");
+        URL.revokeObjectURL(url);
+        reject(err && err.stale ? err : new Error("That file couldn't be opened as music. Try an MP3 or M4A file, or a video that has sound."));
+      };
+      const timer = setTimeout(fail, MEDIA_WAIT_MS);
+      el.onerror = () => fail();
       el.onloadedmetadata = () => {
+        if (over) return;
         if (!Number.isFinite(el.duration) || el.duration < 1) { fail(); return; }
+        if (mine !== musicAsk || (opts.still && !opts.still())) { fail(staleError()); return; }
+        over = true; clearTimeout(timer);
         clearMusic();
-        el.volume = 0.8;
-        state.music = { file, url, el, ext, duration: el.duration, start: 0, volume: 0.8, from: (info && info.from) || "own",
+        const volume = Math.min(1, Math.max(0, info && info.volume != null ? +info.volume : 0.8));
+        el.volume = volume;
+        state.music = { file, url, el, ext, duration: el.duration, start: Math.max(0, +(info && info.start) || 0), volume, from: (info && info.from) || "own",
           title: (info && info.title) || file.name.replace(/\.[a-z0-9]{2,5}$/i, ""), artist: (info && info.artist) || "", licence: (info && info.licence) || "", credit: (info && info.credit) || "" };
         syncMusicPane();
         saveDraft();
@@ -620,9 +664,9 @@
     const file = $("tune-file").files[0];
     $("tune-file").value = "";
     $("tune-say").textContent = "";
-    if (file) loadMusic(file).catch((e) => { $("tune-say").textContent = e.message; });
+    if (file) loadMusic(file).catch((e) => { if (!e.stale) $("tune-say").textContent = e.message; });
   });
-  $("tune-clear").addEventListener("click", () => { clearMusic(); saveDraft(); });
+  $("tune-clear").addEventListener("click", () => { musicAsk++; clearMusic(); saveDraft(); });
   $("tune-start").addEventListener("input", () => { state.music.start = +$("tune-start").value; stopTune(); syncMusicPane(); saveDraft(); });
   $("tune-vol").addEventListener("input", () => { state.music.volume = +$("tune-vol").value / 100; state.music.el.volume = state.music.volume; syncMusicPane(); saveDraft(); });
   // Plays the part of the track the reel will use, at the chosen volume, and stops where the reel would end.
@@ -681,11 +725,11 @@
 
   async function api(path, opts = {}) {
     const res = await fetch("/api/" + path, { ...opts, headers: { ...(opts.headers || {}), Authorization: "Bearer " + server.token } });
-    if (res.status === 401) { showLock(); throw new Error("Enter the passcode to continue."); }
+    if (res.status === 401) { showLock(); throw Object.assign(new Error("Enter the passcode to continue."), { status: 401 }); }
     if (!res.ok) {
       let msg = "Something went wrong on our side. Try again.";
       try { msg = (await res.json()).error || msg; } catch (e) { /* keep the generic message */ }
-      throw new Error(msg);
+      throw Object.assign(new Error(msg), { status: res.status });
     }
     return res;
   }
@@ -908,6 +952,9 @@
       music: state.music && state.shape === "reel" ? state.music.from : "", musicTitle: state.music ? state.music.title : "", musicCredit: state.music ? state.music.credit : "" };
   }
   async function makeReel() {
+    // A draft's background or music still coming back (web/drafts.js): the reel is not made without them.
+    const coming = window.Studio.filesComing ? window.Studio.filesComing() : "";
+    if (coming) { $("done").textContent = coming; $("done").hidden = false; return; }
     const made = madeWith(), music = state.music;
     const snap = snapshot(), files = draftFiles();      // what this reel is made from, kept so she can come back to it
     stopTune();
@@ -1044,34 +1091,26 @@
         from: m.from, title: m.title, artist: m.artist, licence: m.licence, credit: m.credit } : null };
   }
   const draftFiles = () => ({ bg: state.bg ? state.bg.file : null, music: state.music ? state.music.file : null });
-  // Puts a snapshot back exactly. files = { bg, music } as File objects (either may be missing). Answers what
-  // could not be brought back ("background", "music").
-  async function restore(snap, files = {}, ids = {}) {
+  // Puts a snapshot's words and settings back, at once and without waiting for anything; its background and music
+  // follow with attach() as web/drafts.js fetches them. (They used to be awaited here first: when one never
+  // arrived, the composer was left half put back and saved nothing more. Her case, 17 Nov 2026.)
+  // Answers a ticket: which piece of work this is, and the last background and music asked for.
+  function restore(snap, ids = {}) {
     restoring = true;
-    const missing = [];
     try {
       stopTune();
       if (reel) $("result").pause();
       syncReelPane("setup"); $("done").hidden = true;
+      bgAsk++; musicAsk++;                     // a background or music still on its way for the earlier piece is dropped
       clearBackground(); clearMusic();
       state.shape = snap.shape === "post" ? "post" : "reel";
       setShape(state.shape);
-      if (snap.bg) {
-        if (files.bg) await loadBackground(files.bg, snap.bg).catch(() => missing.push("background"));
-        else missing.push("background");
-      }
       state.blocks = (snap.blocks || []).map((b) => ({ ...newBlock("", STYLES[snap.style] ? snap.style : "sea", 0), ...b, id: nextId++ }));
       if (!state.blocks.length) state.blocks = [newBlock("", "sea", 0)];
       state.shadow = snap.shadow !== false; state.fade = !!snap.fade; state.mute = snap.mute !== false;
       state.length = Math.min(30, Math.max(5, +snap.length || 8));
       state.style = STYLES[snap.style] ? snap.style : "sea";
       state.author = typeof snap.author === "string" ? snap.author : "";
-      if (snap.music) {
-        if (files.music) {
-          await loadMusic(files.music, snap.music).catch(() => missing.push("music"));
-          if (state.music) { state.music.start = +snap.music.start || 0; state.music.volume = +snap.music.volume || 0.8; state.music.el.volume = state.music.volume; }
-        } else missing.push("music");
-      }
       if (ids.draftId) state.draftId = ids.draftId;
       state.of = ids.of || "";
       document.querySelectorAll("#styles button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.style === state.style)));
@@ -1081,7 +1120,24 @@
       redraw();
     } finally { restoring = false; }
     saveDraft();
-    return missing;
+    return { id: state.draftId, bg: bgAsk, music: musicAsk };
+  }
+  // The background and the music of the piece put back by restore(), each as its file arrives. A file is used only
+  // while that piece is still the one open and she has not chosen (or removed) a background or music herself
+  // meanwhile: hers always stays. Answers which could not be opened ("background", "music").
+  async function attach(ticket, snap, files = {}) {
+    const failed = [], here = () => state.draftId === ticket.id;
+    if (snap.bg && files.bg && here() && bgAsk === ticket.bg) {
+      const p = loadBackground(files.bg, snap.bg, { still: here, keepLength: true });
+      ticket.bg = bgAsk;
+      await p.catch((e) => { if (!e.stale) failed.push("background"); });
+    }
+    if (snap.music && files.music && here() && musicAsk === ticket.music) {
+      const p = loadMusic(files.music, snap.music, { still: here });
+      ticket.music = musicAsk;
+      await p.catch((e) => { if (!e.stale) failed.push("music"); });
+    }
+    return failed;
   }
   // Nothing of her own in Create yet: no background, no music, and only the sample words of a style.
   // isBlank(true): only the sample words (a background or music may be chosen).
@@ -1116,11 +1172,12 @@
     replaceSelectedText: (t) => edit((b) => { b.text = t; }),
     // Drafts (web/drafts.js). A quote put on the canvas from outside begins a new piece of work.
     setQuote: (text, author) => { newDraft(); setQuote(text, author); },
-    snapshot, draftFiles, restore, isBlank, openOn, thumbBlob,
+    snapshot, draftFiles, restore, attach, isBlank, openOn, thumbBlob,
+    asks: () => ({ bg: bgAsk, music: musicAsk }),
     draft: () => ({ id: state.draftId, of: state.of, updated: changedAt }),
     setDraft: (d) => { if (d.id) state.draftId = d.id; if (d.of != null) state.of = d.of; saveDraft(); },
     newDraft: () => { newDraft(); saveDraft(); },
-    storeFile: null, keepJob: null, beforeNew: null,          // filled in by web/drafts.js
+    storeFile: null, keepJob: null, beforeNew: null, filesComing: null,          // filled in by web/drafts.js
   };
 
   // ---------- start ----------
