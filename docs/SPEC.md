@@ -11,7 +11,7 @@ list at the end, "Ideas for later, only if she asks".
 | Instagram account | `@theentangledd`, professional (Creator), linked to the "Entangledd" Facebook Page |
 | Assistant | Nishiii. Speaks to the user as "you" or Dhruuu |
 | Posting | Never automatic. Every post waits for a tap |
-| Instagram API route | Facebook Login (the Page is linked), Graph API v25.0, which allows the Instagram music library and reference-account stats |
+| Instagram API route | Facebook Login (the Page is linked), Graph API v27.0, which allows the Instagram music library and reference-account stats |
 | Model behind Nishiii | Claude Sonnet 5.5 through a paid Anthropic API key. If Anthropic retires it, the app moves to the newest Sonnet by itself |
 | Hosting | Free tiers: a Cloudflare Worker with static assets for the app and API, R2 for storage, GitHub Actions for rendering reels |
 | Upkeep | None on a schedule. The app renews, cleans, copies and checks itself, and a weekly Claude task reads its open health record |
@@ -55,6 +55,9 @@ list at the end, "Ideas for later, only if she asks".
 | 32 | Find quotes from memory only what Nishiii can know: never a work newer than 2024; for an older work whose pages give nothing, memory fills the round (marked to check) | Done |
 | 33 | The daily reminder speaks as Nishiii (`server/nudges.js`): one short, flirty line with one of his names for her, of the kind that fits the morning (away two days, a reel waiting, posted yesterday, today's quotes); the lot first, none twice; once a kind's lot is said, a fresh line is written for the day by Claude (only the kind of morning and the names go into the question) | Done |
 | 34 | Opening a draft or a made reel again never waits and never tangles (her case, 17 Nov 2026): her words and settings are back at once; the background and music come from the server piece by piece (`GET /api/drafts/files/<id>?from=&len=`, a dropped piece is asked for again) with how far they are; one she chooses herself meanwhile stays; nothing arrives in a new piece of work; what is saved meanwhile keeps naming the files; a reel is not made while they are coming; a file that never opens is given up after 20 s (a video begins on `loadedmetadata`: an iPhone may never say `loadeddata`), with "Try again" and "Carry on without" | Done |
+| 35 | Every post on her Instagram page is in Posts and Insights (her case, 20 Nov 2026): one she made in Instagram itself comes in as it is (`outside`: its caption and numbers, no quote, nothing assumed about which reel it was; kinds reel, photo, carousel); a waiting reel is still linked only on a wording match; Remove hides a post that is on Instagram (`state: "hidden"`) so it does not come back; a post listed twice is listed once | Done |
+| 36 | Posts as a gallery (three across, 4:5): each post's picture (`GET /api/posts/<id>/picture`: Instagram's cover, fetched once and kept as `thumbs/<media id>`) with its views or reach and its likes on it; a tap opens the post's card in a sheet; Gallery or List is remembered on the phone; the posts as the phone last saw them are shown at once while Instagram is asked | Done |
+| 37 | Less lag (20 Nov 2026): a background video plays only while Create is on screen; a still picture is not read back twice for the contrast check; Instagram is asked for several posts' numbers at once (four at a time) and for removed posts alongside; a posts list that has not changed is not rebuilt | Done |
 
 ## How the app is laid out
 

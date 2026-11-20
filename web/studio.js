@@ -1040,7 +1040,8 @@
     const label = { processing: ["info", "Being processed by Instagram"], published: ["ok", "Posted"], failed: ["bad", "Didn't post"] };
     const [kind, words] = label[p.state] || ["gone", p.state];
     const kids = [el("p", { className: "q", textContent: p.quote || p.caption || "Reel" }), chip(kind, words)];
-    kids.push(el("p", { className: "src", textContent: `${p.kind === "carousel" ? `Carousel of ${p.slides}` : "Reel"}, ${day(p.published || p.created)}${p.via === "instagram" ? ", finished in Instagram" : p.music ? `, music: ${p.music.title || p.music}` : ""}` }));
+    const what = p.kind === "carousel" ? (p.slides ? `Carousel of ${p.slides}` : "Carousel") : p.kind === "photo" ? "Photo" : "Reel";
+    kids.push(el("p", { className: "src", textContent: `${what}, ${day(p.published || p.created)}${p.outside ? ", posted from Instagram" : p.via === "instagram" ? ", finished in Instagram" : p.music ? `, music: ${p.music.title || p.music}` : ""}` }));
     if (p.error) kids.push(el("p", { className: "flag", textContent: p.error }));
     const m = p.metrics;
     if (m && Object.keys(m).length) {
@@ -1052,18 +1053,91 @@
     if (p.permalink) links.append(el("a", { href: p.permalink, target: "_blank", rel: "noopener", className: "ic ic-insta", textContent: "Open" }));
     if (p.state === "published") {
       const talk = el("button", { type: "button", className: "ic ic-chat", textContent: "Comments" });
-      talk.addEventListener("click", () => openComments(p));
+      talk.addEventListener("click", () => { $("postcard-sheet").hidden = true; openComments(p); });
       links.append(talk);
     }
     if (drafts()) links.append(drafts().versionButton(p.id));
     const remove = el("button", { type: "button", className: "last", textContent: "Remove" });
     remove.addEventListener("click", async () => {
-      try { await send("posts/" + p.id, "DELETE"); loadPosts(); } catch (e) { $("posts-note").textContent = friendly(e); }
+      try { await send("posts/" + p.id, "DELETE"); $("postcard-sheet").hidden = true; loadPosts(); } catch (e) { $("posts-note").textContent = friendly(e); }
     });
     links.append(remove);
     kids.push(links);
-    return el("article", { className: "card" }, ...kids);
+    const card = el("article", { className: "card" }, ...kids);
+    card.dataset.post = p.id;
+    return card;
   }
+
+  // ---------- Posts as a gallery ----------
+  // One tile per post: its picture (Instagram's own cover, fetched once and kept by the server), the first words
+  // until the picture is in, and its two main numbers. Tapping a tile opens the post's full card in a sheet.
+  // Pictures are fetched only for tiles on or near the screen, and each one once per visit.
+  const pictures = new Map();          // post id -> promise of an object URL ("" when it has no picture)
+  const pictureOf = (p) => {
+    if (!pictures.has(p.id)) {
+      const got = S.api(`posts/${p.id}/picture`).then((r) => r.blob()).then((b) => URL.createObjectURL(b));
+      pictures.set(p.id, got.catch(() => { setTimeout(() => pictures.delete(p.id), 60000); return ""; }));       // none yet: asked again after a minute
+    }
+    return pictures.get(p.id);
+  };
+  const tileSeen = "IntersectionObserver" in window ? new IntersectionObserver((seen) => {
+    for (const e of seen) if (e.isIntersecting) { tileSeen.unobserve(e.target); if (e.target.fill) e.target.fill(); }
+  }, { rootMargin: "300px" }) : null;
+  function postTile(p) {
+    const m = p.metrics || {}, words = p.quote || p.caption || "";
+    const tile = el("button", { type: "button", className: "tile" }, el("p", { className: "words", textContent: words.slice(0, 120) }));
+    tile.dataset.post = p.id;
+    const shown = [m.views != null && p.kind !== "carousel" && p.kind !== "photo" ? ["ic-play", m.views, "views"] : m.reach != null ? ["ic-insights", m.reach, "people reached"] : null,
+      m.likes != null ? ["ic-heart", m.likes, "likes"] : null].filter(Boolean);
+    if (shown.length) tile.append(el("span", { className: "nums-on" }, ...shown.map(([ic, n]) => el("span", { className: "ic " + ic, textContent: compact(n) }))));
+    if (p.state === "processing") tile.append(el("span", { className: "mark wait", textContent: "Processing" }));
+    else if (p.state === "failed") tile.append(el("span", { className: "mark bad", textContent: "Didn't post" }));
+    else if (p.kind === "carousel") tile.append(el("span", { className: "mark", textContent: "Carousel" }));
+    tile.setAttribute("aria-label", `${words.slice(0, 80) || "Post"}, ${day(p.published || p.created)}${shown.map(([, n, name]) => `, ${compact(n)} ${name}`).join("")}. Open it.`);
+    if (p.picture) {
+      tile.fill = async () => {
+        const url = await pictureOf(p);
+        if (!url) return;
+        const img = el("img", { alt: "", decoding: "async" });
+        img.addEventListener("load", () => { img.classList.add("in"); tile.classList.add("pic"); }, { once: true });
+        img.src = url;
+        tile.prepend(img);
+      };
+      if (tileSeen) tileSeen.observe(tile); else tile.fill();
+    }
+    tile.addEventListener("click", () => openPostSheet(p));
+    return tile;
+  }
+  function openPostSheet(p) {
+    $("postcard-card").replaceChildren(postCard(p));
+    $("postcard-sheet").hidden = false;
+  }
+  $("postcard-close").addEventListener("click", () => { $("postcard-sheet").hidden = true; });
+  $("postcard-sheet").addEventListener("click", (e) => { if (e.target === $("postcard-sheet")) $("postcard-sheet").hidden = true; });
+  // Gallery or list: her choice, remembered on this phone. Only the one shown is built.
+  const VIEW_KEY = "studio.postsView", POSTS_KEY = "studio.posts";
+  let postsView = "grid", lastPosts = [];
+  try { if (localStorage.getItem(VIEW_KEY) === "list") postsView = "list"; } catch (e) { /* private mode: the gallery */ }
+  function showPosts(list) {
+    lastPosts = list;
+    const grid = postsView === "grid";
+    $("posts-view").hidden = !list.length;
+    $("posts-view-grid").setAttribute("aria-pressed", String(grid)); $("posts-view-list").setAttribute("aria-pressed", String(!grid));
+    $("grid-posts").hidden = !grid; $("list-posts").hidden = grid;
+    if (tileSeen) tileSeen.disconnect();
+    $("grid-posts").replaceChildren(...(grid ? list.map(postTile) : []));
+    $("list-posts").replaceChildren(...(grid ? [] : list.map(postCard)));
+    // The sheet, if open, follows the fresh numbers; it closes when its post has left the list.
+    if (!$("postcard-sheet").hidden) {
+      const open = $("postcard-card").firstElementChild, now = open && list.find((x) => x.id === open.dataset.post);
+      if (now) openPostSheet(now); else $("postcard-sheet").hidden = true;
+    }
+  }
+  for (const v of ["grid", "list"]) $("posts-view-" + v).addEventListener("click", () => {
+    postsView = v;
+    try { localStorage.setItem(VIEW_KEY, v); } catch (e) { /* not remembered, still used */ }
+    showPosts(lastPosts);
+  });
 
   // Reels made earlier and kept to post later.
   // "I posted it in Instagram": she posted this reel from the Instagram app herself. It moves to Posted at once;
@@ -1305,23 +1379,32 @@
   // the cards already shown stay until the new ones are ready (and the page does not move).
   async function loadPosts(force = false, quiet = false, round = 0) {
     if (drafts()) drafts().refresh();             // Made, not posted (web/drafts.js), whether or not Instagram is set up
-    if (!S.server.instagram) { $("posts-note").textContent = "Posting to Instagram isn't set up yet."; $("list-posts").replaceChildren(); $("posts-fresh-row").hidden = true; return; }
+    if (!S.server.instagram) { $("posts-note").textContent = "Posting to Instagram isn't set up yet."; showPosts([]); $("posts-fresh-row").hidden = true; return; }
     const mine = ++postsLoading, btn = $("posts-refresh");
+    // At once: the posts as this phone last saw them, while Instagram is asked for the latest.
+    if (!lastPosts.length) {
+      try { const kept = JSON.parse(localStorage.getItem(POSTS_KEY) || "[]"); if (Array.isArray(kept) && kept.length) showPosts(kept); } catch (e) { /* nothing kept */ }
+    }
     await loadIg();
-    if (!quiet && !$("list-posts").children.length) $("posts-note").textContent = "Checking Instagram for the latest…";
+    if (!quiet && !lastPosts.length) $("posts-note").textContent = "Checking Instagram for the latest…";
     btn.disabled = true; btn.setAttribute("aria-busy", "true"); btn.textContent = "Refreshing…";
     try {
       const r = await getJson("posts" + (force ? "?force=1" : ""), { cache: "no-store" });
       if (mine !== postsLoading) return;
-      const y = window.scrollY;
-      $("list-posts").replaceChildren(...r.posts.map(postCard));
-      window.scrollTo(0, y);
+      // Built again only when something on it changed: a list that is the same stays as it is (no flicker, no work).
+      const same = JSON.stringify(r.posts) === JSON.stringify(lastPosts);
+      if (!same) {
+        const y = window.scrollY;
+        showPosts(r.posts);
+        window.scrollTo(0, y);
+        try { localStorage.setItem(POSTS_KEY, JSON.stringify(r.posts)); } catch (e) { /* not kept: asked for next time */ }
+      }
       postsFresh = { checkedAt: r.checkedAt, instagram: r.instagram };
       showPostsFresh();
       getJson("queue").then((q) => { igSees = q.sees !== false; renderQueue(q.queue); }).catch(() => {});
       getJson("handoffs").then((h) => { igSees = h.sees !== false; renderHandoffs(h.handoffs); }).catch(() => {});
       $("posts-note").textContent = !(ig && ig.connected) ? "Instagram isn't connected. Connect it in Settings, at the top right."
-        : r.posts.length ? "Posts you delete on Instagram leave this list too." : "Nothing posted from the app yet.";
+        : r.posts.length ? "Everything on your Instagram page is here. Posts you delete on Instagram leave too." : "Nothing posted yet.";
       // More cards were due than one asking brings in: ask again, quietly.
       if (r.behind > 0 && round < 3) setTimeout(() => { if (!$("view-posts").hidden) loadPosts(false, true, round + 1); }, 400);
     } catch (e) { if (mine === postsLoading) $("posts-note").textContent = friendly(e); }

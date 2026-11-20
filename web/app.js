@@ -168,8 +168,19 @@
     return JSON.stringify([state.blocks, state.selected, state.shadow, W, H, panelOpen(), dragging, textReady, fontsSeen,
       bg ? [bg.url, el.videoWidth || el.naturalWidth || 0, el.readyState || 0, el.currentTime || 0] : 0]);
   }
+  // A background video plays only while Create is on screen. Left playing behind Today, Posts or Insights it kept
+  // the phone decoding video the whole time, which made everything else lag (20 Nov 2026).
+  let wokeAt = 0;
+  function keepVideoInStep(on, now) {
+    const bg = state.bg;
+    if (!bg || bg.kind !== "video") return;
+    if (!on) { if (!bg.el.paused) bg.el.pause(); return; }
+    if (bg.el.paused && now - wokeAt > 1000) { wokeAt = now; bg.el.play().catch(() => {}); }      // (a phone may refuse until her next tap)
+  }
   function loop() {
-    if (onScreen()) {
+    const on = onScreen();
+    keepVideoInStep(on, performance.now());
+    if (on) {
       const bg = state.bg, playing = !!bg && bg.kind === "video" && !bg.el.paused && !bg.el.ended;
       const key = pictureKey(), now = performance.now();
       // A video's picture can arrive a moment after the video says it has one (a paused clip, a first frame):
@@ -201,8 +212,14 @@
     const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
     return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
   };
+  let contrastFor = "";
   function checkContrast() {
     if (!onScreen()) return;                 // nothing to warn about while the picture can't be seen
+    // A still picture that has not changed since the last look needs no second look (reading the picture back
+    // from the screen is slow on a phone). A video is looked at each time: its picture moves.
+    const k = pictureKey();
+    if (k === contrastFor && !(state.bg && state.bg.kind === "video")) return;
+    contrastFor = k;
     const warn = $("warn");
     let worst = null;
     try {
@@ -576,9 +593,9 @@
     });
   }
   // A background video that the phone paused (the app was away, Low Power Mode) plays again at her next tap.
-  const wakeBackground = () => { const b = state.bg; if (b && b.kind === "video" && b.el.paused) b.el.play().catch(() => {}); };
+  // (Only while Create is on screen: elsewhere it stays paused, see keepVideoInStep.)
+  const wakeBackground = () => { const b = state.bg; if (b && b.kind === "video" && b.el.paused && onScreen()) b.el.play().catch(() => {}); };
   document.addEventListener("pointerdown", wakeBackground, { passive: true });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) wakeBackground(); });
   $("file").addEventListener("change", () => {
     const file = $("file").files[0];
     $("file").value = "";
@@ -883,6 +900,7 @@
   function signOut() {
     server.token = "";
     store.del(TOKEN_KEY);
+    store.del("studio.posts");               // the posts as this phone last saw them (web/studio.js)
     server.locked = true;
     showLock();
   }
@@ -1174,6 +1192,7 @@
     setQuote: (text, author) => { newDraft(); setQuote(text, author); },
     snapshot, draftFiles, restore, attach, isBlank, openOn, thumbBlob,
     asks: () => ({ bg: bgAsk, music: musicAsk }),
+    bgPlaying: () => !!(state.bg && state.bg.kind === "video" && !state.bg.el.paused),
     draft: () => ({ id: state.draftId, of: state.of, updated: changedAt }),
     setDraft: (d) => { if (d.id) state.draftId = d.id; if (d.of != null) state.of = d.of; saveDraft(); },
     newDraft: () => { newDraft(); saveDraft(); },

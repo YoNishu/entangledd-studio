@@ -12,6 +12,7 @@ with sync_playwright() as p:
     b=p.chromium.launch(channel="chrome", args=["--autoplay-policy=no-user-gesture-required"])
     ctx=b.new_context(viewport={"width":390,"height":844}, device_scale_factor=2, has_touch=True, is_mobile=True, accept_downloads=True)
     ctx.add_init_script("document.addEventListener('DOMContentLoaded', () => document.querySelectorAll('details.more').forEach((d) => { d.open = true; }))")   # the Add forms now sit in rows that open on a tap; open them all for this walk
+    ctx.add_init_script("try { localStorage.setItem('studio.postsView', 'list'); } catch (e) {}")   # these checks read the posts as a list (the gallery is checked in test_page_posts.py)
     pg=ctx.new_page(); errs=[]
     pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.on("console", lambda m: errs.append("console: "+m.text) if m.type=="error" and "401" not in m.text else None)

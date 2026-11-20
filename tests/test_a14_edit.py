@@ -45,6 +45,7 @@ def until(fn, ms=15000):
 with sync_playwright() as p:
     br = p.chromium.launch(channel="chrome")
     ctx = br.new_context(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True, device_scale_factor=2)
+    ctx.add_init_script("try { localStorage.setItem('studio.postsView', 'list'); } catch (e) {}")   # these checks read the posts as a list (the gallery is checked in test_page_posts.py)
     pg = ctx.new_page()
     errors = []
     pg.on("pageerror", lambda e: errors.append(str(e)))

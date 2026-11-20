@@ -235,7 +235,12 @@ try {
     <div class="fresh" id="posts-fresh-row"><p class="note" id="posts-fresh" role="status"></p><button type="button" class="btn quiet" id="posts-refresh">Refresh</button></div>
     <h2 class="ic ic-check" id="posted-head" hidden>Posted</h2>
     <p class="note" id="posts-note" role="status"></p>
-    <div class="cards" id="list-posts"></div>
+    <div class="seg two" id="posts-view" role="group" aria-label="Show your posts as" hidden>
+      <button type="button" id="posts-view-grid" aria-controls="grid-posts" aria-pressed="true">Gallery</button>
+      <button type="button" id="posts-view-list" aria-controls="list-posts" aria-pressed="false">List</button>
+    </div>
+    <div class="gallery" id="grid-posts"></div>
+    <div class="cards" id="list-posts" hidden></div>
   </div>
 </section>
 
@@ -592,6 +597,16 @@ try {
     <ul class="list tunes" id="tune-list"></ul>
     <button class="btn" id="tune-more" hidden>Show more</button>
     <p class="note">From <a href="https://openverse.org" target="_blank" rel="noopener">Openverse</a>, music its makers have shared for free use. If a track asks for credit, the credit is added to your caption for you.</p>
+  </div>
+</div>
+
+<div class="sheet" id="postcard-sheet" role="dialog" aria-modal="true" aria-labelledby="postcard-title" hidden>
+  <div class="sheet-body">
+    <header class="sheet-head">
+      <h2 id="postcard-title">Your post</h2>
+      <button class="iconbtn close ic ic-close" id="postcard-close" aria-label="Close">Close</button>
+    </header>
+    <div class="cards" id="postcard-card"></div>
   </div>
 </div>
 

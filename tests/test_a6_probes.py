@@ -108,10 +108,10 @@ hset(selfcheck=""); items, _ = part_now(T, "services")
 check("no self-test on GitHub at all reads as 'off'", items["selfcheck"]["state"] == "off", items["selfcheck"])
 
 # ---- Instagram: the version, the permissions
-hset(graphVersion="v27.0"); items, _ = part_now(T, "page")
-check("Meta answering as a newer version than the app asks for is flagged", items["feed"]["state"] == "soon" and "v25.0" in items["feed"]["line"] and "v27.0" in items["feed"]["line"], items["feed"])
+hset(graphVersion="v29.0"); items, _ = part_now(T, "page")
+check("Meta answering as a newer version than the app asks for is flagged", items["feed"]["state"] == "soon" and "v27.0" in items["feed"]["line"] and "v29.0" in items["feed"]["line"], items["feed"])
 check("the open record says it in fixed words", "Your posts on Instagram: Meta has withdrawn the version" in public()["message"], public()["message"])
-hset(graphVersion="v25.0"); items, _ = part_now(T, "page")
+hset(graphVersion="v27.0"); items, _ = part_now(T, "page")
 check("the version the app asks for is fine", items["feed"]["state"] == "ok", items["feed"])
 hset(graphVersion="")
 # A permission that was there and has gone: the Instagram line raises it; the probes don't say it a second time.

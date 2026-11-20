@@ -158,7 +158,8 @@ function audienceOf(posts, tagsDoc) {
     const reach = Number(m.reach != null ? m.reach : m.views) || 0;
     if (reach <= 0) continue;
     const y = (3 * (Number(m.saved) || 0) + 3 * (Number(m.shares) || 0) + 2 * (Number(m.comments) || 0) + (Number(m.likes) || 0)) / reach;
-    measured.push({ f: factsOf({ text: p.quote, theme: p.theme, tone: p.tone, author: p.author, source: p.source }, tagsDoc), y });
+    // (A post she made in Instagram itself has no quote the app knows: it counts towards her usual post, nothing more.)
+    measured.push({ f: p.quote ? factsOf({ text: p.quote, theme: p.theme, tone: p.tone, author: p.author, source: p.source }, tagsDoc) : {}, y });
   }
   const usual = median(measured.map((x) => x.y)) || 1e-4;
   const out = { n: measured.length };
@@ -186,7 +187,7 @@ function recentOf(history, day, posts, now) {
     if (p.author) authors.set(low(p.author, 60), (authors.get(low(p.author, 60)) || 0) + 1);
     seen14.add(tags.theme(p.theme));
   }
-  seen14.delete("");
+  seen14.delete(""); posted.delete("");
   return { authors, works, posted, seen14 };
 }
 

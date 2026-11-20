@@ -124,6 +124,8 @@ async function pretendGraph(method, url, form) {
   const token = q.get("access_token");
   const err = (message, code = 100) => ({ status: 400, body: { error: { message, code } } });
   graphLog.push({ method, path: p, params: Object.fromEntries([...q].filter(([k]) => k !== "access_token" && k !== "client_secret")), token });
+  // GRAPH_SLOW=<ms>: every answer takes that long, as Instagram's do over a real connection.
+  if (Number(process.env.GRAPH_SLOW) > 0) await new Promise((r) => setTimeout(r, Number(process.env.GRAPH_SLOW)));
   if (p === "/oauth/access_token") {
     if (q.get("client_id") !== env.META_APP_ID || q.get("client_secret") !== env.META_APP_SECRET) return err("Invalid app credentials", 101);
     if (!String(q.get("fb_exchange_token")).startsWith("SHORT")) return err("Invalid OAuth access token.", 190);
@@ -210,7 +212,8 @@ async function pretendGraph(method, url, form) {
   }
   if (/^\/M\d+$/.test(p)) {
     if (deleted.has(p.slice(1))) return err("Unsupported get request. Object with ID does not exist.", 100);
-    return { status: 200, body: { permalink: `https://www.instagram.com/reel/TEST${p.slice(2)}/`, id: p.slice(1) } };
+    const cover = /thumbnail_url/.test(q.get("fields") || "") ? { media_type: "VIDEO", thumbnail_url: `http://localhost:${PORT}/__media/sky.jpg` } : {};
+    return { status: 200, body: { permalink: `https://www.instagram.com/reel/TEST${p.slice(2)}/`, id: p.slice(1), ...cover } };
   }
   if (p === "/17890" && /followers_count/.test(q.get("fields") || "") && !/business_discovery/.test(q.get("fields") || "")) {
     return { status: 200, body: { followers_count: Number(process.env.FOLLOWERS || 64), media_count: 18, id: "17890" } };
@@ -218,7 +221,15 @@ async function pretendGraph(method, url, form) {
   if (p === "/17890/media" && method === "GET") {
     return { status: 200, body: { data: [...outsidePosts].reverse() } };
   }
-  if (/^\/OUT\d+$/.test(p)) return { status: 200, body: { id: p.slice(1), permalink: `https://www.instagram.com/reel/${p.slice(1)}/` } };
+  if (/^\/OUT\d+$/.test(p)) {
+    const it = outsidePosts.find((x) => x.id === p.slice(1)) || {};
+    if (deleted.has(p.slice(1))) return err("Unsupported get request. Object with ID does not exist.", 100);
+    // (As Instagram does: a reel has a cover, a photo has itself, an album has neither: its first picture is asked for.)
+    const cover = !/thumbnail_url/.test(q.get("fields") || "") ? {} : it.media_type === "VIDEO" ? { media_type: "VIDEO", thumbnail_url: `http://localhost:${PORT}/__media/bright.jpg` }
+      : it.media_type === "CAROUSEL_ALBUM" ? { media_type: "CAROUSEL_ALBUM" } : { media_type: "IMAGE", media_url: `http://localhost:${PORT}/__media/sky.jpg` };
+    return { status: 200, body: { id: p.slice(1), permalink: `https://www.instagram.com/reel/${p.slice(1)}/`, ...cover } };
+  }
+  if (/^\/OUT\d+\/children$/.test(p)) return { status: 200, body: { data: [{ id: "C1", media_type: "IMAGE", media_url: `http://localhost:${PORT}/__media/sky.jpg` }] } };
   if (/^\/OUT\d+\/insights$/.test(p)) {
     const val = { reach: 8800, views: 15100, likes: 640, comments: 12, saved: 210, shares: 95, total_interactions: 957, ig_reels_avg_watch_time: 5100, ig_reels_video_view_total_time: 2200000, reels_skip_rate: 0.33, reposts: 2 };
     return { status: 200, body: { data: q.get("metric").split(",").filter((n) => n in val).map((name) => ({ name, period: "lifetime", values: [{ value: val[name] }] })) } };
@@ -537,8 +548,10 @@ http.createServer(async (req, res) => {
     if (url.pathname === "/__posted_in_instagram") {
       // Pretends she posted a reel from the Instagram app: ?caption=...&ago=seconds&type=REELS|FEED
       const n = outsidePosts.length + 1, ago = Number(url.searchParams.get("ago") || 0);
-      outsidePosts.push({ id: "OUT" + n, caption: url.searchParams.get("caption") || "", media_type: url.searchParams.get("type") === "FEED" ? "IMAGE" : "VIDEO",
-        media_product_type: url.searchParams.get("type") || "REELS", permalink: `https://www.instagram.com/reel/OUT${n}/`, timestamp: new Date(Date.now() - ago * 1000).toISOString() });
+      // (type=ALBUM: a carousel she made in Instagram)
+      const type = url.searchParams.get("type") || "REELS";
+      outsidePosts.push({ id: "OUT" + n, caption: url.searchParams.get("caption") || "", media_type: type === "FEED" ? "IMAGE" : type === "ALBUM" ? "CAROUSEL_ALBUM" : "VIDEO",
+        media_product_type: type === "ALBUM" ? "FEED" : type, permalink: `https://www.instagram.com/reel/OUT${n}/`, timestamp: new Date(Date.now() - ago * 1000).toISOString() });
       res.writeHead(204).end(); return;
     }
     if (url.pathname === "/__seed_insights") {

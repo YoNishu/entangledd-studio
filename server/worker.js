@@ -1297,8 +1297,10 @@ async function musicRoutes(request, env, parts, url) {
 }
 
 // ---------- Instagram: connect, music, post ----------
-const GRAPH_VERSION = "v25.0";
-let graphAnswered = "";               // the version named in Meta's latest answer; differs once v25.0 has been withdrawn
+// v27.0 since 20 Nov 2026: Meta was already answering her app's v25.0 requests as v27.0 (an app is given no version
+// older than itself), so this names what was in use, and the "withdrawn" notice in Settings goes away.
+const GRAPH_VERSION = "v27.0";
+let graphAnswered = "";               // the version named in Meta's latest answer; differs once this one has been withdrawn
 // Meta can pause an app's access altogether ("API access blocked", code 200). That is decided on Meta's side:
 // an alert in the developer account to confirm, a check of the account, or the app being restricted. While it
 // lasts, every call fails, so the app stops calling by itself (the timers, the checks) and asks again at most
@@ -1466,8 +1468,38 @@ async function publicReel(request, env, parts) {
 const musicName = (m) => (typeof m === "string" ? m : m && typeof m === "object" ? oneLine(m.title || m.name || "", 120) || "a song" : "");
 const publicPost = (p) => ({ id: p.id, state: p.state, error: p.error, caption: p.caption, quote: p.quote, author: p.author,
   music: musicName(p.music) || null, via: p.via || "app", created: p.created, published: p.published, permalink: p.permalink, metrics: p.metrics || null,
-  kind: p.kind || "reel", slides: p.slides || 0, unlinked: !!(p.byHand && !p.mediaId) });
+  kind: p.kind || "reel", slides: p.slides || 0, unlinked: !!(p.byHand && !p.mediaId), outside: !!p.outside, picture: !!p.mediaId });
 const tokenFor = (ig, post) => (post.tokenKind === "user" ? ig.userToken : ig.pageToken);
+
+// A post's picture for the gallery in Posts: Instagram's own cover of it. Instagram's addresses for pictures stop
+// working after a while, so the picture itself is kept (thumbs/<media id>), fetched once per post.
+const PICTURE_MAX = 4 * 1024 * 1024;
+const pictureKey = (mediaId) => `thumbs/${String(mediaId).replace(/[^0-9A-Za-z_-]/g, "")}`;
+async function postPicture(env, ig, post) {
+  const none = () => fail(404, "This post has no picture yet.");
+  if (!post.mediaId) return none();
+  const give = (body, type) => new Response(body, { headers: { "Content-Type": type || "image/jpeg", "Cache-Control": "private, max-age=604800" } });
+  const kept = await env.MEDIA.get(pictureKey(post.mediaId));
+  if (kept) return give(kept.body, kept.httpMetadata && kept.httpMetadata.contentType);
+  if (!ig) return none();
+  let address = "";
+  try {
+    const m = await graphAny(env, ig, "GET", `/${post.mediaId}`, { fields: "media_type,thumbnail_url,media_url" });
+    address = m.thumbnail_url || (m.media_type !== "VIDEO" ? m.media_url : "") || "";
+    if (!address && m.media_type === "CAROUSEL_ALBUM") {
+      const first = ((await graphAny(env, ig, "GET", `/${post.mediaId}/children`, { fields: "media_type,thumbnail_url,media_url" })).data || [])[0] || {};
+      address = first.thumbnail_url || (first.media_type !== "VIDEO" ? first.media_url : "") || "";
+    }
+  } catch (e) { if (!(e instanceof UserError)) throw e; return none(); }
+  if (!/^https:\/\//.test(address) && !(env.GRAPH_API && /^http:\/\/localhost[:/]/.test(address))) return none();
+  const res = await fetch(address);
+  const type = (res.headers.get("content-type") || "").split(";")[0].trim();
+  if (!res.ok || !/^image\/(jpeg|png|webp)$/.test(type)) { if (res.body) await res.body.cancel().catch(() => {}); return none(); }
+  const bytes = await res.arrayBuffer();
+  if (!bytes.byteLength || bytes.byteLength > PICTURE_MAX) return none();
+  await env.MEDIA.put(pictureKey(post.mediaId), bytes, { httpMetadata: { contentType: type } });
+  return give(bytes, type);
+}
 
 // Moves a post forward: once Instagram has finished processing the video, publish it.
 async function advancePost(env, ig, post) {
@@ -1524,8 +1556,11 @@ async function postRoutes(request, env, parts) {
       try {
         for (const post of posts.filter((p) => p.state === "processing").slice(-2)) if (await advancePost(env, ig, post)) changed += 1;
         changed += await adoptFromInstagram(env, ig, posts);
-        if (await checkRemoved(env, ig, posts, null, seen)) changed += 1;
-        if (!seen.failed && (await refreshInsights(env, ig, posts, { max: 10, force, seen, served: true }))) changed += 1;
+        // (Side by side: both only ask Instagram, about different things. Opening Posts used to take as long as
+        // all the questions one after another.)
+        const [removed, fresh] = await Promise.all([checkRemoved(env, ig, posts, null, seen), refreshInsights(env, ig, posts, { max: 10, force, seen, served: true })]);
+        if (removed) changed += 1;
+        if (fresh) changed += 1;
       } catch (e) { console.error("checking the posts list", e && e.message); seen.failed = e; }
       if (changed) await saveDoc(env, "posts", posts.slice(-500));
       instagram = { ok: !seen.failed, paused: !!(seen.failed && seen.failed.blocked) };
@@ -1534,7 +1569,8 @@ async function postRoutes(request, env, parts) {
       else checkedAt = stamp.at || null;
     }
     const behind = ig && instagram.ok ? withNumbers(posts).filter((p) => numbersDue(p, Date.now())).length : 0;
-    return json({ posts: posts.filter((p) => p.state !== "removed").slice(-50).reverse().map(publicPost), checkedAt, instagram, behind });
+    const shown = posts.filter((p) => p.state !== "removed" && p.state !== "hidden").sort((a, b) => (a.published || a.created || 0) - (b.published || b.created || 0));
+    return json({ posts: shown.slice(-60).reverse().map(publicPost), checkedAt, instagram, behind });
   }
 
   if (parts.length === 1 && method === "POST") {
@@ -1571,9 +1607,13 @@ async function postRoutes(request, env, parts) {
 
   const post = posts.find((p) => p.id === parts[1]);
   if (post && parts[2] === "comments") return commentRoutes(request, env, ig, post, parts);
+  if (post && parts[2] === "picture" && method === "GET") return postPicture(env, ig, post);
   if (post && method === "DELETE") {
     // Takes it off the app's list only. Deleting from Instagram itself is done in Instagram.
-    await saveDoc(env, "posts", posts.filter((p) => p.id !== post.id));
+    // One that is on Instagram is kept, hidden: every post on her page is brought into the list (see
+    // adoptFromInstagram), so a forgotten one would be back at the next look.
+    if (post.mediaId && post.state === "published") { post.state = "hidden"; post.hiddenAt = Date.now(); await saveDoc(env, "posts", posts); }
+    else await saveDoc(env, "posts", posts.filter((p) => p.id !== post.id));
     return json({ ok: true });
   }
   if (!post || method !== "GET") return fail(404, "No such post.");
@@ -1639,7 +1679,7 @@ async function graphAny(env, ig, method, path, params) {
 // ---------- insights: how her own posts did ----------
 const INSIGHT_METRICS = ["reach", "views", "likes", "comments", "saved", "shares"];
 const ALL_POST_METRICS = [...INSIGHT_METRICS, "total_interactions", "reposts", "follows", "profile_visits"];
-const metricLists = (post) => (post.kind === "carousel"
+const metricLists = (post) => (post.kind === "carousel" || post.kind === "photo"
   ? [[...INSIGHT_METRICS, "total_interactions", "follows", "profile_visits"], INSIGHT_METRICS, ["reach", "likes", "comments", "saved", "shares"]]
   : [[...INSIGHT_METRICS, "total_interactions", "ig_reels_avg_watch_time", "ig_reels_video_view_total_time", "reels_skip_rate", "reposts"],
     [...INSIGHT_METRICS, "total_interactions", "ig_reels_avg_watch_time", "ig_reels_video_view_total_time"], INSIGHT_METRICS, ["reach", "likes", "comments", "saved", "shares"]]);
@@ -1663,12 +1703,14 @@ async function refreshInsights(env, ig, posts, { force = false, max = 15, seen =
   const now = Date.now();
   const due = withNumbers(posts).filter((p) => force || numbersDue(p, now))
     .sort((a, b) => (a.insightsAt || 0) - (b.insightsAt || 0)).slice(0, max);
-  for (const post of due) {
-    if (seen && seen.failed) break;                 // Instagram isn't answering: don't spend more calls on it
+  // Four at a time: asked one after another, ten posts took as long as ten answers (several seconds on her phone).
+  let stop = false, thrown = null;
+  const one = async (post) => {
+    if (stop || (seen && seen.failed)) return;                 // Instagram isn't answering: don't spend more calls on it
     try {
       // Not every kind of post, or every account, has every number. Ask for the fullest list first and step
       // down until Instagram accepts one. The step that worked is remembered for a week, for all posts of that kind.
-      const lists = metricLists(post), kind = post.kind === "carousel" ? "carousel" : "reel";
+      const lists = metricLists(post), kind = post.kind === "carousel" ? "carousel" : post.kind === "photo" ? "photo" : "reel";
       let data = null;
       for (let i = Math.min(known[kind] || 0, lists.length - 1); i < lists.length; i++) {
         try {
@@ -1692,22 +1734,25 @@ async function refreshInsights(env, ig, posts, { force = false, max = 15, seen =
       }
       post.metrics = { ...(post.metrics || {}), ...m };
       post.insightsAt = Date.now(); changed = true;
-      if (servedLeft && !post.served && post.kind !== "carousel" && (post.servedTries || 0) < 3) {
+      if (servedLeft && !post.served && !post.outside && post.kind !== "carousel" && post.kind !== "photo" && (post.servedTries || 0) < 3) {
         servedLeft = 0;
         if (await measureServed(env, ig, post).catch(() => false)) changed = true;
       }
     } catch (e) {
-      if (!(e instanceof UserError)) { if (!seen) throw e; seen.failed = e; break; }
-      if (e.blocked) { if (seen) seen.failed = e; break; }
+      if (!(e instanceof UserError)) { stop = true; if (!seen) { thrown = thrown || e; return; } seen.failed = e; return; }
+      if (e.blocked) { stop = true; if (seen) seen.failed = e; return; }
       // Numbers unavailable: find out whether the post still exists on Instagram.
       try { await graphAny(env, ig, "GET", `/${post.mediaId}`, { fields: "id" }); post.insightsAt = Date.now(); changed = true; }
       catch (e2) {
-        if (!(e2 instanceof UserError)) { if (!seen) throw e2; seen.failed = e2; break; }
+        if (!(e2 instanceof UserError)) { stop = true; if (!seen) { thrown = thrown || e2; return; } seen.failed = e2; return; }
         if (e2.gone) { post.state = "removed"; post.removedAt = Date.now(); changed = true; }
-        else if (seen) { seen.failed = e2; break; }
+        else if (seen) { stop = true; seen.failed = e2; }
       }
     }
-  }
+  };
+  const queue = [...due];
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => { while (queue.length && !stop) await one(queue.shift()); }));
+  if (thrown) throw thrown;
   if (knownChanged) await saveDoc(env, "metriclists", known);
   return changed;
 }
@@ -1870,10 +1915,10 @@ const DIMENSIONS = [
     return `${m.bgFrom === "search" ? "Searched" : "Your own"} ${m.bg}`;
   }],
   ["bgWords", "Background search words", (p) => (p.made && p.made.bgFrom === "search" ? p.made.bgWords : "")],
-  ["format", "Reel or carousel", (p) => (p.kind === "carousel" ? "Carousel" : "Reel")],
+  ["format", "Reel or carousel", (p) => (p.kind === "carousel" ? "Carousel" : p.kind === "photo" ? "Photo" : "Reel")],
   ["length", "Quote length", (p) => { const n = wordsIn(p.quote); return !n ? "" : n <= 10 ? "Short (up to 10 words)" : n <= 25 ? "Medium (11 to 25 words)" : "Long (over 25 words)"; }],
   ["author", "Author's name", (p) => (p.quote ? (p.author ? "With an author's name" : "Without a name") : "")],
-  ["music", "Music", (p) => (p.kind === "carousel" ? "" : p.music ? "Instagram's music" : p.made && p.made.music === "library" ? "Free library music" : p.made && p.made.music === "own" ? "Your own music" : "No music")],
+  ["music", "Music", (p) => (p.kind === "carousel" || p.outside ? "" : p.music ? "Instagram's music" : p.made && p.made.music === "library" ? "Free library music" : p.made && p.made.music === "own" ? "Your own music" : "No music")],
   ["font", "Font", (p) => (p.made && p.made.font ? FONT_NAMES[p.made.font] || p.made.font : "")],
   ["seconds", "Reel length", (p) => { const s = p.made && p.made.seconds; return !s || p.kind === "carousel" ? "" : s <= 8 ? "Up to 8 seconds" : s <= 15 ? "9 to 15 seconds" : "Over 15 seconds"; }],
   ["hashtags", "Hashtags", (p) => [...new Set((String(p.caption || "").toLowerCase().match(/#[\p{L}\p{N}_]+/gu) || []))].slice(0, 30)],
@@ -1907,7 +1952,7 @@ function buildInsights(allPosts, range, now) {
   // One row per post: what the lists, the chart and the downloaded file are made from.
   const rows = inRange.map((p) => {
     const m = p.metrics || {}, made = p.made || {};
-    return { id: p.id, quote: oneLine(p.quote, 140), author: p.author || "", published: p.published, kind: p.kind || "reel", permalink: p.permalink || "",
+    return { id: p.id, quote: oneLine(p.quote || p.caption, 140), author: p.author || "", published: p.published, kind: p.kind || "reel", permalink: p.permalink || "",
       theme: p.theme || "", tone: p.tone || "", reach: reachOf(p), views: m.views || 0, likes: m.likes || 0, comments: m.comments || 0, saved: m.saved || 0, shares: m.shares || 0,
       interactions: interactionsOf(m), rate: share(interactionsOf(m), reachOf(p)), watch: m.watch || null, skip: m.skip != null ? m.skip : null,
       background: made.bg ? (made.bg === "plain" ? "plain" : `${made.bgFrom === "search" ? "searched" : "own"} ${made.bg}`) : "",
@@ -1917,7 +1962,7 @@ function buildInsights(allPosts, range, now) {
   // Reach over time: a bar per post while there are few, a bar per week once there are many.
   let trend;
   if (measured.length <= 24) {
-    trend = { by: "post", bars: measured.map((p) => ({ at: p.published, reach: reachOf(p), label: oneLine(p.quote, 60) })) };
+    trend = { by: "post", bars: measured.map((p) => ({ at: p.published, reach: reachOf(p), label: oneLine(p.quote || p.caption, 60) })) };
   } else {
     const weeks = new Map();
     for (const p of measured) {
@@ -2192,9 +2237,29 @@ async function loadHandoffs(env) {
   return live;
 }
 
-// Looks at the newest things on her page for reels the app doesn't know, and links them to what was handed over.
-// Returns how many were linked. "posts" is changed in place; the caller saves it.
+// Looks at the newest things on her page for posts the app doesn't know. A reel is linked to what was handed over
+// (or, on a wording match only, to a reel made here and still waiting); every other post she made in Instagram
+// itself comes into the list as it is, with its caption and numbers but no quote of the app's: nothing is assumed
+// about which reel it was. (Until 20 Nov 2026 those were left out, so Posts and Insights missed her new posts.)
+// Returns how many posts were linked or added. "posts" is changed in place; the caller saves it.
+const outsideKind = (m) => (m.media_type === "CAROUSEL_ALBUM" ? "carousel" : m.media_product_type === "REELS" || m.media_type === "VIDEO" ? "" : "photo");
+// The same Instagram post twice (two look-ups at the same moment both added it): the one the app made or linked stays.
+function onePerMedia(posts) {
+  const by = new Map();
+  let dropped = 0;
+  for (const p of posts) {
+    if (!p.mediaId) continue;
+    const k = String(p.mediaId), first = by.get(k);
+    if (!first) { by.set(k, p); continue; }
+    const lose = first.outside && !p.outside ? first : p;
+    if (lose === first) by.set(k, p);
+    lose.__drop = true; dropped += 1;
+  }
+  if (dropped) { const keep = posts.filter((p) => !p.__drop); posts.length = 0; posts.push(...keep); }
+  return dropped;
+}
 async function adoptFromInstagram(env, ig, posts) {
+  let linked = onePerMedia(posts);
   const handoffs = await loadHandoffs(env);
   // Posts she marked as posted by hand, still without their Instagram reel (see postedByHand).
   const byHand = posts.filter((p) => p.byHand && !p.mediaId && Date.now() - (p.published || 0) < 30 * 24 * 3600 * 1000);
@@ -2206,18 +2271,17 @@ async function adoptFromInstagram(env, ig, posts) {
   for (const m of await loadDoc(env, "made", [])) {
     if (!m || m.posted || !m.jobId || taken.has(m.jobId) || !m.about || !m.about.quote) continue;
     taken.add(m.jobId);
-    waitingOnly.push({ ...m.about, jobId: m.jobId, at: m.made || 0, caption: "", waiting: true });
+    // (The caption she wrote for it in the app counts as its wording too: she may have pasted it in Instagram.)
+    waitingOnly.push({ ...m.about, jobId: m.jobId, at: m.made || 0, caption: (m.snap && typeof m.snap.caption === "string" && m.snap.caption) || "", waiting: true });
   }
-  if (!handoffs.length && !byHand.length && !waitingOnly.length) return 0;
   let media;
   try {
-    media = (await graphAny(env, ig, "GET", `/${ig.igId}/media`, { fields: "id,caption,media_type,media_product_type,permalink,timestamp", limit: "15" })).data || [];
-  } catch (e) { if (!(e instanceof UserError)) throw e; return 0; }
+    media = (await graphAny(env, ig, "GET", `/${ig.igId}/media`, { fields: "id,caption,media_type,media_product_type,permalink,timestamp", limit: "30" })).data || [];
+  } catch (e) { if (!(e instanceof UserError)) throw e; return linked; }
   const known = new Set(posts.map((p) => String(p.mediaId || "")));
-  const fresh = media.map((m) => ({ ...m, at: Date.parse(m.timestamp) || 0 }))
-    .filter((m) => !known.has(String(m.id)) && m.at && (m.media_product_type === "REELS" || m.media_type === "VIDEO"))
-    .sort((a, b) => a.at - b.at);
-  let linked = 0;
+  const unknown = media.map((m) => ({ ...m, at: Date.parse(m.timestamp) || 0 })).filter((m) => m.id && !known.has(String(m.id)) && m.at).sort((a, b) => a.at - b.at);
+  const fresh = unknown.filter((m) => m.media_product_type === "REELS" || m.media_type === "VIDEO");
+  const used = new Set();
   let left = [...handoffs, ...waitingOnly];
   const fits = (h, m) => {
     const words = squash(h.caption).slice(0, 40), quote = squash(h.quote).slice(0, 40), said = squash(m.caption);
@@ -2230,7 +2294,7 @@ async function adoptFromInstagram(env, ig, posts) {
     const mine = byHand.filter((p) => !p.mediaId);
     const hit = mine.find((p) => squash(p.quote).length >= 12 && said.includes(squash(p.quote).slice(0, 40)))
       || (mine.length === 1 && !left.length && Math.abs(m.at - mine[0].published) < 24 * 3600 * 1000 ? mine[0] : null);
-    if (hit) { Object.assign(hit, { mediaId: String(m.id), permalink: oneLine(m.permalink, 300), published: m.at, caption: hit.caption || lines(m.caption, 2200) }); linked += 1; continue; }
+    if (hit) { Object.assign(hit, { mediaId: String(m.id), permalink: oneLine(m.permalink, 300), published: m.at, caption: hit.caption || lines(m.caption, 2200) }); used.add(m.id); linked += 1; continue; }
     // Only hand-overs made before this reel was posted can be its source. If the caption she copied (or the quote)
     // is in the reel's caption, that settles it; otherwise it is the reel she handed over most recently.
     const before = left.filter((h) => h.at - 60000 < m.at);
@@ -2245,9 +2309,22 @@ async function adoptFromInstagram(env, ig, posts) {
       music: h.made && h.made.music ? null : "chosen in Instagram",
       quote: h.quote, author: h.author, theme: h.theme, tone: h.tone, source: h.source, suggestionId: h.suggestionId, made: h.made || null,
       mediaId: String(m.id), tokenKind: "page", created: h.at, published: m.at, permalink: oneLine(m.permalink, 300) });
+    used.add(m.id);
     linked += 1;
   }
-  if (linked) {
+  // Everything else on her page: posts she made in Instagram itself. Not while a reel posted from here is still
+  // being processed: one that appeared since then may be that reel, about to get its link.
+  const busy = posts.filter((p) => p.state === "processing").map((p) => p.created || 0);
+  const holdFrom = busy.length ? Math.min(...busy) - 60000 : Infinity;
+  for (const m of unknown) {
+    if (used.has(m.id) || m.at >= holdFrom) continue;
+    const kind = outsideKind(m);
+    posts.push({ id: crypto.randomUUID(), via: "instagram", outside: true, state: "published", error: null, caption: lines(m.caption, 2200), music: null,
+      quote: "", author: "", theme: "", tone: "", source: "", suggestionId: "", made: null, ...(kind ? { kind } : {}),
+      mediaId: String(m.id), tokenKind: "page", created: m.at, published: m.at, permalink: oneLine(m.permalink, 300) });
+    linked += 1;
+  }
+  if (used.size) {
     if (handoffs.some((h) => !left.includes(h))) await saveDoc(env, "handoffs", left.filter((x) => !x.waiting));
     const queue = await loadDoc(env, "queue", []);
     const jobs = new Set([...handoffs, ...waitingOnly].filter((h) => !left.includes(h)).map((h) => h.jobId));
@@ -2511,7 +2588,7 @@ async function gatherEvidence(env) {
     skipped: history.filter((h) => h.action === "rejected").slice(-40).map(slim),
     rewordRequests: rewords.slice(-25).map((r) => ({ asked: r.asked, before: r.before, after: r.after })),
     ownLines: (lib.quotes || []).slice(-25).map((q) => q.text),
-    posted: posts.filter((p) => p.state === "published").slice(-30).map((p) => ({ quote: p.quote, author: p.author, music: musicName(p.music), ...(p.metrics || {}) })),
+    posted: posts.filter((p) => p.state === "published" && p.quote).slice(-30).map((p) => ({ quote: p.quote, author: p.author, music: musicName(p.music), ...(p.metrics || {}) })),
     loved: insp.slice(-30).map((i) => ({ from: i.handle ? "@" + i.handle : i.kind, quote: i.quote || "", look: i.style || "",
       topPosts: (i.top || []).slice(0, 5).map((t) => ({ quote: t.quote || "", caption: (t.caption || "").slice(0, 160), likes: t.likes, views: t.views })) })),
   };
@@ -2844,7 +2921,7 @@ async function runChatTool(env, name, input, actions) {
   }
   if (name === "get_posts") {
     const posts = await loadDoc(env, "posts", []);
-    return posts.filter((p) => p.state === "published").slice(-12).reverse().map((p) => ({ quote: p.quote, posted: new Date(p.published || p.created).toISOString().slice(0, 10), music: musicName(p.music), ...(p.metrics || { numbers: "not available yet" }) }));
+    return posts.filter((p) => p.state === "published").sort((a, b) => (a.published || a.created) - (b.published || b.created)).slice(-12).reverse().map((p) => ({ ...(p.quote ? { quote: p.quote } : { postedFromInstagramItself: true, caption: oneLine(p.caption, 200) }), posted: new Date(p.published || p.created).toISOString().slice(0, 10), music: musicName(p.music), ...(p.metrics || { numbers: "not available yet" }) }));
   }
   if (name === "get_week") {
     const w = weekStats(await loadDoc(env, "posts", []), Date.now());
@@ -3076,7 +3153,8 @@ export default {
           const ig = igReady(env) ? await loadIg(env) : null;
           if (!ig) return;
           const posts = await loadDoc(env, "posts", []);
-          if (await refreshInsights(env, ig, posts, { max: 15 })) await saveDoc(env, "posts", posts);
+          const added = await adoptFromInstagram(env, ig, posts);          // posts she made in Instagram itself
+          if ((await refreshInsights(env, ig, posts, { max: 15 })) || added) await saveDoc(env, "posts", posts.slice(-500));
           await snapshotAccount(env, ig, { force: true });      // today's follower count, for the chart in Insights
         });
         if (!env.ANTHROPIC_API_KEY) return;
